@@ -65,28 +65,12 @@ mutation UploadPhoto($file: String!) {
 }
 """
 
-BASE_PRODUCT_VARIABLES = {
-    "nameUk": "Что-то там какая-то вещь чота",
-    "descriptionUk": "ФВВЫФВФпавыпывп",
-    "isUkToRuTranslationEnabled": True,
-    "catalog": "verkhniaia-odezhda/kurtki",
-    "condition": "NEW",
-    "brand": 104,
-    "colors": ["WHITE"],
-    "size": 149,
-    "additionalSizes": [148, 147],
-    "characteristics": [10273, 2061],
-    "count": 3,
-    "sellingCondition": "SALE",
-    "price": 2500,
-    "keyWords": [],
-}
-
 API_URL = "https://shafa.ua/api/v3/graphiql"
 ORIGIN_URL = "https://shafa.ua"
 REFERER_URL = "https://shafa.ua/uk/new"
 APP_PLATFORM = "web"
 APP_VERSION = "v2025.12.31.3"
 
-FILE_PATH = Path("BOOSTER 2.jpg")
+MEDIA_DIR_PATH = "media"
+STORAGE_STATE_PATH = Path("auth.json")
 HEADLESS = False

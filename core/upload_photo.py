@@ -1,11 +1,10 @@
 import json
 from data.const import API_URL
-from pathlib import Path
-from playwright.sync_api import BrowserContext
 from data.const import UPLOAD_PHOTO_MUTATION
+from playwright.sync_api import BrowserContext
 from core.core import base_headers, read_response_json
 
-def upload_photo(ctx: BrowserContext, csrftoken: str, file_path: Path) -> str:
+def upload_photo(ctx: BrowserContext, csrftoken: str, file_path: str) -> str:
     file_bytes = file_path.read_bytes()
     resp = ctx.request.post(
         API_URL,
