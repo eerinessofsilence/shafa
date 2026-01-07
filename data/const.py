@@ -65,7 +65,11 @@ mutation UploadPhoto($file: String!) {
 }
 """
 
+TELEGRAM_API_ID = 39423515
+TELEGRAM_API_HASH = "0417175f011283bfd6bd76e4925a4136" 
+
 API_URL = "https://shafa.ua/api/v3/graphiql"
+API_BATCH_URL = "https://shafa.ua/api/v3/graphiql-batch"
 ORIGIN_URL = "https://shafa.ua"
 REFERER_URL = "https://shafa.ua/uk/new"
 APP_PLATFORM = "web"
@@ -74,3 +78,29 @@ APP_VERSION = "v2025.12.31.3"
 MEDIA_DIR_PATH = "media"
 STORAGE_STATE_PATH = Path("auth.json")
 HEADLESS = False
+DB_PATH = Path("data/shafa.sqlite3")
+
+BRAND_NAME_TO_ID: dict[str, int] = {}
+
+COLOR_NAME_TO_ENUM: dict[str, str] = {
+    "black": "BLACK",
+    "white": "WHITE",
+    "gray": "GRAY",
+    "grey": "GRAY",
+    "brown": "BROWN",
+    "orange": "ORANGE",
+    "red": "RED",
+    "blue": "BLUE",
+    "green": "GREEN",
+    "pink": "PINK",
+    "purple": "PURPLE",
+    "beige": "BEIGE",
+    "cream": "CREAM",
+    "navy": "NAVY",
+    "tan": "TAN",
+    "silver": "SILVER",
+    "gold": "GOLD",
+    "yellow": "YELLOW",
+    "olive": "OLIVE",
+    "khaki": "KHAKI",
+}
