@@ -19,8 +19,6 @@ def get_csrftoken_from_context(ctx: BrowserContext) -> Optional[str]:
 
 
 def read_response_json(resp, preview: int = 2000) -> dict:
-    print("STATUS:", resp.status)
-    print("CONTENT-TYPE:", resp.headers.get("content-type"))
     text = resp.text()
     print(text[:preview])
     try:
