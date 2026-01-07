@@ -1,3 +1,5 @@
 venv/
 media/
 auth.json
+*.session
+data/*.sqlite3
