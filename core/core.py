@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Optional
 from data.const import ORIGIN_URL, REFERER_URL, APP_PLATFORM, APP_VERSION
 from playwright.sync_api import BrowserContext
@@ -20,8 +21,14 @@ def get_csrftoken_from_context(ctx: BrowserContext) -> Optional[str]:
 
 def read_response_json(resp, preview: int = 2000) -> dict:
     text = resp.text()
-    print(text[:preview])
+    if _debug_http_enabled():
+        print(text[:preview])
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError("Response is not valid JSON") from exc
+
+
+def _debug_http_enabled() -> bool:
+    value = os.getenv("SHAFA_DEBUG_HTTP", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
