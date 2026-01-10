@@ -4,7 +4,7 @@ from playwright.sync_api import BrowserContext
 from core.core import base_headers, read_response_json
 from data.const import CREATE_PRODUCT_MUTATION, API_URL
 
-def build_create_product_payload(photo_ids: list[str], product_raw_data: dict) -> dict:
+def build_create_product_payload(photo_ids: list[str], product_raw_data: dict, markup: int) -> dict:
     product = Product(**product_raw_data)
     variables: dict = {
         "nameUk": product.name,
@@ -19,7 +19,7 @@ def build_create_product_payload(photo_ids: list[str], product_raw_data: dict) -
         "characteristics": product.characteristics,
         "count": product.amount if product.amount >= len(product.additional_sizes) + 1 else len(product.additional_sizes) + 1,
         "sellingCondition": product.selling_condition,
-        "price": product.price,
+        "price": product.price + markup,
         "keyWords": product.keywords,
         "photosStr": photo_ids
     }
@@ -31,8 +31,8 @@ def build_create_product_payload(photo_ids: list[str], product_raw_data: dict) -
     }
 
 
-def create_product(ctx: BrowserContext, csrftoken: str, photo_ids: list[str], product_raw_data: dict) -> dict:
-    payload = build_create_product_payload(photo_ids, product_raw_data)
+def create_product(ctx: BrowserContext, csrftoken: str, photo_ids: list[str], product_raw_data: dict, markup: int = 400) -> dict:
+    payload = build_create_product_payload(photo_ids, product_raw_data, markup)
     resp = ctx.request.post(
         API_URL,
         headers={
