@@ -1,7 +1,9 @@
 import json
+
 from playwright.sync_api import BrowserContext
+
+from core.core import base_headers, read_response_json
 from data.const import API_BATCH_URL
-from core.core import base_headers,read_response_json
 from data.db import save_brands
 
 def get_brands(
@@ -30,7 +32,7 @@ def get_brands(
     )
 
     payload = [
-     {
+        {
             "operationName": "WEB_ProductFormTopBrands",
             "variables": {"catalogSlug": catalog_slug},
             "query": query,
@@ -49,7 +51,7 @@ def get_brands(
     )
 
     data = read_response_json(resp)
-    
+
     if isinstance(data, list):
         data = data[0] if data else {}
 

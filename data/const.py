@@ -66,7 +66,13 @@ mutation UploadPhoto($file: String!) {
 """
 
 TELEGRAM_API_ID = 39423515
-TELEGRAM_API_HASH = "0417175f011283bfd6bd76e4925a4136" 
+TELEGRAM_API_HASH = "0417175f011283bfd6bd76e4925a4136"
+TELEGRAM_CHANNELS: list[tuple[int, str, str]] = [
+    (-1001184429834, "GENERATION DROP / OPT 🌊", "main"),
+    (-1001252296189, "", "extra_photos"),
+    (-1001801709326, "", "extra_photos"),
+]
+TELEGRAM_CHANNEL_IDS = [channel_id for channel_id, _, _ in TELEGRAM_CHANNELS]
 
 API_URL = "https://shafa.ua/api/v3/graphiql"
 API_BATCH_URL = "https://shafa.ua/api/v3/graphiql-batch"

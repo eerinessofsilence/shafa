@@ -1,20 +1,12 @@
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 
+from core.context import new_context_with_storage
 from core.core import get_csrftoken_from_context
 from core.get_brands import get_brands
 from core.get_sizes import get_sizes
-from data.const import HEADLESS, ORIGIN_URL, REFERER_URL, STORAGE_STATE_PATH
-from data.db import init_db, load_cookies, save_cookies
-
-
-def new_context_with_storage(browser):
-    if STORAGE_STATE_PATH.exists():
-        return browser.new_context(storage_state=str(STORAGE_STATE_PATH))
-    ctx = browser.new_context()
-    saved_cookies = load_cookies(ORIGIN_URL)
-    if saved_cookies:
-        ctx.add_cookies(saved_cookies)
-    return ctx
+from data.const import HEADLESS, REFERER_URL, STORAGE_STATE_PATH
+from data.db import init_db, save_cookies
 
 
 def main() -> None:

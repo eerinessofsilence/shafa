@@ -54,6 +54,12 @@ def init_db(db_path: Path = DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_telegram_products_channel
                 ON telegram_products(channel_id);
 
+            CREATE TABLE IF NOT EXISTS telegram_channels (
+                channel_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                alias TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS sizes (
                 id INTEGER PRIMARY KEY,
                 primary_size_name TEXT NOT NULL
@@ -81,6 +87,16 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 ON cookies(domain);
             """
         )
+        _ensure_telegram_channels_schema(conn)
+
+
+def _ensure_telegram_channels_schema(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(telegram_channels)").fetchall()
+    }
+    if "alias" not in columns:
+        conn.execute("ALTER TABLE telegram_channels ADD COLUMN alias TEXT")
 
 
 def save_uploaded_product(
@@ -223,6 +239,52 @@ def save_telegram_product(
             ),
         )
     return cursor.rowcount == 1
+
+
+def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> None:
+    if not channels:
+        return
+    rows: list[tuple[int, str, Optional[str]]] = []
+    for entry in channels:
+        if len(entry) == 2:
+            channel_id, name = entry
+            alias = None
+        else:
+            channel_id, name, alias = entry
+        text = str(name).strip()
+        if not text:
+            text = str(channel_id)
+        rows.append((int(channel_id), text, alias))
+    if not rows:
+        return
+    init_db()
+    with _connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO telegram_channels (channel_id, name, alias)
+            VALUES (?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET
+                name = excluded.name,
+                alias = COALESCE(excluded.alias, telegram_channels.alias)
+            """,
+            rows,
+        )
+
+
+def load_telegram_channels() -> list[dict]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT channel_id, name, alias
+            FROM telegram_channels
+            ORDER BY channel_id
+            """
+        ).fetchall()
+    return [
+        {"channel_id": row["channel_id"], "name": row["name"], "alias": row["alias"]}
+        for row in rows
+    ]
 
 
 def get_next_uncreated_telegram_product(channel_id: int) -> Optional[sqlite3.Row]:

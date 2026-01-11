@@ -1,10 +1,17 @@
 import json
+
 from playwright.sync_api import BrowserContext
+
 from core.core import base_headers, read_response_json
 from data.const import API_BATCH_URL
 from data.db import save_sizes
 
-def get_sizes(ctx: BrowserContext, csrftoken: str, catalog_slug: str = "obuv/krossovki") -> list[dict]:
+
+def get_sizes(
+    ctx: BrowserContext,
+    csrftoken: str,
+    catalog_slug: str = "obuv/krossovki",
+) -> list[dict]:
     query = (
         "query WEB_ProductFormSizes($catalogSlug: String!) {\n"
         "  filterSize(catalogSlug: $catalogSlug) {\n"

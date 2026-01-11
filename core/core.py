@@ -1,8 +1,10 @@
 import json
 import os
 from typing import Optional
-from data.const import ORIGIN_URL, REFERER_URL, APP_PLATFORM, APP_VERSION
+
 from playwright.sync_api import BrowserContext
+
+from data.const import APP_PLATFORM, APP_VERSION, ORIGIN_URL, REFERER_URL
 
 def base_headers(csrftoken: str) -> dict:
     return {

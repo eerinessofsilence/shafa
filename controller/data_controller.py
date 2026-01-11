@@ -7,10 +7,13 @@ from pathlib import Path
 from typing import Optional
 
 from telethon import TelegramClient
+from telethon.errors import RPCError
 from telethon.types import MessageMediaPhoto
+from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from data.const import (
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
+    TELEGRAM_CHANNELS,
     TELEGRAM_API_HASH,
     TELEGRAM_API_ID,
 )
@@ -18,13 +21,16 @@ from data.db import (
     get_brand_id_by_name,
     get_next_uncreated_telegram_product,
     get_size_id_by_name,
+    load_telegram_channels,
     mark_telegram_product_created,
+    save_telegram_channels,
     save_telegram_product,
 )
 
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
-channel_id = -1001184429834
+DEFAULT_CHANNELS = TELEGRAM_CHANNELS
+DEFAULT_CHANNEL_IDS = [channel_id for channel_id, _, _ in DEFAULT_CHANNELS]
 
 DEFAULT_DESCRIPTION = (
     """36 (23.0см)
@@ -251,6 +257,55 @@ def _debug_fetch_enabled() -> bool:
 def _debug_fetch_verbose() -> bool:
     value = os.getenv("SHAFA_DEBUG_FETCH_VERBOSE", "").strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def _get_channel_ids() -> list[int]:
+    raw = os.getenv("SHAFA_CHANNEL_IDS", "").strip()
+    if not raw:
+        rows = load_telegram_channels()
+        if DEFAULT_CHANNELS:
+            save_telegram_channels(DEFAULT_CHANNELS)
+            if not rows:
+                rows = load_telegram_channels()
+        if rows:
+            return [row["channel_id"] for row in rows]
+        return DEFAULT_CHANNEL_IDS
+    ids: list[int] = []
+    for part in re.split(r"[,\s]+", raw):
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return ids or DEFAULT_CHANNEL_IDS
+
+
+def _get_channel_alias(channel_id: int) -> str:
+    for row in load_telegram_channels():
+        if row["channel_id"] == channel_id:
+            return row.get("alias") or ""
+    return ""
+
+
+async def _sync_channel_titles(client: TelegramClient, channel_ids: list[int]) -> None:
+    rows = {row["channel_id"]: row for row in load_telegram_channels()}
+    updates: list[tuple[int, str, Optional[str]]] = []
+    for channel_id in channel_ids:
+        current = rows.get(channel_id) or {}
+        name = str(current.get("name") or "").strip()
+        alias = current.get("alias")
+        if name and name != str(channel_id):
+            continue
+        try:
+            entity = await client.get_entity(channel_id)
+        except (ValueError, RPCError):
+            continue
+        title = getattr(entity, "title", None) or getattr(entity, "username", None)
+        if title and title != name:
+            updates.append((channel_id, title, alias))
+    if updates:
+        save_telegram_channels(updates)
 
 
 def normalize_message(message: str) -> str:
@@ -594,7 +649,7 @@ def parse_message(message: str) -> dict:
     }
 
 
-async def _fetch_messages(message_amount: int = 200) -> int:
+async def _fetch_messages(message_amount: int = 50) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
     debug_verbose = _debug_fetch_verbose()
@@ -613,58 +668,64 @@ async def _fetch_messages(message_amount: int = 200) -> int:
     verbose_limit = 5
     verbose_count = 0
 
-    def log_skip(reason: str, text: str, message_id: int) -> None:
+    def log_skip(reason: str, text: str, message_id: int, channel_id: int) -> None:
         nonlocal verbose_count
         if not debug_verbose or verbose_count >= verbose_limit:
             return
         preview_lines = normalize_message(text).splitlines() if text else []
         preview = preview_lines[0] if preview_lines else ""
-        print(f"[DEBUG] skip message_id={message_id} reason={reason} text={preview}")
+        print(
+            f"[DEBUG] skip channel_id={channel_id} message_id={message_id} "
+            f"reason={reason} text={preview}"
+        )
         verbose_count += 1
 
     async with TelegramClient("session", api_id, api_hash) as client:
-        async for msg in client.iter_messages(channel_id, limit=message_amount):
-            if debug_fetch:
-                stats["total"] += 1
-            if not msg.media:
+        channel_ids = _get_channel_ids()
+        await _sync_channel_titles(client, channel_ids)
+        for channel_id in channel_ids:
+            async for msg in client.iter_messages(channel_id, limit=message_amount):
                 if debug_fetch:
-                    stats["no_media"] += 1
-                log_skip("no_media", msg.message or "", msg.id)
-                continue
-            if not isinstance(msg.media, MessageMediaPhoto):
+                    stats["total"] += 1
+                if not msg.media:
+                    if debug_fetch:
+                        stats["no_media"] += 1
+                    log_skip("no_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not isinstance(msg.media, MessageMediaPhoto):
+                    if debug_fetch:
+                        stats["non_photo_media"] += 1
+                    log_skip("non_photo_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not msg.message:
+                    if debug_fetch:
+                        stats["no_text"] += 1
+                    log_skip("no_text", "", msg.id, channel_id)
+                    continue
+                parsed = parse_message(msg.message)
+                if not parsed.get("name"):
+                    if debug_fetch:
+                        stats["missing_name"] += 1
+                    log_skip("missing_name", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("price"):
+                    if debug_fetch:
+                        stats["missing_price"] += 1
+                    log_skip("missing_price", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("size"):
+                    if debug_fetch:
+                        stats["missing_size"] += 1
+                    log_skip("missing_size", msg.message, msg.id, channel_id)
+                    continue
                 if debug_fetch:
-                    stats["non_photo_media"] += 1
-                log_skip("non_photo_media", msg.message or "", msg.id)
-                continue
-            if not msg.message:
-                if debug_fetch:
-                    stats["no_text"] += 1
-                log_skip("no_text", "", msg.id)
-                continue
-            parsed = parse_message(msg.message)
-            if not parsed.get("name"):
-                if debug_fetch:
-                    stats["missing_name"] += 1
-                log_skip("missing_name", msg.message, msg.id)
-                continue
-            if not parsed.get("price"):
-                if debug_fetch:
-                    stats["missing_price"] += 1
-                log_skip("missing_price", msg.message, msg.id)
-                continue
-            if not parsed.get("size"):
-                if debug_fetch:
-                    stats["missing_size"] += 1
-                log_skip("missing_size", msg.message, msg.id)
-                continue
-            if debug_fetch:
-                stats["parsed_ok"] += 1
-            if save_telegram_product(channel_id, msg.id, msg.message, parsed):
-                inserted += 1
-                if debug_fetch:
-                    stats["saved"] += 1
-            elif debug_fetch:
-                stats["duplicate"] += 1
+                    stats["parsed_ok"] += 1
+                if save_telegram_product(channel_id, msg.id, msg.message, parsed):
+                    inserted += 1
+                    if debug_fetch:
+                        stats["saved"] += 1
+                elif debug_fetch:
+                    stats["duplicate"] += 1
     if debug_fetch:
         print(
             "[DEBUG] fetch stats: "
@@ -682,29 +743,94 @@ async def _fetch_messages(message_amount: int = 200) -> int:
     return inserted
 
 
-async def _download_message_photos(message_id: int, target_dir: Path) -> int:
+async def _collect_group_messages(
+    client: TelegramClient,
+    channel_id: int,
+    message_id: int,
+    grouped_id: int,
+) -> list:
+    min_id = max(1, message_id - 50)
+    max_id = message_id + 50
+    messages: list = []
+    async for msg in client.iter_messages(channel_id, min_id=min_id, max_id=max_id):
+        if msg.grouped_id == grouped_id and isinstance(msg.media, MessageMediaPhoto):
+            messages.append(msg)
+    return messages
+
+
+async def _collect_discussion_photos(
+    client: TelegramClient,
+    channel_id: int,
+    message_id: int,
+) -> list:
+    alias = _get_channel_alias(channel_id)
+    if "extra_photos" not in alias:
+        return []
+    try:
+        result = await client(GetDiscussionMessageRequest(peer=channel_id, msg_id=message_id))
+    except RPCError:
+        return []
+    if not result.messages:
+        return []
+    root = result.messages[0]
+    discussion_chat_id = getattr(root, "chat_id", None)
+    if not discussion_chat_id:
+        return []
+    messages: list = []
+    grouped_seen: set[int] = set()
+    async for reply in client.iter_messages(discussion_chat_id, reply_to=root.id):
+        if not isinstance(reply.media, MessageMediaPhoto):
+            continue
+        if reply.grouped_id:
+            if reply.grouped_id in grouped_seen:
+                continue
+            grouped_seen.add(reply.grouped_id)
+            grouped = await _collect_group_messages(
+                client,
+                discussion_chat_id,
+                reply.id,
+                reply.grouped_id,
+            )
+            if grouped:
+                messages.extend(grouped)
+                continue
+        messages.append(reply)
+    return messages
+
+
+async def _download_message_photos(
+    channel_id: int,
+    message_id: int,
+    target_dir: Path,
+) -> int:
     async with TelegramClient("session", api_id, api_hash) as client:
+        await _sync_channel_titles(client, _get_channel_ids())
         message = await client.get_messages(channel_id, ids=message_id)
         if not message or not isinstance(message.media, MessageMediaPhoto):
             return 0
         messages = [message]
         if message.grouped_id:
-            group_id = message.grouped_id
-            min_id = max(1, message_id - 50)
-            max_id = message_id + 50
-            messages = []
-            async for msg in client.iter_messages(channel_id, min_id=min_id, max_id=max_id):
-                if msg.grouped_id == group_id and isinstance(msg.media, MessageMediaPhoto):
-                    messages.append(msg)
+            grouped = await _collect_group_messages(
+                client,
+                channel_id,
+                message_id,
+                message.grouped_id,
+            )
+            messages = grouped or [message]
             if not messages:
                 messages = [message]
+        extra = await _collect_discussion_photos(client, channel_id, message_id)
+        if extra:
+            messages.extend(extra)
         target_dir.mkdir(parents=True, exist_ok=True)
         downloaded = 0
-        seen: set[int] = set()
+        seen: set[tuple[int, int]] = set()
         for msg in messages:
-            if msg.id in seen:
+            chat_id = getattr(msg, "chat_id", channel_id)
+            key = (int(chat_id), msg.id)
+            if key in seen:
                 continue
-            seen.add(msg.id)
+            seen.add(key)
             result = await client.download_media(msg, file=str(target_dir))
             if result:
                 downloaded += 1
@@ -820,25 +946,41 @@ def _build_product_raw_data(parsed: dict) -> dict:
     return product_raw_data
 
 
-def get_next_product_for_upload(message_amount: int = 200) -> Optional[dict]:
+def get_next_product_for_upload(message_amount: int = 50) -> Optional[dict]:
     asyncio.run(_fetch_messages(message_amount=message_amount))
-    row = get_next_uncreated_telegram_product(channel_id)
-    if not row:
+    rows = [
+        row
+        for channel_id in _get_channel_ids()
+        for row in [get_next_uncreated_telegram_product(channel_id)]
+        if row
+    ]
+    if not rows:
         return None
+    row = max(rows, key=lambda item: item["created_at"])
     parsed = json.loads(row["parsed_data"]) if row["parsed_data"] else {}
     return {
+        "channel_id": row["channel_id"],
         "message_id": row["message_id"],
         "product_raw_data": _build_product_raw_data(parsed),
     }
 
+def download_product_photos(
+    message_id: int,
+    target_dir: Path,
+    channel_id: Optional[int] = None,
+) -> int:
+    resolved_channel_id = channel_id if channel_id is not None else _get_channel_ids()[0]
+    return asyncio.run(_download_message_photos(resolved_channel_id, message_id, target_dir))
 
-def download_product_photos(message_id: int, target_dir: Path) -> int:
-    return asyncio.run(_download_message_photos(message_id, target_dir))
-
-def mark_product_created(message_id: int, created_product_id: Optional[str] = None) -> None:
-    mark_telegram_product_created(channel_id, message_id, created_product_id)
+def mark_product_created(
+    message_id: int,
+    created_product_id: Optional[str] = None,
+    channel_id: Optional[int] = None,
+) -> None:
+    resolved_channel_id = channel_id if channel_id is not None else _get_channel_ids()[0]
+    mark_telegram_product_created(resolved_channel_id, message_id, created_product_id)
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=200)
+    product = get_next_product_for_upload(message_amount=50)
     print(product)

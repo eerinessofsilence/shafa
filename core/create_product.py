@@ -1,11 +1,19 @@
 import json
-from models.product import Product
-from playwright.sync_api import BrowserContext
-from core.core import base_headers, read_response_json
-from data.const import CREATE_PRODUCT_MUTATION, API_URL
 
-def build_create_product_payload(photo_ids: list[str], product_raw_data: dict, markup: int) -> dict:
+from playwright.sync_api import BrowserContext
+
+from core.core import base_headers, read_response_json
+from data.const import API_URL, CREATE_PRODUCT_MUTATION
+from models.product import Product
+
+
+def build_create_product_payload(
+    photo_ids: list[str],
+    product_raw_data: dict,
+    markup: int,
+) -> dict:
     product = Product(**product_raw_data)
+    count = max(product.amount, len(product.additional_sizes) + 1)
     variables: dict = {
         "nameUk": product.name,
         "descriptionUk": product.description,
@@ -17,11 +25,11 @@ def build_create_product_payload(photo_ids: list[str], product_raw_data: dict, m
         "size": product.size,
         "additionalSizes": product.additional_sizes,
         "characteristics": product.characteristics,
-        "count": product.amount if product.amount >= len(product.additional_sizes) + 1 else len(product.additional_sizes) + 1,
+        "count": count,
         "sellingCondition": product.selling_condition,
         "price": product.price + markup,
         "keyWords": product.keywords,
-        "photosStr": photo_ids
+        "photosStr": photo_ids,
     }
 
     return {
@@ -31,7 +39,14 @@ def build_create_product_payload(photo_ids: list[str], product_raw_data: dict, m
     }
 
 
-def create_product(ctx: BrowserContext, csrftoken: str, photo_ids: list[str], product_raw_data: dict, markup: int = 400) -> dict:
+
+def create_product(
+    ctx: BrowserContext,
+    csrftoken: str,
+    photo_ids: list[str],
+    product_raw_data: dict,
+    markup: int = 400,
+) -> dict:
     payload = build_create_product_payload(photo_ids, product_raw_data, markup)
     resp = ctx.request.post(
         API_URL,
