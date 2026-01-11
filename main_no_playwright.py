@@ -1,6 +1,7 @@
 import gzip
 import json
 import os
+import re
 import uuid
 import zlib
 from pathlib import Path
@@ -151,7 +152,10 @@ def _request_json(
         text = _read_response_text(exc)
         if _debug_http_enabled():
             print(text[:preview])
-        raise RuntimeError(f"HTTP error {exc.code}") from exc
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as json_exc:
+            raise RuntimeError(f"HTTP error {exc.code}") from json_exc
     except error.URLError as exc:
         raise RuntimeError(f"Request failed: {exc.reason}") from exc
 
@@ -225,6 +229,25 @@ def _build_create_product_payload(photo_ids: list[str], product_raw_data: dict) 
     }
 
 
+def _extract_invalid_color_enums(errors: list[dict]) -> list[str]:
+    if not errors:
+        return []
+    patterns = [
+        re.compile(r"Value '([^']+)' does not exist in 'ColorEnum'"),
+        re.compile(r"got invalid value '([^']+)' at 'colors\\[\\d+\\]'"),
+    ]
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for err in errors:
+        message = str(err.get("message") or "")
+        for pattern in patterns:
+            for match in pattern.findall(message):
+                if match not in seen:
+                    seen.add(match)
+                    invalid.append(match)
+    return invalid
+
+
 def upload_photo(csrftoken: str, cookies: list[dict], file_path: Path) -> str:
     fields = {
         "operationName": "UploadPhoto",
@@ -268,15 +291,31 @@ def create_product(
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    data = _request_json(
-        API_URL,
-        json.dumps(payload).encode("utf-8"),
-        headers,
-        cookies,
-    )
+    def request(payload_data: dict) -> dict:
+        return _request_json(
+            API_URL,
+            json.dumps(payload_data).encode("utf-8"),
+            headers,
+            cookies,
+        )
 
-    if data.get("errors"):
-        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+    data = request(payload)
+    errors = data.get("errors") or []
+    if errors:
+        invalid_colors = _extract_invalid_color_enums(errors)
+        if invalid_colors:
+            colors = list(product_raw_data.get("colors") or [])
+            cleaned = [color for color in colors if color not in invalid_colors]
+            if not cleaned:
+                cleaned = ["WHITE"]
+            if cleaned != colors:
+                retry_raw = dict(product_raw_data)
+                retry_raw["colors"] = cleaned
+                retry_payload = _build_create_product_payload(photo_ids, retry_raw)
+                data = request(retry_payload)
+                errors = data.get("errors") or []
+        if errors:
+            raise RuntimeError(f"GraphQL errors: {errors}")
 
     return data.get("data", {}).get("createProduct") or {}
 
@@ -340,4 +379,21 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import bootstrap
+    import main as main_module
+    import cli
+
+    actions = [
+        ("Create product (no Playwright)", main),
+        ("Create product (Playwright)", main_module.main),
+        ("Bootstrap sizes/brands", bootstrap.main),
+        (
+            "Auto create product every N minutes (no Playwright)",
+            lambda: cli.run_periodic(main, "No Playwright"),
+        ),
+        (
+            "Auto create product every N minutes (Playwright)",
+            lambda: cli.run_periodic(main_module.main, "Playwright"),
+        ),
+    ]
+    cli.main_cli(actions)

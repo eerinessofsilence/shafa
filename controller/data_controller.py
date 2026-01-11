@@ -10,6 +10,7 @@ from telethon import TelegramClient
 from telethon.errors import RPCError
 from telethon.types import MessageMediaPhoto
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
+from telethon.utils import get_peer_id
 from data.const import (
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
@@ -772,9 +773,22 @@ async def _collect_discussion_photos(
         return []
     if not result.messages:
         return []
-    root = result.messages[0]
-    discussion_chat_id = getattr(root, "chat_id", None)
+    discussion_chat_id: Optional[int] = None
+    if result.chats:
+        discussion_chat_id = get_peer_id(result.chats[0])
+    if discussion_chat_id is None:
+        for msg in result.messages:
+            chat_id = getattr(msg, "chat_id", None)
+            if chat_id and chat_id != channel_id:
+                discussion_chat_id = chat_id
+                break
     if not discussion_chat_id:
+        return []
+    root = next(
+        (msg for msg in result.messages if getattr(msg, "chat_id", None) == discussion_chat_id),
+        None,
+    )
+    if not root:
         return []
     messages: list = []
     grouped_seen: set[int] = set()

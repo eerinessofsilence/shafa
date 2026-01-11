@@ -101,7 +101,7 @@ COLOR_NAME_TO_ENUM: dict[str, str] = {
     "pink": "PINK",
     "purple": "PURPLE",
     "beige": "BEIGE",
-    "cream": "CREAM",
+    "cream": "WHITE",
     "navy": "NAVY",
     "tan": "TAN",
     "silver": "SILVER",

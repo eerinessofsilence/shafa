@@ -1,4 +1,5 @@
 import json
+import re
 
 from playwright.sync_api import BrowserContext
 
@@ -39,6 +40,24 @@ def build_create_product_payload(
     }
 
 
+def _extract_invalid_color_enums(errors: list[dict]) -> list[str]:
+    if not errors:
+        return []
+    patterns = [
+        re.compile(r"Value '([^']+)' does not exist in 'ColorEnum'"),
+        re.compile(r"got invalid value '([^']+)' at 'colors\\[\\d+\\]'"),
+    ]
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for err in errors:
+        message = str(err.get("message") or "")
+        for pattern in patterns:
+            for match in pattern.findall(message):
+                if match not in seen:
+                    seen.add(match)
+                    invalid.append(match)
+    return invalid
+
 
 def create_product(
     ctx: BrowserContext,
@@ -59,7 +78,34 @@ def create_product(
     )
 
     data = read_response_json(resp)
-    if data.get("errors"):
-        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+    errors = data.get("errors") or []
+    if errors:
+        invalid_colors = _extract_invalid_color_enums(errors)
+        if invalid_colors:
+            colors = list(product_raw_data.get("colors") or [])
+            cleaned = [color for color in colors if color not in invalid_colors]
+            if not cleaned:
+                cleaned = ["WHITE"]
+            if cleaned != colors:
+                retry_raw = dict(product_raw_data)
+                retry_raw["colors"] = cleaned
+                retry_payload = build_create_product_payload(
+                    photo_ids,
+                    retry_raw,
+                    markup,
+                )
+                resp = ctx.request.post(
+                    API_URL,
+                    headers={
+                        **base_headers(csrftoken),
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                    data=json.dumps(retry_payload),
+                )
+                data = read_response_json(resp)
+                errors = data.get("errors") or []
+        if errors:
+            raise RuntimeError(f"GraphQL errors: {errors}")
 
     return data.get("data", {}).get("createProduct") or {}
