@@ -314,7 +314,7 @@ def create_product(
 
 def main() -> None:
     init_db()
-    product_data = get_next_product_for_upload(message_amount=10)
+    product_data = get_next_product_for_upload(message_amount=200)
     if not product_data:
         _log("INFO", "Нет новых товаров для создания.")
         return
@@ -368,7 +368,12 @@ def main() -> None:
         _log("ERROR", f"Ошибки создания товара: {errors}")
     else:
         product_id = created_product.get("id")
-        _log("OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}.")
+        product_name = product_raw_data.get("name") or created_product.get("name") or "—"
+        _log(
+            "OK",
+            "Товар создан успешно. "
+            f"Имя товара: {product_name}. ID: {product_id}. Фото: {len(photo_ids)}.",
+        )
 
 
 if __name__ == "__main__":

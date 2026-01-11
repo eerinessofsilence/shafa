@@ -57,7 +57,7 @@ def reset_media_dir(media_dir: Path) -> None:
 
 def main() -> None:
     init_db()
-    product_data = get_next_product_for_upload(message_amount=10)
+    product_data = get_next_product_for_upload(message_amount=200)
     if not product_data:
         _log("INFO", "Нет новых товаров для создания.")
         return
