@@ -10,11 +10,13 @@ from urllib import error, request
 from urllib.parse import urlparse
 
 from controller.data_controller import (
+    build_product_raw_data,
     download_product_photos,
     get_next_product_for_upload,
     mark_product_created,
 )
 from data.const import (
+    API_BATCH_URL,
     API_URL,
     APP_PLATFORM,
     APP_VERSION,
@@ -25,7 +27,7 @@ from data.const import (
     STORAGE_STATE_PATH,
     UPLOAD_PHOTO_MUTATION,
 )
-from data.db import init_db, load_cookies, save_cookies, save_uploaded_product
+from data.db import init_db, load_cookies, save_cookies, save_sizes, save_uploaded_product
 from models.product import Product
 from utils.logging import log
 from utils.media import list_media_files, reset_media_dir
@@ -165,6 +167,49 @@ def _request_json(
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError("Response is not valid JSON") from exc
+
+
+def _fetch_sizes(
+    csrftoken: str,
+    cookies: list[dict],
+    catalog_slug: str = "obuv/krossovki",
+) -> list[dict]:
+    query = (
+        "query WEB_ProductFormSizes($catalogSlug: String!) {\n"
+        "  filterSize(catalogSlug: $catalogSlug) {\n"
+        "    id\n"
+        "    primarySizeName\n"
+        "    secondarySizeName\n"
+        "    __typename\n"
+        "  }\n"
+        "}"
+    )
+    payload = [
+        {
+            "operationName": "WEB_ProductFormSizes",
+            "variables": {"catalogSlug": catalog_slug},
+            "query": query,
+        }
+    ]
+    headers = {
+        **_base_headers(csrftoken),
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "batch": "true",
+    }
+    data = _request_json(
+        API_BATCH_URL,
+        json.dumps(payload).encode("utf-8"),
+        headers,
+        cookies,
+    )
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if data.get("errors"):
+        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+    sizes = data.get("data", {}).get("filterSize") or []
+    save_sizes(sizes)
+    return sizes
 
 
 def _encode_multipart(
@@ -328,15 +373,10 @@ def main() -> None:
         return
     channel_id = product_data.get("channel_id")
     product_raw_data = product_data["product_raw_data"]
+    parsed_data = product_data.get("parsed_data") or {}
     message_id = product_data["message_id"]
-
-    media_dir = Path(MEDIA_DIR_PATH)
-    reset_media_dir(media_dir)
-    downloaded = download_product_photos(message_id, media_dir, channel_id=channel_id)
-    if downloaded == 0:
-        log("WARN", f"Не нашёл фото для message_id={message_id} в Telegram.")
-    else:
-        log("INFO", f"Скачано фото: {downloaded}.")
+    product_name = parsed_data.get("name") or product_raw_data.get("name") or "—"
+    log("INFO", f"Товар для создания: {product_name}.")
 
     cookies = _load_shafa_cookies()
     if not cookies:
@@ -345,6 +385,27 @@ def main() -> None:
     csrftoken = _get_csrftoken_from_cookies(cookies)
     if not csrftoken:
         raise RuntimeError("Не нашёл csrftoken в cookies")
+
+    if product_raw_data.get("size") is None:
+        log("WARN", "Размер не определён. Обновляю список размеров...")
+        try:
+            _fetch_sizes(csrftoken, cookies)
+        except Exception as exc:
+            log("ERROR", f"Не удалось обновить размеры: {exc}")
+            return
+        if parsed_data:
+            product_raw_data = build_product_raw_data(parsed_data)
+        if product_raw_data.get("size") is None:
+            log("ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands.")
+            return
+
+    media_dir = Path(MEDIA_DIR_PATH)
+    reset_media_dir(media_dir)
+    downloaded = download_product_photos(message_id, media_dir, channel_id=channel_id)
+    if downloaded == 0:
+        log("WARN", f"Не нашёл фото для message_id={message_id} в Telegram.")
+    else:
+        log("INFO", f"Скачано фото: {downloaded}.")
 
     photo_ids: list[str] = []
     photo_paths = list_media_files(media_dir)
@@ -358,6 +419,10 @@ def main() -> None:
 
     log("INFO", "Создаю товар...")
     result = create_product(csrftoken, cookies, photo_ids, product_raw_data)
+    errors = result.get("errors") or []
+    if errors:
+        log("ERROR", f"Ошибки создания товара: {errors}")
+        return
     created_product = result.get("createdProduct") or {}
     save_uploaded_product(
         product_id=created_product.get("id"),
@@ -365,35 +430,14 @@ def main() -> None:
         photo_ids=photo_ids,
     )
     mark_product_created(message_id, created_product.get("id"), channel_id=channel_id)
-    errors = result.get("errors") or []
-    if errors:
-        log("ERROR", f"Ошибки создания товара: {errors}")
-    else:
-        product_id = created_product.get("id")
-        product_name = product_raw_data.get("name") or created_product.get("name") or "—"
-        log(
-            "OK",
-            "Товар создан успешно. "
-            f"Имя товара: {product_name}. ID: {product_id}. Фото: {len(photo_ids)}.",
-        )
+    product_id = created_product.get("id")
+    product_name = product_raw_data.get("name") or created_product.get("name") or "—"
+    log(
+        "OK",
+        "Товар создан успешно. "
+        f"Имя товара: {product_name}. ID: {product_id}. Фото: {len(photo_ids)}.",
+    )
 
 
 if __name__ == "__main__":
-    import bootstrap
-    import main as main_module
-    import cli
-
-    actions = [
-        ("Create product (no Playwright)", main),
-        ("Create product (Playwright)", main_module.main),
-        ("Bootstrap sizes/brands", bootstrap.main),
-        (
-            "Auto create product every N minutes (no Playwright)",
-            lambda: cli.run_periodic(main, "No Playwright"),
-        ),
-        (
-            "Auto create product every N minutes (Playwright)",
-            lambda: cli.run_periodic(main_module.main, "Playwright"),
-        ),
-    ]
-    cli.main_cli(actions)
+    main()

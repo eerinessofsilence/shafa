@@ -195,6 +195,21 @@ def get_size_id_by_name(primary_size_name: str) -> Optional[int]:
     return row["id"] if row else None
 
 
+def size_id_exists(size_id: int) -> bool:
+    init_db()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM sizes
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (size_id,),
+        ).fetchone()
+    return bool(row)
+
+
 def get_brand_id_by_name(brand_name: str) -> Optional[int]:
     name = str(brand_name).strip()
     if not name:

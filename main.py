@@ -26,7 +26,14 @@ def main() -> None:
         return
     channel_id = product_data.get("channel_id")
     product_raw_data = product_data["product_raw_data"]
+    parsed_data = product_data.get("parsed_data") or {}
     message_id = product_data["message_id"]
+    product_name = parsed_data.get("name") or product_raw_data.get("name") or "—"
+    log("INFO", f"Товар для создания: {product_name}.")
+
+    if product_raw_data.get("size") is None:
+        log("ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands.")
+        return
 
     media_dir = Path(MEDIA_DIR_PATH)
     reset_media_dir(media_dir)
@@ -69,6 +76,10 @@ def main() -> None:
 
             log("INFO", "Создаю товар...")
             result = create_product(ctx, csrftoken, photo_ids, product_raw_data)
+            errors = result.get("errors") or []
+            if errors:
+                log("ERROR", f"Ошибки создания товара: {errors}")
+                return
             created_product = result.get("createdProduct") or {}
             save_uploaded_product(
                 product_id=created_product.get("id"),
@@ -80,12 +91,8 @@ def main() -> None:
                 created_product.get("id"),
                 channel_id=channel_id,
             )
-            errors = result.get("errors") or []
-            if errors:
-                log("ERROR", f"Ошибки создания товара: {errors}")
-            else:
-                product_id = created_product.get("id")
-                log("OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}.")
+            product_id = created_product.get("id")
+            log("OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}.")
         finally:
             browser.close()
 

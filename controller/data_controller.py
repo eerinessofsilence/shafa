@@ -26,6 +26,7 @@ from data.db import (
     mark_telegram_product_created,
     save_telegram_channels,
     save_telegram_product,
+    size_id_exists,
 )
 
 api_id = TELEGRAM_API_ID
@@ -901,7 +902,7 @@ def _resolve_size_id(value: Optional[str]) -> Optional[int]:
     if value is None:
         return None
     if isinstance(value, int):
-        return value
+        return value if size_id_exists(value) else None
     text = str(value).strip()
     if not text:
         return None
@@ -912,7 +913,10 @@ def _resolve_size_id(value: Optional[str]) -> Optional[int]:
         size_id = get_size_id_by_name(text.replace(".", ","))
     if size_id is not None:
         return size_id
-    return _parse_int(text)
+    parsed = _parse_int(text)
+    if parsed is None:
+        return None
+    return parsed if size_id_exists(parsed) else None
 
 
 def _normalize_colors(color_raw: Optional[str]) -> list[str]:
@@ -960,6 +964,10 @@ def _build_product_raw_data(parsed: dict) -> dict:
     return product_raw_data
 
 
+def build_product_raw_data(parsed: dict) -> dict:
+    return _build_product_raw_data(parsed)
+
+
 def get_next_product_for_upload(message_amount: int = 50) -> Optional[dict]:
     asyncio.run(_fetch_messages(message_amount=message_amount))
     rows = [
@@ -975,6 +983,7 @@ def get_next_product_for_upload(message_amount: int = 50) -> Optional[dict]:
     return {
         "channel_id": row["channel_id"],
         "message_id": row["message_id"],
+        "parsed_data": parsed,
         "product_raw_data": _build_product_raw_data(parsed),
     }
 
