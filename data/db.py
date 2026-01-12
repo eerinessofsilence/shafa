@@ -127,6 +127,29 @@ def save_uploaded_product(
         )
 
 
+def list_uploaded_products(limit: int = 20) -> list[dict]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT product_id, name, created_at
+            FROM uploaded_products
+            WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "product_id": row["product_id"],
+            "name": row["name"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
 def save_sizes(sizes: list[dict]) -> None:
     if not sizes:
         return

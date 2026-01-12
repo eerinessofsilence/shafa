@@ -152,6 +152,20 @@ def _bootstrap_project() -> None:
     bootstrap.main()
 
 
+def _print_products(limit: int = 20) -> None:
+    from data.db import list_uploaded_products
+
+    products = list_uploaded_products(limit=limit)
+    if not products:
+        print("No products found.")
+        return
+    print("Products:")
+    for row in products:
+        name = row.get("name") or "N/A"
+        product_id = row.get("product_id") or "N/A"
+        print(f"{name} | {product_id}")
+
+
 def _add_telegram_channel() -> None:
     from data.db import save_telegram_channels
 
@@ -186,8 +200,62 @@ def _list_telegram_channels() -> None:
         print(f"{idx}. {row['channel_id']} | {row['name']} | {alias}")
 
 
+def _deactivate_product() -> None:
+    from core import deactivate_product
+
+    _print_products()
+    raw = input("Product id(s) to deactivate: ").strip()
+    if not raw or raw.lower() in {"q", "quit"}:
+        return
+    product_ids = deactivate_product.parse_product_ids(raw)
+    if not product_ids:
+        print("No valid product ids provided.")
+        return
+    result = deactivate_product.deactivate_products(product_ids)
+    if not result:
+        return
+    errors = result.get("errors") or []
+    if errors:
+        print(f"Deactivation errors: {errors}")
+        return
+    if result.get("isSuccess"):
+        print(f"Deactivated {len(product_ids)} product(s).")
+        return
+    print("Deactivation failed.")
+
+
+def _product_management_menu() -> None:
+    labels = [
+        "Create Product",
+        "Auto create product",
+        "Deactivate product",
+        "List of products",
+    ]
+    while True:
+        _print_menu(labels, title="Product management:", quit_label="q. Back")
+        try:
+            choice = _read_choice(len(labels))
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice is None:
+            return
+        if choice == -1:
+            print("Invalid choice.")
+            continue
+        if choice == 1:
+            _create_product()
+        elif choice == 2:
+            _auto_create_product()
+        elif choice == 3:
+            _deactivate_product()
+        elif choice == 4:
+            _print_products()
+
+
 def _settings_menu() -> None:
     labels = [
+        "Bootstrap project",
         "Add Telegram channel",
         "List Telegram channels",
     ]
@@ -204,8 +272,10 @@ def _settings_menu() -> None:
             print("Invalid choice.")
             continue
         if choice == 1:
-            _add_telegram_channel()
+            _bootstrap_project()
         elif choice == 2:
+            _add_telegram_channel()
+        elif choice == 3:
             _list_telegram_channels()
 
 
@@ -233,9 +303,7 @@ def main_cli(actions: Optional[list[tuple[str, Callable[[], None]]]] = None) -> 
         return
 
     labels = [
-        "Create product",
-        "Bootstrap project",
-        "Auto create product",
+        "Product management",
         "Settings",
     ]
     while True:
@@ -251,12 +319,8 @@ def main_cli(actions: Optional[list[tuple[str, Callable[[], None]]]] = None) -> 
             print("Invalid choice.")
             continue
         if choice == 1:
-            _create_product()
+            _product_management_menu()
         elif choice == 2:
-            _bootstrap_project()
-        elif choice == 3:
-            _auto_create_product()
-        elif choice == 4:
             _settings_menu()
 
 
