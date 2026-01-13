@@ -21,6 +21,7 @@ from data.const import (
     APP_PLATFORM,
     APP_VERSION,
     CREATE_PRODUCT_MUTATION,
+    DEFAULT_MARKUP,
     MEDIA_DIR_PATH,
     ORIGIN_URL,
     REFERER_URL,
@@ -243,7 +244,11 @@ def _encode_multipart(
     return b"\r\n".join(body_parts), boundary
 
 
-def _build_create_product_payload(photo_ids: list[str], product_raw_data: dict) -> dict:
+def _build_create_product_payload(
+    photo_ids: list[str],
+    product_raw_data: dict,
+    markup: int = DEFAULT_MARKUP,
+) -> dict:
     product = Product(**product_raw_data)
     variables: dict = {
         "nameUk": product.name,
@@ -262,7 +267,7 @@ def _build_create_product_payload(photo_ids: list[str], product_raw_data: dict) 
             else len(product.additional_sizes) + 1
         ),
         "sellingCondition": product.selling_condition,
-        "price": product.price,
+        "price": product.price + markup,
         "keyWords": product.keywords,
         "photosStr": photo_ids,
     }
@@ -329,8 +334,9 @@ def create_product(
     cookies: list[dict],
     photo_ids: list[str],
     product_raw_data: dict,
+    markup: int = DEFAULT_MARKUP,
 ) -> dict:
-    payload = _build_create_product_payload(photo_ids, product_raw_data)
+    payload = _build_create_product_payload(photo_ids, product_raw_data, markup)
     headers = {
         **_base_headers(csrftoken),
         "Accept": "application/json",
@@ -356,7 +362,7 @@ def create_product(
             if cleaned != colors:
                 retry_raw = dict(product_raw_data)
                 retry_raw["colors"] = cleaned
-                retry_payload = _build_create_product_payload(photo_ids, retry_raw)
+                retry_payload = _build_create_product_payload(photo_ids, retry_raw, markup)
                 data = request(retry_payload)
                 errors = data.get("errors") or []
         if errors:
@@ -398,6 +404,16 @@ def main() -> None:
         if product_raw_data.get("size") is None:
             log("ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands.")
             return
+    price_value = product_raw_data.get("price")
+    if price_value is None or price_value <= 0:
+        log(
+            "ERROR",
+            f"Некорректная цена: {price_value}. Parsed price: {parsed_data.get('price')!r}.",
+        )
+        return
+    price_with_markup = price_value + DEFAULT_MARKUP
+    log("INFO", f"Цена товара (база): {price_value}.")
+    log("INFO", f"Цена товара (с наценкой {DEFAULT_MARKUP}): {price_with_markup}.")
 
     media_dir = Path(MEDIA_DIR_PATH)
     reset_media_dir(media_dir)
@@ -418,7 +434,7 @@ def main() -> None:
         log("OK", f"Фото загружено: id={photo_id}")
 
     log("INFO", "Создаю товар...")
-    result = create_product(csrftoken, cookies, photo_ids, product_raw_data)
+    result = create_product(csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP)
     errors = result.get("errors") or []
     if errors:
         log("ERROR", f"Ошибки создания товара: {errors}")

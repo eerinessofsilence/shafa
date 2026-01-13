@@ -8,7 +8,12 @@ from typing import Optional
 
 from telethon import TelegramClient
 from telethon.errors import RPCError
-from telethon.types import MessageMediaPhoto
+from telethon.types import (
+    DocumentAttributeAnimated,
+    DocumentAttributeSticker,
+    MessageMediaDocument,
+    MessageMediaPhoto,
+)
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from telethon.utils import get_peer_id
 from data.const import (
@@ -22,6 +27,7 @@ from data.db import (
     get_brand_id_by_name,
     get_next_uncreated_telegram_product,
     get_size_id_by_name,
+    list_brand_names,
     load_telegram_channels,
     mark_telegram_product_created,
     save_telegram_channels,
@@ -48,6 +54,7 @@ DEFAULT_DESCRIPTION = (
        45 (29. 0 см)
        Представляємо втілення комфорту, стилю та універсальності: наші чудові кросівки. Це взуття є втіленням сучасного взуття, яке підходить для будь-якого випадку, одягу та способу життя. Створені з прискіпливою увагою до деталей, наші кросівки розроблені, щоб забезпечити виняткове поєднання моди та функціональності."""
 )
+MAX_DOWNLOAD_PHOTOS = 10
 
 _PRICE_HINTS = (
     "цена",
@@ -77,6 +84,57 @@ _SIZE_HINTS = (
 _NAME_LABELS = ("назва", "name", "модель", "model")
 _BRAND_LABELS = ("бренд", "brand")
 _COLOR_LABELS = ("колір", "цвет", "color")
+_GENERIC_NAME_TOKENS = {
+    "чоловічі",
+    "чоловічий",
+    "жіночі",
+    "жіночий",
+    "мужские",
+    "мужской",
+    "женские",
+    "женский",
+    "дитячі",
+    "дитячий",
+    "детские",
+    "детский",
+    "підліткові",
+    "подростковые",
+    "unisex",
+    "унісекс",
+    "унисекс",
+    "kids",
+    "kid",
+    "junior",
+    "youth",
+    "boy",
+    "boys",
+    "girl",
+    "girls",
+    "кросівки",
+    "кросівка",
+    "кросівок",
+    "кроси",
+    "кросовки",
+    "кроссовки",
+    "кеди",
+    "кеды",
+    "кед",
+    "ботинки",
+    "ботінки",
+    "ботінок",
+    "черевики",
+    "boots",
+    "boot",
+    "sneaker",
+    "sneakers",
+    "trainer",
+    "trainers",
+    "shoe",
+    "shoes",
+    "running",
+    "взуття",
+    "обувь",
+}
 _CONTACT_HINTS = (
     "тел",
     "телефон",
@@ -136,6 +194,7 @@ _PRICE_EXCLUDE_HINTS = (
     "каталог",
     "catalog",
 )
+_BRAND_PATTERNS: Optional[list[tuple[str, re.Pattern]]] = None
 _SIZE_EXCLUDE_HINTS = (
     "артикул",
     "код",
@@ -261,6 +320,29 @@ def _debug_fetch_verbose() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _is_image_document(document) -> bool:
+    if not document:
+        return False
+    mime_type = getattr(document, "mime_type", "") or ""
+    if not mime_type.startswith("image/"):
+        return False
+    attributes = getattr(document, "attributes", None) or []
+    for attr in attributes:
+        if isinstance(attr, (DocumentAttributeSticker, DocumentAttributeAnimated)):
+            return False
+    return True
+
+
+def _is_photo_message(message) -> bool:
+    if not message or not getattr(message, "media", None):
+        return False
+    if isinstance(message.media, MessageMediaPhoto):
+        return True
+    if isinstance(message.media, MessageMediaDocument):
+        return _is_image_document(getattr(message, "document", None))
+    return False
+
+
 def _get_channel_ids() -> list[int]:
     raw = os.getenv("SHAFA_CHANNEL_IDS", "").strip()
     if not raw:
@@ -354,7 +436,33 @@ def _clean_name(value: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    stripped = _strip_name_prefix(text)
+    if stripped:
+        text = stripped
     return text.strip()
+
+
+def _normalize_token(token: str) -> str:
+    return re.sub(r"[^\w]+", "", token, flags=re.UNICODE).casefold()
+
+
+def _strip_name_prefix(text: str) -> str:
+    tokens = text.split()
+    if not tokens:
+        return text
+    idx = 0
+    for token in tokens:
+        normalized = _normalize_token(token)
+        if not normalized:
+            idx += 1
+            continue
+        if normalized in _GENERIC_NAME_TOKENS:
+            idx += 1
+            continue
+        break
+    if idx > 0 and idx < len(tokens):
+        return " ".join(tokens[idx:])
+    return text
 
 
 def _looks_like_name(line: str) -> bool:
@@ -446,25 +554,43 @@ def _to_number(value: str) -> Optional[float]:
         return None
 
 
-def _price_from_line(line: str, *, allow_small: bool, require_currency: bool = False) -> str:
-    compact = re.sub(r"(?<=\d)[\s\u00A0]+(?=\d)", "", line)
-    currency_matches = re.findall(
-        r"(?<!\d)(\d{2,6}(?:[.,]\d{1,2})?)\s*(?:грн|uah|₴|usd|eur|руб)\b",
-        compact,
-        flags=re.IGNORECASE,
-    )
-    if currency_matches:
-        return _normalize_number(currency_matches[-1])
-    if require_currency:
-        return ""
-    numbers = re.findall(r"\d{2,6}(?:[.,]\d{1,2})?", compact)
-    for token in reversed(numbers):
+def _extract_last_price_token(text: str, *, allow_small: bool) -> str:
+    for token in reversed(
+        re.findall(
+            r"(?<!\d)\d{1,3}(?:[ \u00A0]\d{3})+(?:[.,]\d{1,2})?(?!\d)",
+            text,
+        )
+    ):
+        normalized = _normalize_number(token)
+        numeric = _to_number(normalized)
+        if numeric is None:
+            continue
+        if allow_small or numeric >= 100:
+            return normalized
+    for token in reversed(
+        re.findall(r"(?<!\d)\d{2,6}(?:[.,]\d{1,2})?(?!\d)", text)
+    ):
         numeric = _to_number(token)
         if numeric is None:
             continue
         if allow_small or numeric >= 100:
             return _normalize_number(token)
     return ""
+
+
+def _price_from_line(line: str, *, allow_small: bool, require_currency: bool = False) -> str:
+    currency_match = None
+    for match in re.finditer(r"(?:грн|uah|₴|usd|eur|руб)\b", line, flags=re.IGNORECASE):
+        currency_match = match
+    if currency_match:
+        token = _extract_last_price_token(line[: currency_match.start()], allow_small=allow_small)
+        if token:
+            return token
+        if require_currency:
+            return ""
+    if require_currency:
+        return ""
+    return _extract_last_price_token(line, allow_small=allow_small)
 
 
 def extract_price(lines: list[str]) -> str:
@@ -554,18 +680,61 @@ def _extract_size_tokens_from_line(line: str) -> list[str]:
 
 def extract_sizes(lines: list[str]) -> tuple[str, list[str]]:
     sizes: list[str] = []
+    hinted_lines: list[str] = []
+    fallback_lines: list[str] = []
     for line in lines:
         lower = line.casefold()
         if _contains_any(lower, _PRICE_HINTS) and not _contains_any(lower, _SIZE_HINTS):
             continue
         if not _contains_any(lower, _SIZE_HINTS) and _contains_any(lower, _SIZE_EXCLUDE_HINTS):
             continue
+        if _contains_any(lower, _SIZE_HINTS):
+            hinted_lines.append(line)
+        else:
+            fallback_lines.append(line)
+
+    candidates = hinted_lines or fallback_lines
+    for line in candidates:
         for token in _extract_size_tokens_from_line(line):
             if token not in sizes:
                 sizes.append(token)
     size = sizes[0] if sizes else ""
     additional_sizes = sizes[1:] if len(sizes) > 1 else []
     return size, additional_sizes
+
+
+def _load_brand_patterns() -> list[tuple[str, re.Pattern]]:
+    global _BRAND_PATTERNS
+    if _BRAND_PATTERNS is not None:
+        return _BRAND_PATTERNS
+    names = [name.strip() for name in list_brand_names() if str(name).strip()]
+    names.sort(key=len, reverse=True)
+    patterns: list[tuple[str, re.Pattern]] = []
+    for name in names:
+        escaped = re.escape(name)
+        patterns.append((name, re.compile(rf"(?i)(?<!\w){escaped}(?!\w)")))
+    _BRAND_PATTERNS = patterns
+    return patterns
+
+
+def _find_brand_in_text(text: str) -> str:
+    if not text:
+        return ""
+    for name, pattern in _load_brand_patterns():
+        if pattern.search(text):
+            return name
+    return ""
+
+
+def _fallback_brand_from_name(name: str) -> str:
+    if not name:
+        return ""
+    for token in name.split():
+        normalized = _normalize_token(token)
+        if not normalized or normalized in _GENERIC_NAME_TOKENS:
+            continue
+        return token.strip(".,;:()[]{}")
+    return name.split()[0] if name else ""
 
 
 def extract_brand(lines: list[str], name: str) -> str:
@@ -577,8 +746,18 @@ def extract_brand(lines: list[str], name: str) -> str:
             value = match.group(1)
             value = re.split(r"[|,/]", value)[0].strip()
             if value:
-                return value
-    return name.split()[0] if name else ""
+                normalized = _normalize_token(value)
+                if normalized and normalized not in _GENERIC_NAME_TOKENS:
+                    return value
+    cleaned_name = _strip_name_prefix(name)
+    brand = _find_brand_in_text(cleaned_name)
+    if brand:
+        return brand
+    for line in lines:
+        brand = _find_brand_in_text(line)
+        if brand:
+            return brand
+    return _fallback_brand_from_name(cleaned_name or name)
 
 
 def extract_colors(lines: list[str], name: str) -> str:
@@ -694,7 +873,7 @@ async def _fetch_messages(message_amount: int = 50) -> int:
                         stats["no_media"] += 1
                     log_skip("no_media", msg.message or "", msg.id, channel_id)
                     continue
-                if not isinstance(msg.media, MessageMediaPhoto):
+                if not _is_photo_message(msg):
                     if debug_fetch:
                         stats["non_photo_media"] += 1
                     log_skip("non_photo_media", msg.message or "", msg.id, channel_id)
@@ -755,7 +934,7 @@ async def _collect_group_messages(
     max_id = message_id + 50
     messages: list = []
     async for msg in client.iter_messages(channel_id, min_id=min_id, max_id=max_id):
-        if msg.grouped_id == grouped_id and isinstance(msg.media, MessageMediaPhoto):
+        if msg.grouped_id == grouped_id and _is_photo_message(msg):
             messages.append(msg)
     return messages
 
@@ -775,12 +954,15 @@ async def _collect_discussion_photos(
     if not result.messages:
         return []
     discussion_chat_id: Optional[int] = None
-    if result.chats:
-        discussion_chat_id = get_peer_id(result.chats[0])
+    for msg in result.messages:
+        chat_id = getattr(msg, "chat_id", None)
+        if chat_id and chat_id != channel_id:
+            discussion_chat_id = chat_id
+            break
     if discussion_chat_id is None:
-        for msg in result.messages:
-            chat_id = getattr(msg, "chat_id", None)
-            if chat_id and chat_id != channel_id:
+        for chat in result.chats:
+            chat_id = get_peer_id(chat)
+            if chat_id != channel_id:
                 discussion_chat_id = chat_id
                 break
     if not discussion_chat_id:
@@ -793,12 +975,13 @@ async def _collect_discussion_photos(
         return []
     messages: list = []
     grouped_seen: set[int] = set()
-    async for reply in client.iter_messages(discussion_chat_id, reply_to=root.id):
-        if not isinstance(reply.media, MessageMediaPhoto):
-            continue
+
+    async def add_reply(reply) -> None:
+        if not _is_photo_message(reply):
+            return
         if reply.grouped_id:
             if reply.grouped_id in grouped_seen:
-                continue
+                return
             grouped_seen.add(reply.grouped_id)
             grouped = await _collect_group_messages(
                 client,
@@ -808,8 +991,26 @@ async def _collect_discussion_photos(
             )
             if grouped:
                 messages.extend(grouped)
-                continue
+                return
         messages.append(reply)
+
+    seen_any_reply = False
+    async for reply in client.iter_messages(discussion_chat_id, reply_to=root.id):
+        seen_any_reply = True
+        await add_reply(reply)
+    if seen_any_reply:
+        return messages
+
+    fallback_limit = 200
+    async for reply in client.iter_messages(discussion_chat_id, limit=fallback_limit):
+        header = getattr(reply, "reply_to", None)
+        if not header:
+            continue
+        top_id = getattr(header, "reply_to_top_id", None)
+        msg_id = getattr(header, "reply_to_msg_id", None)
+        if top_id != root.id and msg_id != root.id:
+            continue
+        await add_reply(reply)
     return messages
 
 
@@ -817,11 +1018,12 @@ async def _download_message_photos(
     channel_id: int,
     message_id: int,
     target_dir: Path,
+    max_photos: int,
 ) -> int:
     async with TelegramClient("session", api_id, api_hash) as client:
         await _sync_channel_titles(client, _get_channel_ids())
         message = await client.get_messages(channel_id, ids=message_id)
-        if not message or not isinstance(message.media, MessageMediaPhoto):
+        if not message or not _is_photo_message(message):
             return 0
         messages = [message]
         if message.grouped_id:
@@ -849,6 +1051,8 @@ async def _download_message_photos(
             result = await client.download_media(msg, file=str(target_dir))
             if result:
                 downloaded += 1
+                if max_photos > 0 and downloaded >= max_photos:
+                    break
         return downloaded
 
 
@@ -980,6 +1184,10 @@ def get_next_product_for_upload(message_amount: int = 50) -> Optional[dict]:
         return None
     row = max(rows, key=lambda item: item["created_at"])
     parsed = json.loads(row["parsed_data"]) if row["parsed_data"] else {}
+    raw_message = row["raw_message"] or ""
+    reparsed = parse_message(raw_message) if raw_message else {}
+    if reparsed.get("price") and reparsed.get("size"):
+        parsed = reparsed
     return {
         "channel_id": row["channel_id"],
         "message_id": row["message_id"],
@@ -991,9 +1199,17 @@ def download_product_photos(
     message_id: int,
     target_dir: Path,
     channel_id: Optional[int] = None,
+    max_photos: int = MAX_DOWNLOAD_PHOTOS,
 ) -> int:
     resolved_channel_id = channel_id if channel_id is not None else _get_channel_ids()[0]
-    return asyncio.run(_download_message_photos(resolved_channel_id, message_id, target_dir))
+    return asyncio.run(
+        _download_message_photos(
+            resolved_channel_id,
+            message_id,
+            target_dir,
+            max_photos,
+        )
+    )
 
 def mark_product_created(
     message_id: int,

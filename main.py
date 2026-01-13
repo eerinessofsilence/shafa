@@ -12,7 +12,13 @@ from core.context import new_context_with_storage
 from core.core import get_csrftoken_from_context
 from core.create_product import create_product
 from core.upload_photo import upload_photo
-from data.const import HEADLESS, MEDIA_DIR_PATH, REFERER_URL, STORAGE_STATE_PATH
+from data.const import (
+    DEFAULT_MARKUP,
+    HEADLESS,
+    MEDIA_DIR_PATH,
+    REFERER_URL,
+    STORAGE_STATE_PATH,
+)
 from data.db import init_db, save_cookies, save_uploaded_product
 from utils.logging import log
 from utils.media import list_media_files, reset_media_dir
@@ -34,6 +40,16 @@ def main() -> None:
     if product_raw_data.get("size") is None:
         log("ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands.")
         return
+    price_value = product_raw_data.get("price")
+    if price_value is None or price_value <= 0:
+        log(
+            "ERROR",
+            f"Некорректная цена: {price_value}. Parsed price: {parsed_data.get('price')!r}.",
+        )
+        return
+    price_with_markup = price_value + DEFAULT_MARKUP
+    log("INFO", f"Цена товара (база): {price_value}.")
+    log("INFO", f"Цена товара (с наценкой {DEFAULT_MARKUP}): {price_with_markup}.")
 
     media_dir = Path(MEDIA_DIR_PATH)
     reset_media_dir(media_dir)
@@ -75,7 +91,13 @@ def main() -> None:
                 log("OK", f"Фото загружено: id={photo_id}")
 
             log("INFO", "Создаю товар...")
-            result = create_product(ctx, csrftoken, photo_ids, product_raw_data)
+            result = create_product(
+                ctx,
+                csrftoken,
+                photo_ids,
+                product_raw_data,
+                markup=DEFAULT_MARKUP,
+            )
             errors = result.get("errors") or []
             if errors:
                 log("ERROR", f"Ошибки создания товара: {errors}")

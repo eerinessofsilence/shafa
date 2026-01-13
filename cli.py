@@ -1,3 +1,4 @@
+import re
 import sys
 import time
 from typing import Callable, Optional
@@ -152,18 +153,35 @@ def _bootstrap_project() -> None:
     bootstrap.main()
 
 
-def _print_products(limit: int = 20) -> None:
+def _print_products(limit: int = 20) -> list[dict]:
     from data.db import list_uploaded_products
 
     products = list_uploaded_products(limit=limit)
     if not products:
         print("No products found.")
-        return
+        return []
     print("Products:")
-    for row in products:
+    for idx, row in enumerate(products, start=1):
         name = row.get("name") or "N/A"
         product_id = row.get("product_id") or "N/A"
-        print(f"{name} | {product_id}")
+        print(f"{idx}. {name} | {product_id}")
+    return products
+
+
+def _parse_index_selection(value: str, count: int) -> list[int]:
+    tokens = re.findall(r"\d+", value)
+    if not tokens:
+        return []
+    indexes: list[int] = []
+    seen: set[int] = set()
+    for token in tokens:
+        idx = int(token)
+        if not (1 <= idx <= count):
+            return []
+        if idx not in seen:
+            seen.add(idx)
+            indexes.append(idx)
+    return indexes
 
 
 def _add_telegram_channel() -> None:
@@ -203,11 +221,24 @@ def _list_telegram_channels() -> None:
 def _deactivate_product() -> None:
     from core import deactivate_product
 
-    _print_products()
-    raw = input("Product id(s) to deactivate: ").strip()
+    products = _print_products()
+    if not products:
+        return
+    raw = input("Select product number(s) to deactivate: ").strip()
     if not raw or raw.lower() in {"q", "quit"}:
         return
-    product_ids = deactivate_product.parse_product_ids(raw)
+    indexes = _parse_index_selection(raw, len(products))
+    if not indexes:
+        print("No valid selections.")
+        return
+    product_ids: list[int] = []
+    seen: set[int] = set()
+    for idx in indexes:
+        product_id_raw = str(products[idx - 1].get("product_id") or "")
+        for product_id in deactivate_product.parse_product_ids(product_id_raw):
+            if product_id not in seen:
+                seen.add(product_id)
+                product_ids.append(product_id)
     if not product_ids:
         print("No valid product ids provided.")
         return

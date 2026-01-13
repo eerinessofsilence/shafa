@@ -251,6 +251,20 @@ def get_brand_id_by_name(brand_name: str) -> Optional[int]:
     return row["id"] if row else None
 
 
+def list_brand_names() -> list[str]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT name
+            FROM brands
+            WHERE name IS NOT NULL AND TRIM(name) != ''
+            ORDER BY name
+            """
+        ).fetchall()
+    return [row["name"] for row in rows]
+
+
 def save_telegram_product(
     channel_id: int,
     message_id: int,

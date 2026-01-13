@@ -80,6 +80,7 @@ ORIGIN_URL = "https://shafa.ua"
 REFERER_URL = "https://shafa.ua/uk/new"
 APP_PLATFORM = "web"
 APP_VERSION = "v2025.12.31.3"
+DEFAULT_MARKUP = 400
 
 MEDIA_DIR_PATH = "media"
 STORAGE_STATE_PATH = Path("auth.json")

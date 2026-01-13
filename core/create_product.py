@@ -4,7 +4,7 @@ import re
 from playwright.sync_api import BrowserContext
 
 from core.core import base_headers, read_response_json
-from data.const import API_URL, CREATE_PRODUCT_MUTATION
+from data.const import API_URL, CREATE_PRODUCT_MUTATION, DEFAULT_MARKUP
 from models.product import Product
 
 
@@ -64,7 +64,7 @@ def create_product(
     csrftoken: str,
     photo_ids: list[str],
     product_raw_data: dict,
-    markup: int = 400,
+    markup: int = DEFAULT_MARKUP,
 ) -> dict:
     payload = build_create_product_payload(photo_ids, product_raw_data, markup)
     resp = ctx.request.post(
