@@ -1,3 +1,4 @@
+import json
 import re
 import sys
 import time
@@ -218,6 +219,129 @@ def _list_telegram_channels() -> None:
         print(f"{idx}. {row['channel_id']} | {row['name']} | {alias}")
 
 
+def _format_channel_label(channel: dict) -> str:
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    alias = channel.get("alias")
+    if alias:
+        return f"{name} ({alias}) | {channel['channel_id']}"
+    return f"{name} | {channel['channel_id']}"
+
+
+def _delete_telegram_channel(channel: dict) -> None:
+    from data.db import delete_telegram_channel
+
+    label = _format_channel_label(channel)
+    confirm = _choose_yes_no(f"Delete channel {label}?", default=False)
+    if confirm is None or not confirm:
+        return
+    delete_telegram_channel(channel["channel_id"])
+    print("Channel deleted.")
+
+
+def _rename_telegram_channel(channel: dict) -> None:
+    from data.db import rename_telegram_channel
+
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    raw = input(f"New name for {name}: ").strip()
+    if not raw:
+        print("Channel name is required.")
+        return
+    if not rename_telegram_channel(channel["channel_id"], raw):
+        print("Rename failed.")
+        return
+    print("Channel renamed.")
+
+
+def _manage_telegram_channel_actions(channel: dict) -> None:
+    labels = [
+        "Delete Telegram channels",
+        "Rename Telegram channels",
+    ]
+    while True:
+        _print_menu(labels, title="What we need to do?", quit_label="q. Back")
+        try:
+            choice = _read_choice(len(labels))
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice is None:
+            return
+        if choice == -1:
+            print("Invalid choice.")
+            continue
+        if choice == 1:
+            _delete_telegram_channel(channel)
+            return
+        if choice == 2:
+            _rename_telegram_channel(channel)
+            return
+
+
+def _manage_telegram_channels() -> None:
+    from data.db import load_telegram_channels
+
+    while True:
+        channels = load_telegram_channels()
+        labels = [_format_channel_label(row) for row in channels]
+        labels.append("[ + ] Add Telegram channel")
+        _print_menu(labels, title="Manage Telegram channels:", quit_label="q. Back")
+        try:
+            choice = _read_choice(len(labels))
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice is None:
+            return
+        if choice == -1:
+            print("Invalid choice.")
+            continue
+        if choice == len(labels):
+            _add_telegram_channel()
+            continue
+        channel = channels[choice - 1]
+        _manage_telegram_channel_actions(channel)
+
+
+def _clear_storage_state_cookies(path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return True
+    if not isinstance(data, dict):
+        data = {}
+    data["cookies"] = []
+    path.write_text(json.dumps(data, ensure_ascii=True), encoding="utf-8")
+    return True
+
+
+def _delete_account_cookies() -> None:
+    from data.const import STORAGE_STATE_PATH
+    from data.db import delete_all_cookies
+
+    confirm = _choose_yes_no(
+        "Delete account cookies from DB and auth.json?",
+        default=False,
+    )
+    if confirm is None or not confirm:
+        return
+    removed = delete_all_cookies()
+    auth_updated = _clear_storage_state_cookies(STORAGE_STATE_PATH)
+    if auth_updated:
+        print(f"Deleted {removed} cookie(s). auth.json updated.")
+    else:
+        print(f"Deleted {removed} cookie(s). auth.json not found.")
+
+
 def _deactivate_product() -> None:
     from core import deactivate_product
 
@@ -287,8 +411,8 @@ def _product_management_menu() -> None:
 def _settings_menu() -> None:
     labels = [
         "Bootstrap project",
-        "Add Telegram channel",
-        "List Telegram channels",
+        "Manage Telegram channels",
+        "Delete account cookies",
     ]
     while True:
         _print_menu(labels, title="Settings:", quit_label="q. Back")
@@ -305,9 +429,9 @@ def _settings_menu() -> None:
         if choice == 1:
             _bootstrap_project()
         elif choice == 2:
-            _add_telegram_channel()
+            _manage_telegram_channels()
         elif choice == 3:
-            _list_telegram_channels()
+            _delete_account_cookies()
 
 
 def _legacy_menu(actions: list[tuple[str, Callable[[], None]]]) -> None:

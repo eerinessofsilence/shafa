@@ -8,7 +8,7 @@ from controller.data_controller import (
     get_next_product_for_upload,
     mark_product_created,
 )
-from core.context import new_context_with_storage
+from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
 from core.create_product import create_product
 from core.upload_photo import upload_photo
@@ -70,7 +70,7 @@ def main() -> None:
                 page.wait_for_load_state("networkidle", timeout=10000)
             except PlaywrightTimeoutError:
                 pass
-            if not STORAGE_STATE_PATH.exists():
+            if not storage_state_has_cookies(STORAGE_STATE_PATH):
                 log("INFO", "Залогинься в окне браузера, затем нажми Enter.")
                 input()
                 ctx.storage_state(path=str(STORAGE_STATE_PATH))

@@ -1,7 +1,7 @@
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from core.context import new_context_with_storage
+from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
 from core.get_brands import get_brands
 from core.get_sizes import get_sizes
@@ -23,7 +23,7 @@ def main() -> None:
                 page.wait_for_load_state("networkidle", timeout=10000)
             except PlaywrightTimeoutError:
                 pass
-            if not STORAGE_STATE_PATH.exists():
+            if not storage_state_has_cookies(STORAGE_STATE_PATH):
                 input("Log in in the browser window, then press Enter...")
                 ctx.storage_state(path=str(STORAGE_STATE_PATH))
 

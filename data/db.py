@@ -339,6 +339,35 @@ def load_telegram_channels() -> list[dict]:
     ]
 
 
+def delete_telegram_channel(channel_id: int) -> None:
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            DELETE FROM telegram_channels
+            WHERE channel_id = ?
+            """,
+            (channel_id,),
+        )
+
+
+def rename_telegram_channel(channel_id: int, name: str) -> bool:
+    text = str(name).strip()
+    if not text:
+        return False
+    init_db()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE telegram_channels
+            SET name = ?
+            WHERE channel_id = ?
+            """,
+            (text, channel_id),
+        )
+    return cursor.rowcount > 0
+
+
 def get_next_uncreated_telegram_product(channel_id: int) -> Optional[sqlite3.Row]:
     init_db()
     with _connect() as conn:
@@ -454,6 +483,15 @@ def load_cookies(domain: Optional[str] = None) -> list[dict]:
             cookie["sameSite"] = row["same_site"]
         cookies.append(cookie)
     return cookies
+
+
+def delete_all_cookies() -> int:
+    init_db()
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM cookies").fetchone()
+        count = int(row["count"]) if row else 0
+        conn.execute("DELETE FROM cookies")
+    return count
 
 
 def cleanup_cookies(allow_subdomains: bool = True) -> int:
