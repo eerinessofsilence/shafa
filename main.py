@@ -26,7 +26,7 @@ from utils.media import list_media_files, reset_media_dir
 
 def main() -> None:
     init_db()
-    product_data = get_next_product_for_upload(message_amount=50)
+    product_data = get_next_product_for_upload(message_amount=35)
     if not product_data:
         log("INFO", "Нет новых товаров для создания.")
         return

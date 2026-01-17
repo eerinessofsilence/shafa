@@ -150,6 +150,42 @@ def list_uploaded_products(limit: int = 20) -> list[dict]:
     ]
 
 
+def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
+    init_db()
+    with _connect() as conn:
+        if limit is None:
+            rows = conn.execute(
+                """
+                SELECT id, product_id, name, photo_ids, raw_payload, created_at
+                FROM uploaded_products
+                WHERE raw_payload IS NOT NULL AND TRIM(raw_payload) != ''
+                ORDER BY id
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, product_id, name, photo_ids, raw_payload, created_at
+                FROM uploaded_products
+                WHERE raw_payload IS NOT NULL AND TRIM(raw_payload) != ''
+                ORDER BY id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "product_id": row["product_id"],
+            "name": row["name"],
+            "photo_ids": row["photo_ids"],
+            "raw_payload": row["raw_payload"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
 def save_sizes(sizes: list[dict]) -> None:
     if not sizes:
         return
@@ -366,6 +402,52 @@ def rename_telegram_channel(channel_id: int, name: str) -> bool:
             (text, channel_id),
         )
     return cursor.rowcount > 0
+
+
+def update_telegram_channel_alias(channel_id: int, alias: Optional[str]) -> bool:
+    text = str(alias).strip() if alias is not None else ""
+    value = text or None
+    init_db()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE telegram_channels
+            SET alias = ?
+            WHERE channel_id = ?
+            """,
+            (value, channel_id),
+        )
+    return cursor.rowcount > 0
+
+
+def update_telegram_channel_id(old_channel_id: int, new_channel_id: int) -> bool:
+    if old_channel_id == new_channel_id:
+        return False
+    init_db()
+    with _connect() as conn:
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE telegram_channels
+                SET channel_id = ?
+                WHERE channel_id = ?
+                """,
+                (new_channel_id, old_channel_id),
+            )
+            if cursor.rowcount <= 0:
+                return False
+            conn.execute(
+                """
+                UPDATE telegram_products
+                SET channel_id = ?, updated_at = datetime('now')
+                WHERE channel_id = ?
+                """,
+                (new_channel_id, old_channel_id),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            return False
+    return True
 
 
 def get_next_uncreated_telegram_product(channel_id: int) -> Optional[sqlite3.Row]:

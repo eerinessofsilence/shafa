@@ -252,10 +252,48 @@ def _rename_telegram_channel(channel: dict) -> None:
     print("Channel renamed.")
 
 
+def _change_telegram_channel_alias(channel: dict) -> None:
+    from data.db import update_telegram_channel_alias
+
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    current = channel.get("alias") or "-"
+    raw = input(f"New alias for {name} (blank to clear, current: {current}): ").strip()
+    alias = raw or None
+    if not update_telegram_channel_alias(channel["channel_id"], alias):
+        print("Alias update failed.")
+        return
+    print("Alias updated.")
+
+
+def _change_telegram_channel_id(channel: dict) -> None:
+    from data.db import update_telegram_channel_id
+
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    current_id = channel.get("channel_id")
+    raw = input(f"New channel ID for {name} (current: {current_id}): ").strip()
+    if not raw:
+        print("Channel ID is required.")
+        return
+    try:
+        new_id = int(raw)
+    except ValueError:
+        print("Invalid channel ID.")
+        return
+    if new_id == current_id:
+        print("Channel ID unchanged.")
+        return
+    if not update_telegram_channel_id(current_id, new_id):
+        print("Channel ID update failed.")
+        return
+    print("Channel ID updated.")
+
+
 def _manage_telegram_channel_actions(channel: dict) -> None:
     labels = [
-        "Delete Telegram channels",
-        "Rename Telegram channels",
+        "Delete channel",
+        "Rename channel",
+        "Change alias (e.g. extra_photos)",
+        "Change ID",
     ]
     while True:
         _print_menu(labels, title="What we need to do?", quit_label="q. Back")
@@ -274,6 +312,12 @@ def _manage_telegram_channel_actions(channel: dict) -> None:
             return
         if choice == 2:
             _rename_telegram_channel(channel)
+            return
+        if choice == 3:
+            _change_telegram_channel_alias(channel)
+            return
+        if choice == 4:
+            _change_telegram_channel_id(channel)
             return
 
 
