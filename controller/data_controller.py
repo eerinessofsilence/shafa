@@ -19,6 +19,7 @@ from telethon.utils import get_peer_id
 from data.const import (
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
+    MAX_UPLOAD_BYTES,
     TELEGRAM_CHANNELS,
     TELEGRAM_API_HASH,
     TELEGRAM_API_ID,
@@ -34,6 +35,7 @@ from data.db import (
     save_telegram_product,
     size_id_exists,
 )
+from utils.logging import log
 
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
@@ -341,6 +343,45 @@ def _is_photo_message(message) -> bool:
     if isinstance(message.media, MessageMediaDocument):
         return _is_image_document(getattr(message, "document", None))
     return False
+
+
+def _format_size_mb(size_bytes: Optional[int]) -> str:
+    if not size_bytes or size_bytes <= 0:
+        return "?"
+    return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+
+def _get_message_media_size_bytes(message) -> Optional[int]:
+    if not message or not getattr(message, "media", None):
+        return None
+    if isinstance(message.media, MessageMediaDocument):
+        document = getattr(message, "document", None) or getattr(message.media, "document", None)
+        size = getattr(document, "size", None)
+        if isinstance(size, int):
+            return size
+    if isinstance(message.media, MessageMediaPhoto):
+        photo = getattr(message, "photo", None) or getattr(message.media, "photo", None)
+        sizes = getattr(photo, "sizes", None) or []
+        values: list[int] = []
+        for size in sizes:
+            size_value = getattr(size, "size", None)
+            if isinstance(size_value, int):
+                values.append(size_value)
+                continue
+            progressive = getattr(size, "sizes", None)
+            if isinstance(progressive, list):
+                values.extend([item for item in progressive if isinstance(item, int)])
+                continue
+            raw_bytes = getattr(size, "bytes", None)
+            if isinstance(raw_bytes, (bytes, bytearray)):
+                values.append(len(raw_bytes))
+        if values:
+            return max(values)
+    file_obj = getattr(message, "file", None)
+    size = getattr(file_obj, "size", None)
+    if isinstance(size, int):
+        return size
+    return None
 
 
 def _get_channel_ids() -> list[int]:
@@ -994,23 +1035,41 @@ async def _collect_discussion_photos(
                 return
         messages.append(reply)
 
+    root_id = getattr(root, "id", None)
+    if not root_id:
+        return []
     seen_any_reply = False
-    async for reply in client.iter_messages(discussion_chat_id, reply_to=root.id):
-        seen_any_reply = True
-        await add_reply(reply)
+    try:
+        async for reply in client.iter_messages(discussion_chat_id, reply_to=root_id):
+            seen_any_reply = True
+            await add_reply(reply)
+    except RPCError as exc:
+        log(
+            "WARN",
+            "Не удалось получить ответы из обсуждения: "
+            f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
+        )
     if seen_any_reply:
         return messages
 
     fallback_limit = 200
-    async for reply in client.iter_messages(discussion_chat_id, limit=fallback_limit):
-        header = getattr(reply, "reply_to", None)
-        if not header:
-            continue
-        top_id = getattr(header, "reply_to_top_id", None)
-        msg_id = getattr(header, "reply_to_msg_id", None)
-        if top_id != root.id and msg_id != root.id:
-            continue
-        await add_reply(reply)
+    try:
+        async for reply in client.iter_messages(discussion_chat_id, limit=fallback_limit):
+            header = getattr(reply, "reply_to", None)
+            if not header:
+                continue
+            top_id = getattr(header, "reply_to_top_id", None)
+            msg_id = getattr(header, "reply_to_msg_id", None)
+            if top_id != root_id and msg_id != root_id:
+                continue
+            await add_reply(reply)
+    except RPCError as exc:
+        log(
+            "WARN",
+            "Не удалось прочитать обсуждение: "
+            f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
+        )
+        return []
     return messages
 
 
@@ -1022,6 +1081,10 @@ async def _download_message_photos(
 ) -> int:
     async with TelegramClient("session", api_id, api_hash) as client:
         await _sync_channel_titles(client, _get_channel_ids())
+        log(
+            "INFO",
+            f"Скачиваю фото из Telegram: channel_id={channel_id} message_id={message_id}.",
+        )
         message = await client.get_messages(channel_id, ids=message_id)
         if not message or not _is_photo_message(message):
             return 0
@@ -1042,17 +1105,51 @@ async def _download_message_photos(
         target_dir.mkdir(parents=True, exist_ok=True)
         downloaded = 0
         seen: set[tuple[int, int]] = set()
+        queue: list[tuple] = []
+        skipped_large = 0
+        max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
         for msg in messages:
             chat_id = getattr(msg, "chat_id", channel_id)
             key = (int(chat_id), msg.id)
             if key in seen:
                 continue
             seen.add(key)
+            size_bytes = _get_message_media_size_bytes(msg)
+            if size_bytes is not None and size_bytes > MAX_UPLOAD_BYTES:
+                skipped_large += 1
+                size_mb = size_bytes / (1024 * 1024)
+                log(
+                    "WARN",
+                    "Пропускаю фото из Telegram: "
+                    f"message_id={msg.id} chat_id={chat_id} "
+                    f"{size_mb:.2f} MB > лимита {max_mb:.2f} MB.",
+                )
+                continue
+            queue.append((msg, chat_id, size_bytes))
+        if max_photos > 0 and len(queue) > max_photos:
+            log("INFO", f"Ограничение на фото: {max_photos}.")
+            queue = queue[:max_photos]
+        if skipped_large:
+            log(
+                "INFO",
+                f"Пропущено крупных файлов: {skipped_large}. К скачиванию: {len(queue)}.",
+            )
+        if not queue:
+            log("WARN", "Нет подходящих фото для скачивания.")
+            return 0
+        for idx, (msg, chat_id, size_bytes) in enumerate(queue, start=1):
+            size_label = _format_size_mb(size_bytes)
+            log(
+                "INFO",
+                f"Скачивание фото {idx}/{len(queue)}: "
+                f"message_id={msg.id} chat_id={chat_id} size={size_label}.",
+            )
             result = await client.download_media(msg, file=str(target_dir))
             if result:
                 downloaded += 1
-                if max_photos > 0 and downloaded >= max_photos:
-                    break
+                log("OK", f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.")
+            else:
+                log("WARN", f"Не удалось скачать фото {idx}/{len(queue)}: message_id={msg.id}.")
         return downloaded
 
 

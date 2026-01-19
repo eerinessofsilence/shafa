@@ -2,8 +2,10 @@ import gzip
 import json
 import os
 import re
+import tempfile
 import uuid
 import zlib
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from urllib import error, request
@@ -22,6 +24,7 @@ from data.const import (
     APP_VERSION,
     CREATE_PRODUCT_MUTATION,
     DEFAULT_MARKUP,
+    MAX_UPLOAD_BYTES,
     MEDIA_DIR_PATH,
     ORIGIN_URL,
     REFERER_URL,
@@ -38,6 +41,12 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/122.0.0.0 Safari/537.36"
 )
+
+try:
+    from PIL import Image, ImageOps
+except ImportError:  # pragma: no cover - optional dependency
+    Image = None
+    ImageOps = None
 
 
 def _debug_http_enabled() -> bool:
@@ -127,6 +136,60 @@ def _decode_body(body: bytes, encoding: str) -> bytes:
         except zlib.error:
             return zlib.decompress(body, -zlib.MAX_WBITS)
     return body
+
+
+def _get_resample_filter() -> int:
+    try:
+        return Image.Resampling.LANCZOS
+    except AttributeError:
+        return Image.LANCZOS
+
+
+def _resize_image_for_upload(file_path: Path, max_bytes: int) -> Optional[bytes]:
+    if Image is None:
+        return None
+    try:
+        with Image.open(file_path) as img:
+            if ImageOps is not None:
+                exif_transpose = getattr(ImageOps, "exif_transpose", None)
+                if exif_transpose:
+                    img = exif_transpose(img)
+            img = img.convert("RGB")
+            resample = _get_resample_filter()
+            max_dim = 2560
+            for _ in range(5):
+                working = img.copy()
+                if max(working.size) > max_dim:
+                    working.thumbnail((max_dim, max_dim), resample=resample)
+                for quality in (90, 85, 80, 75, 70, 65, 60):
+                    buffer = BytesIO()
+                    working.save(
+                        buffer,
+                        format="JPEG",
+                        quality=quality,
+                        optimize=True,
+                        progressive=True,
+                    )
+                    data = buffer.getvalue()
+                    if len(data) <= max_bytes:
+                        return data
+                max_dim = int(max_dim * 0.85)
+                if max_dim < 800:
+                    break
+    except Exception:
+        return None
+    return None
+
+
+def _write_temp_image(data: bytes) -> Path:
+    temp = tempfile.NamedTemporaryFile(
+        prefix="shafa_upload_",
+        suffix=".jpg",
+        delete=False,
+    )
+    temp.write(data)
+    temp.close()
+    return Path(temp.name)
 
 
 def _read_response_text(resp) -> str:
@@ -427,11 +490,50 @@ def main() -> None:
     photo_paths = list_media_files(media_dir)
     if not photo_paths:
         log("WARN", "Файлы для загрузки не найдены.")
-    for idx, photo_path in enumerate(photo_paths, start=1):
-        log("INFO", f"Загрузка фото {idx}/{len(photo_paths)}: {photo_path.name}")
-        photo_id = upload_photo(csrftoken, cookies, photo_path)
-        photo_ids.append(photo_id)
-        log("OK", f"Фото загружено: id={photo_id}")
+    max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
+    upload_items: list[tuple[Path, Optional[Path], str]] = []
+    for photo_path in photo_paths:
+        try:
+            size_bytes = photo_path.stat().st_size
+        except OSError:
+            log("WARN", f"Не удалось определить размер файла {photo_path.name}. Пропускаю.")
+            continue
+        if size_bytes <= MAX_UPLOAD_BYTES:
+            upload_items.append((photo_path, None, photo_path.name))
+            continue
+        size_mb = size_bytes / (1024 * 1024)
+        log(
+            "INFO",
+            f"{photo_path.name} {size_mb:.2f} MB > лимита {max_mb:.2f} MB. Пытаюсь сжать.",
+        )
+        if Image is None:
+            log("ERROR", "Pillow не установлен. Установи pillow, чтобы сжимать фото.")
+            continue
+        resized = _resize_image_for_upload(photo_path, MAX_UPLOAD_BYTES)
+        if not resized:
+            log("WARN", f"Не удалось сжать {photo_path.name}. Пропускаю.")
+            continue
+        resized_mb = len(resized) / (1024 * 1024)
+        temp_path = _write_temp_image(resized)
+        log("INFO", f"Сжатое фото {photo_path.name}: {resized_mb:.2f} MB.")
+        upload_items.append((temp_path, temp_path, photo_path.name))
+    if photo_paths and not upload_items:
+        log("WARN", "Нет фото для загрузки после фильтра/сжатия.")
+    for idx, (upload_path, cleanup_path, display_name) in enumerate(
+        upload_items,
+        start=1,
+    ):
+        log("INFO", f"Загрузка фото {idx}/{len(upload_items)}: {display_name}")
+        try:
+            photo_id = upload_photo(csrftoken, cookies, upload_path)
+            photo_ids.append(photo_id)
+            log("OK", f"Фото загружено: id={photo_id}")
+        finally:
+            if cleanup_path:
+                try:
+                    cleanup_path.unlink()
+                except OSError:
+                    pass
 
     log("INFO", "Создаю товар...")
     result = create_product(csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP)
