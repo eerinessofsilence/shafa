@@ -322,6 +322,34 @@ def _debug_fetch_verbose() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _extra_photos_aggressive_enabled() -> bool:
+    return True
+
+
+def _extra_photos_aggressive_limit() -> int:
+    raw = os.getenv("SHAFA_EXTRA_PHOTOS_AGGRESSIVE_LIMIT", "").strip()
+    parsed = _parse_int(raw) if raw else None
+    if parsed is None or parsed <= 0:
+        return 50
+    return min(parsed, 2000)
+
+
+def _extra_photos_window_minutes() -> int:
+    raw = os.getenv("SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES", "").strip()
+    parsed = _parse_int(raw) if raw else None
+    if parsed is None or parsed <= 0:
+        return 180
+    return min(parsed, 24 * 60)
+
+
+def _discussion_fallback_limit() -> int:
+    raw = os.getenv("SHAFA_DISCUSSION_FALLBACK_LIMIT", "").strip()
+    parsed = _parse_int(raw) if raw else None
+    if parsed is None or parsed <= 0:
+        return 200
+    return min(parsed, 2000)
+
+
 def _is_image_document(document) -> bool:
     if not document:
         return False
@@ -984,15 +1012,44 @@ async def _collect_discussion_photos(
     client: TelegramClient,
     channel_id: int,
     message_id: int,
+    message_ids: Optional[list[int]] = None,
 ) -> list:
     alias = _get_channel_alias(channel_id)
     if "extra_photos" not in alias:
         return []
-    try:
-        result = await client(GetDiscussionMessageRequest(peer=channel_id, msg_id=message_id))
-    except RPCError:
-        return []
-    if not result.messages:
+    candidate_ids = [message_id]
+    if message_ids:
+        seen_ids: set[int] = set()
+        candidate_ids = []
+        for item in message_ids:
+            if item and item not in seen_ids:
+                candidate_ids.append(item)
+                seen_ids.add(item)
+        if not candidate_ids:
+            candidate_ids = [message_id]
+    result = None
+    last_exc: Optional[Exception] = None
+    for candidate_id in candidate_ids:
+        try:
+            result = await client(
+                GetDiscussionMessageRequest(peer=channel_id, msg_id=candidate_id)
+            )
+        except RPCError as exc:
+            last_exc = exc
+            result = None
+            continue
+        if result.messages:
+            break
+        result = None
+    if not result or not result.messages:
+        if last_exc:
+            preview = ", ".join(str(value) for value in candidate_ids[:5])
+            suffix = "..." if len(candidate_ids) > 5 else ""
+            log(
+                "WARN",
+                "Не удалось получить обсуждение для сообщения: "
+                f"channel_id={channel_id} message_ids=[{preview}{suffix}] error={last_exc}.",
+            )
         return []
     discussion_chat_id: Optional[int] = None
     for msg in result.messages:
@@ -1038,10 +1095,9 @@ async def _collect_discussion_photos(
     root_id = getattr(root, "id", None)
     if not root_id:
         return []
-    seen_any_reply = False
+    root_date = getattr(root, "date", None)
     try:
         async for reply in client.iter_messages(discussion_chat_id, reply_to=root_id):
-            seen_any_reply = True
             await add_reply(reply)
     except RPCError as exc:
         log(
@@ -1049,24 +1105,62 @@ async def _collect_discussion_photos(
             "Не удалось получить ответы из обсуждения: "
             f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
         )
-    if seen_any_reply:
+    if messages:
         return messages
 
-    fallback_limit = 200
+    fallback_limit = _discussion_fallback_limit()
+    window_minutes = _extra_photos_window_minutes()
+    window_seconds = window_minutes * 60 if window_minutes > 0 else 0
     try:
         async for reply in client.iter_messages(discussion_chat_id, limit=fallback_limit):
             header = getattr(reply, "reply_to", None)
-            if not header:
+            if header:
+                top_id = getattr(header, "reply_to_top_id", None)
+                msg_id = getattr(header, "reply_to_msg_id", None)
+                if top_id != root_id and msg_id != root_id:
+                    continue
+                await add_reply(reply)
                 continue
-            top_id = getattr(header, "reply_to_top_id", None)
-            msg_id = getattr(header, "reply_to_msg_id", None)
-            if top_id != root_id and msg_id != root_id:
+            if window_seconds <= 0:
                 continue
+            reply_id = getattr(reply, "id", None)
+            if reply_id is not None and reply_id <= root_id:
+                continue
+            if root_date is not None:
+                reply_date = getattr(reply, "date", None)
+                if reply_date is not None:
+                    delta = (reply_date - root_date).total_seconds()
+                    if delta < 0 or delta > window_seconds:
+                        continue
             await add_reply(reply)
     except RPCError as exc:
         log(
             "WARN",
             "Не удалось прочитать обсуждение: "
+            f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
+        )
+        return []
+    if messages or not _extra_photos_aggressive_enabled():
+        return messages
+
+    aggressive_limit = _extra_photos_aggressive_limit()
+    try:
+        async for reply in client.iter_messages(
+            discussion_chat_id,
+            min_id=root_id,
+            limit=aggressive_limit,
+            reverse=True,
+        ):
+            reply_id = getattr(reply, "id", None)
+            if reply_id is not None and reply_id <= root_id:
+                continue
+            await add_reply(reply)
+            if len(messages) >= aggressive_limit:
+                break
+    except RPCError as exc:
+        log(
+            "WARN",
+            "Не удалось получить фото из обсуждения (aggressive): "
             f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
         )
         return []
@@ -1099,7 +1193,16 @@ async def _download_message_photos(
             messages = grouped or [message]
             if not messages:
                 messages = [message]
-        extra = await _collect_discussion_photos(client, channel_id, message_id)
+        discussion_message_ids = [message_id]
+        for msg in sorted(messages, key=lambda item: item.id):
+            if msg.id != message_id:
+                discussion_message_ids.append(msg.id)
+        extra = await _collect_discussion_photos(
+            client,
+            channel_id,
+            message_id,
+            discussion_message_ids,
+        )
         if extra:
             messages.extend(extra)
         target_dir.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import uuid
 import zlib
 from io import BytesIO
@@ -52,6 +53,28 @@ except ImportError:  # pragma: no cover - optional dependency
 def _debug_http_enabled() -> bool:
     value = os.getenv("SHAFA_DEBUG_HTTP", "").strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def _http_retry_count() -> int:
+    raw = os.getenv("SHAFA_HTTP_RETRIES", "").strip()
+    if not raw:
+        return 2
+    try:
+        value = int(raw)
+    except ValueError:
+        return 2
+    return min(max(value, 0), 5)
+
+
+def _http_retry_delay() -> float:
+    raw = os.getenv("SHAFA_HTTP_RETRY_DELAY", "").strip()
+    if not raw:
+        return 2.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 2.0
+    return min(max(value, 0.1), 30.0)
 
 
 def _normalize_domain(domain: str) -> str:
@@ -209,28 +232,52 @@ def _request_json(
     merged_headers = dict(headers)
     if cookie_header:
         merged_headers["Cookie"] = cookie_header
+    retryable = {500, 502, 503, 504, 520, 521, 522, 524}
+    retries = _http_retry_count()
+    delay = _http_retry_delay()
+    last_error: Optional[Exception] = None
 
-    req = request.Request(url, data=payload, headers=merged_headers, method="POST")
-    try:
-        with request.urlopen(req, timeout=60) as resp:
-            text = _read_response_text(resp)
-    except error.HTTPError as exc:
-        text = _read_response_text(exc)
+    for attempt in range(retries + 1):
+        req = request.Request(url, data=payload, headers=merged_headers, method="POST")
+        try:
+            with request.urlopen(req, timeout=60) as resp:
+                text = _read_response_text(resp)
+        except error.HTTPError as exc:
+            text = _read_response_text(exc)
+            if _debug_http_enabled():
+                print(text[:preview])
+            if exc.code in retryable and attempt < retries:
+                time.sleep(delay * (attempt + 1))
+                last_error = exc
+                continue
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as json_exc:
+                detail = f"HTTP error {exc.code}"
+                if not text.strip():
+                    detail += " (empty response)"
+                raise RuntimeError(detail) from json_exc
+        except error.URLError as exc:
+            if attempt < retries:
+                time.sleep(delay * (attempt + 1))
+                last_error = exc
+                continue
+            raise RuntimeError(f"Request failed: {exc.reason}") from exc
+
         if _debug_http_enabled():
             print(text[:preview])
         try:
             return json.loads(text)
-        except json.JSONDecodeError as json_exc:
-            raise RuntimeError(f"HTTP error {exc.code}") from json_exc
-    except error.URLError as exc:
-        raise RuntimeError(f"Request failed: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            if attempt < retries:
+                time.sleep(delay * (attempt + 1))
+                last_error = exc
+                continue
+            raise RuntimeError("Response is not valid JSON") from exc
 
-    if _debug_http_enabled():
-        print(text[:preview])
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Response is not valid JSON") from exc
+    if last_error:
+        raise RuntimeError(f"Request failed after retries: {last_error}") from last_error
+    raise RuntimeError("Request failed after retries")
 
 
 def _fetch_sizes(
