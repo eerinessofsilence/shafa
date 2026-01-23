@@ -6,6 +6,7 @@ from core.core import base_headers, read_response_json
 from data.const import API_BATCH_URL
 from data.db import save_brands
 
+
 def get_brands(
     ctx: BrowserContext,
     csrftoken: str,

@@ -42,8 +42,7 @@ api_hash = TELEGRAM_API_HASH
 DEFAULT_CHANNELS = TELEGRAM_CHANNELS
 DEFAULT_CHANNEL_IDS = [channel_id for channel_id, _, _ in DEFAULT_CHANNELS]
 
-DEFAULT_DESCRIPTION = (
-    """36 (23.0см)
+DEFAULT_DESCRIPTION = """36 (23.0см)
        37 (23.5см)
        38 (24.0см)
        39 (25.0см)
@@ -55,7 +54,6 @@ DEFAULT_DESCRIPTION = (
        44 (28.0 см)
        45 (29. 0 см)
        Представляємо втілення комфорту, стилю та універсальності: наші чудові кросівки. Це взуття є втіленням сучасного взуття, яке підходить для будь-якого випадку, одягу та способу життя. Створені з прискіпливою увагою до деталей, наші кросівки розроблені, щоб забезпечити виняткове поєднання моди та функціональності."""
-)
 MAX_DOWNLOAD_PHOTOS = 10
 
 _PRICE_HINTS = (
@@ -158,13 +156,18 @@ _CONTACT_HINTS = (
     "в наличии",
     "в наявності",
 )
-_NON_NAME_HINTS = _PRICE_HINTS + _SIZE_HINTS + _CONTACT_HINTS + (
-    "артикул",
-    "код",
-    "barcode",
-    "штрихкод",
-    "опис",
-    "характеристики",
+_NON_NAME_HINTS = (
+    _PRICE_HINTS
+    + _SIZE_HINTS
+    + _CONTACT_HINTS
+    + (
+        "артикул",
+        "код",
+        "barcode",
+        "штрихкод",
+        "опис",
+        "характеристики",
+    )
 )
 _NAME_EXCLUDE_HINTS = (
     "виробник",
@@ -383,7 +386,9 @@ def _get_message_media_size_bytes(message) -> Optional[int]:
     if not message or not getattr(message, "media", None):
         return None
     if isinstance(message.media, MessageMediaDocument):
-        document = getattr(message, "document", None) or getattr(message.media, "document", None)
+        document = getattr(message, "document", None) or getattr(
+            message.media, "document", None
+        )
         size = getattr(document, "size", None)
         if isinstance(size, int):
             return size
@@ -466,7 +471,7 @@ def normalize_message(message: str) -> str:
         return ""
     text = unicodedata.normalize("NFKC", message)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = text.replace("\u00A0", " ")
+    text = text.replace("\u00a0", " ")
     text = text.replace("–", "-").replace("—", "-")
     cleaned: list[str] = []
     for ch in text:
@@ -538,7 +543,9 @@ def _looks_like_name(line: str) -> bool:
     if len(line) < 3 or len(line) > 120:
         return False
     lower = line.casefold()
-    if _contains_any(lower, _NON_NAME_HINTS) or _contains_any(lower, _NAME_EXCLUDE_HINTS):
+    if _contains_any(lower, _NON_NAME_HINTS) or _contains_any(
+        lower, _NAME_EXCLUDE_HINTS
+    ):
         return False
     if _line_has_url(line) or "@" in line:
         return False
@@ -581,7 +588,9 @@ def extract_name(lines: list[str]) -> str:
             if candidate:
                 return candidate
     for line in lines:
-        match = re.search(r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line)
+        match = re.search(
+            r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line
+        )
         if match:
             candidate = _clean_name(match.group(1))
             if candidate:
@@ -590,7 +599,9 @@ def extract_name(lines: list[str]) -> str:
         if not _looks_like_name(line):
             continue
         candidate = _clean_name(line)
-        if candidate and (len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate)):
+        if candidate and (
+            len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate)
+        ):
             return candidate
     best = ""
     best_score = 0.0
@@ -610,7 +621,7 @@ def extract_name(lines: list[str]) -> str:
 
 
 def _normalize_number(value: str) -> str:
-    text = value.replace("\u00A0", "").replace(" ", "").replace(",", ".")
+    text = value.replace("\u00a0", "").replace(" ", "").replace(",", ".")
     if text.endswith(".0"):
         text = text[:-2]
     return text
@@ -636,9 +647,7 @@ def _extract_last_price_token(text: str, *, allow_small: bool) -> str:
             continue
         if allow_small or numeric >= 100:
             return normalized
-    for token in reversed(
-        re.findall(r"(?<!\d)\d{2,6}(?:[.,]\d{1,2})?(?!\d)", text)
-    ):
+    for token in reversed(re.findall(r"(?<!\d)\d{2,6}(?:[.,]\d{1,2})?(?!\d)", text)):
         numeric = _to_number(token)
         if numeric is None:
             continue
@@ -647,12 +656,16 @@ def _extract_last_price_token(text: str, *, allow_small: bool) -> str:
     return ""
 
 
-def _price_from_line(line: str, *, allow_small: bool, require_currency: bool = False) -> str:
+def _price_from_line(
+    line: str, *, allow_small: bool, require_currency: bool = False
+) -> str:
     currency_match = None
     for match in re.finditer(r"(?:грн|uah|₴|usd|eur|руб)\b", line, flags=re.IGNORECASE):
         currency_match = match
     if currency_match:
-        token = _extract_last_price_token(line[: currency_match.start()], allow_small=allow_small)
+        token = _extract_last_price_token(
+            line[: currency_match.start()], allow_small=allow_small
+        )
         if token:
             return token
         if require_currency:
@@ -690,7 +703,7 @@ def extract_price(lines: list[str]) -> str:
             continue
         if _contains_any(lower, _SIZE_HINTS):
             continue
-        compact = line.replace("\u00A0", " ")
+        compact = line.replace("\u00a0", " ")
         for token in re.findall(r"\d{2,6}(?:[.,]\d{1,2})?", compact):
             numeric = _to_number(token)
             if numeric is None or numeric < 100:
@@ -718,7 +731,9 @@ def _extract_size_tokens_from_line(line: str) -> list[str]:
     lower = line.casefold()
     if re.search(r"\bone\s*size\b", lower):
         tokens.append("ONE SIZE")
-    for size in re.findall(r"\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL|OS)\b", line.upper()):
+    for size in re.findall(
+        r"\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL|OS)\b", line.upper()
+    ):
         tokens.append(size)
     for match in re.finditer(r"\b(\d{2})\s*[-–]\s*(\d{2})\b", line):
         after = line[match.end() : match.end() + 4].casefold()
@@ -732,7 +747,9 @@ def _extract_size_tokens_from_line(line: str) -> list[str]:
             continue
         for value in range(start, end + 1):
             tokens.append(str(value))
-    cleaned = re.sub(r"\b\d{2,3}(?:[.,]\d+)?\s*(?:см|cm)\b", "", line, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b\d{2,3}(?:[.,]\d+)?\s*(?:см|cm)\b", "", line, flags=re.IGNORECASE
+    )
     for match in re.finditer(r"\d{2,3}(?:[.,]\d+)?", cleaned):
         if match.start() > 0 and cleaned[match.start() - 1].isdigit():
             continue
@@ -755,7 +772,9 @@ def extract_sizes(lines: list[str]) -> tuple[str, list[str]]:
         lower = line.casefold()
         if _contains_any(lower, _PRICE_HINTS) and not _contains_any(lower, _SIZE_HINTS):
             continue
-        if not _contains_any(lower, _SIZE_HINTS) and _contains_any(lower, _SIZE_EXCLUDE_HINTS):
+        if not _contains_any(lower, _SIZE_HINTS) and _contains_any(
+            lower, _SIZE_EXCLUDE_HINTS
+        ):
             continue
         if _contains_any(lower, _SIZE_HINTS):
             hinted_lines.append(line)
@@ -810,7 +829,9 @@ def extract_brand(lines: list[str], name: str) -> str:
     for line in lines:
         if not _contains_any(line.casefold(), _BRAND_LABELS):
             continue
-        match = re.search(rf"(?i)\b(?:{'|'.join(_BRAND_LABELS)})\b\s*[:\-]?\s*(.+)$", line)
+        match = re.search(
+            rf"(?i)\b(?:{'|'.join(_BRAND_LABELS)})\b\s*[:\-]?\s*(.+)$", line
+        )
         if match:
             value = match.group(1)
             value = re.split(r"[|,/]", value)[0].strip()
@@ -830,8 +851,14 @@ def extract_brand(lines: list[str], name: str) -> str:
 
 
 def extract_colors(lines: list[str], name: str) -> str:
-    color_lines = [line for line in lines if _contains_any(line.casefold(), _COLOR_LABELS)]
-    candidates = [name] + (color_lines if color_lines else lines) if name else (color_lines or list(lines))
+    color_lines = [
+        line for line in lines if _contains_any(line.casefold(), _COLOR_LABELS)
+    ]
+    candidates = (
+        [name] + (color_lines if color_lines else lines)
+        if name
+        else (color_lines or list(lines))
+    )
     text = " ".join(candidates)
     tokens = re.findall(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]+", text)
     colors: list[str] = []
@@ -1066,7 +1093,11 @@ async def _collect_discussion_photos(
     if not discussion_chat_id:
         return []
     root = next(
-        (msg for msg in result.messages if getattr(msg, "chat_id", None) == discussion_chat_id),
+        (
+            msg
+            for msg in result.messages
+            if getattr(msg, "chat_id", None) == discussion_chat_id
+        ),
         None,
     )
     if not root:
@@ -1112,7 +1143,9 @@ async def _collect_discussion_photos(
     window_minutes = _extra_photos_window_minutes()
     window_seconds = window_minutes * 60 if window_minutes > 0 else 0
     try:
-        async for reply in client.iter_messages(discussion_chat_id, limit=fallback_limit):
+        async for reply in client.iter_messages(
+            discussion_chat_id, limit=fallback_limit
+        ):
             header = getattr(reply, "reply_to", None)
             if header:
                 top_id = getattr(header, "reply_to_top_id", None)
@@ -1252,7 +1285,10 @@ async def _download_message_photos(
                 downloaded += 1
                 log("OK", f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.")
             else:
-                log("WARN", f"Не удалось скачать фото {idx}/{len(queue)}: message_id={msg.id}.")
+                log(
+                    "WARN",
+                    f"Не удалось скачать фото {idx}/{len(queue)}: message_id={msg.id}.",
+                )
         return downloaded
 
 
@@ -1395,13 +1431,16 @@ def get_next_product_for_upload(message_amount: int = 35) -> Optional[dict]:
         "product_raw_data": _build_product_raw_data(parsed),
     }
 
+
 def download_product_photos(
     message_id: int,
     target_dir: Path,
     channel_id: Optional[int] = None,
     max_photos: int = MAX_DOWNLOAD_PHOTOS,
 ) -> int:
-    resolved_channel_id = channel_id if channel_id is not None else _get_channel_ids()[0]
+    resolved_channel_id = (
+        channel_id if channel_id is not None else _get_channel_ids()[0]
+    )
     return asyncio.run(
         _download_message_photos(
             resolved_channel_id,
@@ -1411,12 +1450,15 @@ def download_product_photos(
         )
     )
 
+
 def mark_product_created(
     message_id: int,
     created_product_id: Optional[str] = None,
     channel_id: Optional[int] = None,
 ) -> None:
-    resolved_channel_id = channel_id if channel_id is not None else _get_channel_ids()[0]
+    resolved_channel_id = (
+        channel_id if channel_id is not None else _get_channel_ids()[0]
+    )
     mark_telegram_product_created(resolved_channel_id, message_id, created_product_id)
 
 

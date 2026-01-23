@@ -43,7 +43,9 @@ class FakeClient:
         self.call_count += 1
         return self.discussion_result
 
-    async def iter_messages(self, chat_id, reply_to=None, limit=None, min_id=None, reverse=False):
+    async def iter_messages(
+        self, chat_id, reply_to=None, limit=None, min_id=None, reverse=False
+    ):
         self.iter_calls.append((chat_id, reply_to, limit, min_id, reverse))
         if reply_to is not None:
             items = self.replies
@@ -81,12 +83,15 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
             DummyMessage(13, discussion_chat_id, is_photo=True),
         ]
         client = FakeClient(DummyDiscussionResult([root]), replies=replies)
-        with patch(
-            "controller.data_controller.load_telegram_channels",
-            return_value=[{"channel_id": channel_id, "alias": "main extra_photos"}],
-        ), patch(
-            "controller.data_controller._is_photo_message",
-            side_effect=lambda msg: getattr(msg, "is_photo", False),
+        with (
+            patch(
+                "controller.data_controller.load_telegram_channels",
+                return_value=[{"channel_id": channel_id, "alias": "main extra_photos"}],
+            ),
+            patch(
+                "controller.data_controller._is_photo_message",
+                side_effect=lambda msg: getattr(msg, "is_photo", False),
+            ),
         ):
             result = await dc._collect_discussion_photos(client, channel_id, message_id)
         self.assertEqual([msg.id for msg in result], [11, 13])
@@ -118,17 +123,23 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
                 date=root_date + timedelta(minutes=10),
             ),
         ]
-        client = FakeClient(DummyDiscussionResult([root]), replies=[], fallback=fallback)
-        with patch(
-            "controller.data_controller.load_telegram_channels",
-            return_value=[{"channel_id": channel_id, "alias": "extra_photos"}],
-        ), patch(
-            "controller.data_controller._is_photo_message",
-            side_effect=lambda msg: getattr(msg, "is_photo", False),
-        ), patch.dict(
-            os.environ,
-            {"SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES": "120"},
-            clear=False,
+        client = FakeClient(
+            DummyDiscussionResult([root]), replies=[], fallback=fallback
+        )
+        with (
+            patch(
+                "controller.data_controller.load_telegram_channels",
+                return_value=[{"channel_id": channel_id, "alias": "extra_photos"}],
+            ),
+            patch(
+                "controller.data_controller._is_photo_message",
+                side_effect=lambda msg: getattr(msg, "is_photo", False),
+            ),
+            patch.dict(
+                os.environ,
+                {"SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES": "120"},
+                clear=False,
+            ),
         ):
             result = await dc._collect_discussion_photos(client, channel_id, message_id)
         self.assertEqual([msg.id for msg in result], [11])
@@ -148,8 +159,18 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         aggressive = [
-            DummyMessage(12, discussion_chat_id, is_photo=True, date=root_date + timedelta(hours=6)),
-            DummyMessage(13, discussion_chat_id, is_photo=True, date=root_date + timedelta(hours=7)),
+            DummyMessage(
+                12,
+                discussion_chat_id,
+                is_photo=True,
+                date=root_date + timedelta(hours=6),
+            ),
+            DummyMessage(
+                13,
+                discussion_chat_id,
+                is_photo=True,
+                date=root_date + timedelta(hours=7),
+            ),
         ]
         client = FakeClient(
             DummyDiscussionResult([root]),
@@ -157,20 +178,24 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
             fallback=fallback,
             aggressive=aggressive,
         )
-        with patch(
-            "controller.data_controller.load_telegram_channels",
-            return_value=[{"channel_id": channel_id, "alias": "extra_photos"}],
-        ), patch(
-            "controller.data_controller._is_photo_message",
-            side_effect=lambda msg: getattr(msg, "is_photo", False),
-        ), patch.dict(
-            os.environ,
-            {
-                "SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES": "60",
-                "SHAFA_EXTRA_PHOTOS_AGGRESSIVE": "1",
-                "SHAFA_EXTRA_PHOTOS_AGGRESSIVE_LIMIT": "5",
-            },
-            clear=False,
+        with (
+            patch(
+                "controller.data_controller.load_telegram_channels",
+                return_value=[{"channel_id": channel_id, "alias": "extra_photos"}],
+            ),
+            patch(
+                "controller.data_controller._is_photo_message",
+                side_effect=lambda msg: getattr(msg, "is_photo", False),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES": "60",
+                    "SHAFA_EXTRA_PHOTOS_AGGRESSIVE": "1",
+                    "SHAFA_EXTRA_PHOTOS_AGGRESSIVE_LIMIT": "5",
+                },
+                clear=False,
+            ),
         ):
             result = await dc._collect_discussion_photos(client, channel_id, message_id)
         self.assertEqual([msg.id for msg in result], [12, 13])

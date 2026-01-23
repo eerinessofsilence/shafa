@@ -494,7 +494,9 @@ def save_cookies(cookies: list[dict]) -> None:
             name = cookie.get("name")
             value = cookie.get("value")
             domain = cookie.get("domain")
-            if not domain or not _is_allowed_cookie_domain(domain, allow_subdomains=True):
+            if not domain or not _is_allowed_cookie_domain(
+                domain, allow_subdomains=True
+            ):
                 continue
             if not name or value is None or not domain:
                 continue
@@ -597,7 +599,9 @@ def _cleanup_non_shafa_cookies(
     rows = conn.execute("SELECT id, domain FROM cookies").fetchall()
     to_delete = []
     for row in rows:
-        if not _is_allowed_cookie_domain(row["domain"], allow_subdomains=allow_subdomains):
+        if not _is_allowed_cookie_domain(
+            row["domain"], allow_subdomains=allow_subdomains
+        ):
             to_delete.append((row["id"],))
     if to_delete:
         conn.executemany("DELETE FROM cookies WHERE id = ?", to_delete)
