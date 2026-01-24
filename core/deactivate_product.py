@@ -81,6 +81,8 @@ def deactivate_products(product_ids: list[int]) -> dict:
 
 
 def main() -> None:
+    from data.db import mark_uploaded_products_deactivated
+
     raw = input("Product id(s) to deactivate: ").strip()
     if not raw or raw.lower() in {"q", "quit"}:
         return
@@ -96,6 +98,7 @@ def main() -> None:
         print(f"Deactivation errors: {errors}")
         return
     if result.get("isSuccess"):
+        mark_uploaded_products_deactivated(product_ids)
         print(f"Deactivated {len(product_ids)} product(s).")
         return
     print("Deactivation failed.")
