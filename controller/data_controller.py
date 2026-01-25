@@ -322,8 +322,13 @@ def _debug_fetch_verbose() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _extra_photos_aggressive_enabled() -> bool:
-    return True
+def _require_telegram_credentials() -> tuple[int, str]:
+    if api_id is None or not api_hash:
+        raise RuntimeError(
+            "Missing Telegram credentials. "
+            "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH."
+        )
+    return int(api_id), api_hash
 
 
 def _extra_photos_aggressive_limit() -> int:
@@ -930,7 +935,8 @@ async def _fetch_messages(message_amount: int = 35) -> int:
         )
         verbose_count += 1
 
-    async with TelegramClient("session", api_id, api_hash) as client:
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    async with TelegramClient("session", api_id_value, api_hash_value) as client:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
@@ -1140,7 +1146,7 @@ async def _collect_discussion_photos(
             f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
         )
         return []
-    if messages or not _extra_photos_aggressive_enabled():
+    if messages:
         return messages
 
     aggressive_limit = _extra_photos_aggressive_limit()
@@ -1173,7 +1179,8 @@ async def _download_message_photos(
     target_dir: Path,
     max_photos: int,
 ) -> int:
-    async with TelegramClient("session", api_id, api_hash) as client:
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    async with TelegramClient("session", api_id_value, api_hash_value) as client:
         await _sync_channel_titles(client, _get_channel_ids())
         log(
             "INFO",

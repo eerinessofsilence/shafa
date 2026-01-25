@@ -55,7 +55,8 @@ async def _collect_with_add(
 
 
 async def _run(args: argparse.Namespace) -> int:
-    async with TelegramClient("session", dc.api_id, dc.api_hash) as client:
+    api_id, api_hash = dc._require_telegram_credentials()
+    async with TelegramClient("session", api_id, api_hash) as client:
         channel_message = await client.get_messages(args.channel_id, ids=args.message_id)
         if not channel_message:
             print("Message not found in channel.")

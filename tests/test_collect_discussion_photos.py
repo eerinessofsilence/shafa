@@ -167,7 +167,6 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
             os.environ,
             {
                 "SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES": "60",
-                "SHAFA_EXTRA_PHOTOS_AGGRESSIVE": "1",
                 "SHAFA_EXTRA_PHOTOS_AGGRESSIVE_LIMIT": "5",
             },
             clear=False,
