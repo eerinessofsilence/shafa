@@ -8,21 +8,22 @@ from typing import Optional
 
 from telethon import TelegramClient
 from telethon.errors import RPCError
+from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from telethon.types import (
     DocumentAttributeAnimated,
     DocumentAttributeSticker,
     MessageMediaDocument,
     MessageMediaPhoto,
 )
-from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from telethon.utils import get_peer_id
+
 from data.const import (
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
     MAX_UPLOAD_BYTES,
-    TELEGRAM_CHANNELS,
     TELEGRAM_API_HASH,
     TELEGRAM_API_ID,
+    TELEGRAM_CHANNELS,
 )
 from data.db import (
     get_brand_id_by_name,
@@ -42,18 +43,25 @@ api_hash = TELEGRAM_API_HASH
 DEFAULT_CHANNELS = TELEGRAM_CHANNELS
 DEFAULT_CHANNEL_IDS = [channel_id for channel_id, _, _ in DEFAULT_CHANNELS]
 
-DEFAULT_DESCRIPTION = """36 (23.0см)
-       37 (23.5см)
-       38 (24.0см)
-       39 (25.0см)
-       40 (25.5см)
-       41 (26.5см)
-       41 (26.0 см)
-       42 (26.5 см)
-       43 (27.5 см)
-       44 (28.0 см)
-       45 (29. 0 см)
-       Представляємо втілення комфорту, стилю та універсальності: наші чудові кросівки. Це взуття є втіленням сучасного взуття, яке підходить для будь-якого випадку, одягу та способу життя. Створені з прискіпливою увагою до деталей, наші кросівки розроблені, щоб забезпечити виняткове поєднання моди та функціональності."""
+DEFAULT_DESCRIPTION = (
+    "36 (23.0 см)\n"
+    "37 (23.5 см)\n"
+    "38 (24.0 см)\n"
+    "39 (25.0 см)\n"
+    "40 (25.5 см)\n"
+    "41 (26.0 см)\n"
+    "42 (26.5 см)\n"
+    "43 (27.5 см)\n"
+    "44 (28.0 см)\n"
+    "45 (29.0 см)\n"
+    "\n"
+    "Представляємо втілення комфорту, стилю та універсальності: "
+    "наші чудові кросівки. Це взуття є втіленням сучасного взуття, "
+    "яке підходить для будь-якого випадку, одягу та способу життя. "
+    "Створені з прискіпливою увагою до деталей, наші кросівки "
+    "розроблені, щоб забезпечити виняткове поєднання моди та "
+    "функціональності."
+)
 MAX_DOWNLOAD_PHOTOS = 10
 
 _PRICE_HINTS = (
@@ -1081,7 +1089,9 @@ async def _collect_discussion_photos(
             log(
                 "WARN",
                 "Не удалось получить обсуждение для сообщения: "
-                f"channel_id={channel_id} message_ids=[{preview}{suffix}] error={last_exc}.",
+                f"channel_id={channel_id} \n"
+                + f"message_ids=[{preview}{suffix}]\n"
+                + f"error={last_exc}.",
             )
         return []
     discussion_chat_id: Optional[int] = None
@@ -1217,7 +1227,9 @@ async def _download_message_photos(
         await _sync_channel_titles(client, _get_channel_ids())
         log(
             "INFO",
-            f"Скачиваю фото из Telegram: channel_id={channel_id} message_id={message_id}.",
+            "Скачиваю фото из Telegram: \n"
+            + f"channel_id={channel_id}\n"
+            + f"message_id={message_id}.",
         )
         message = await client.get_messages(channel_id, ids=message_id)
         if not message or not _is_photo_message(message):
@@ -1275,7 +1287,8 @@ async def _download_message_photos(
         if skipped_large:
             log(
                 "INFO",
-                f"Пропущено крупных файлов: {skipped_large}. К скачиванию: {len(queue)}.",
+                f"Пропущено крупных файлов: {skipped_large}.\n"
+                + f"К скачиванию: {len(queue)}.",
             )
         if not queue:
             log("WARN", "Нет подходящих фото для скачивания.")

@@ -11,7 +11,11 @@ from main_no_playwright import (
 from utils.logging import log
 
 DEACTIVATE_PRODUCTS_MUTATION = """
-mutation WEB_deactivateProducts($includeIds: [Int], $excludeIds: [Int], $allProducts: Boolean) {
+mutation WEB_deactivateProducts(
+  $includeIds: [Int]
+  $excludeIds: [Int]
+  $allProducts: Boolean
+) {
   deactivateProducts(
     includeIds: $includeIds
     excludeIds: $excludeIds

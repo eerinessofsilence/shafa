@@ -45,7 +45,8 @@ def main() -> None:
     if price_value is None or price_value <= 0:
         log(
             "ERROR",
-            f"Некорректная цена: {price_value}. Parsed price: {parsed_data.get('price')!r}.",
+            f"Некорректная цена: {price_value}. \n"
+            + f"Parsed price: {parsed_data.get('price')!r}.",
         )
         return
     price_with_markup = price_value + DEFAULT_MARKUP
@@ -93,14 +94,16 @@ def main() -> None:
                 except OSError:
                     log(
                         "WARN",
-                        f"Не удалось определить размер файла {photo_path.name}. Пропускаю.",
+                        f"Не удалось определить размер файла {photo_path.name}. \n"
+                        + "Пропускаю.",
                     )
                     continue
                 if size_bytes > MAX_UPLOAD_BYTES:
                     size_mb = size_bytes / (1024 * 1024)
                     log(
                         "WARN",
-                        f"Пропускаю {photo_path.name}: {size_mb:.2f} MB > лимита {max_mb:.2f} MB.",
+                        f"Пропускаю {photo_path.name}: \n"
+                        + f"{size_mb:.2f} MB > лимита {max_mb:.2f} MB.",
                     )
                     continue
                 filtered_paths.append(photo_path)
@@ -142,7 +145,9 @@ def main() -> None:
                 channel_id=channel_id,
             )
             product_id = created_product.get("id")
-            log("OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}.")
+            log(
+                "OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}."
+            )
             reset_media_dir(media_dir)
             log("INFO", "Фото удалены после создания товара.")
         finally:

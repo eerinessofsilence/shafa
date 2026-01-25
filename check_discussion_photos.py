@@ -57,7 +57,9 @@ async def _collect_with_add(
 async def _run(args: argparse.Namespace) -> int:
     api_id, api_hash = dc._require_telegram_credentials()
     async with TelegramClient("session", api_id, api_hash) as client:
-        channel_message = await client.get_messages(args.channel_id, ids=args.message_id)
+        channel_message = await client.get_messages(
+            args.channel_id, ids=args.message_id
+        )
         if not channel_message:
             print("Message not found in channel.")
             return 1
@@ -154,9 +156,8 @@ async def _run(args: argparse.Namespace) -> int:
             )
         except RPCError as exc:
             print(f"Direct replies failed: {exc}")
-        print(
-            f"Direct replies: {len(direct)} | ids: {_summarize_ids(direct, args.max_list)}"
-        )
+        direct_ids = _summarize_ids(direct, args.max_list)
+        print(f"Direct replies: {len(direct)} | ids: {direct_ids}")
 
         fallback: list = []
         window_seconds = max(args.window_minutes, 0) * 60
@@ -208,9 +209,8 @@ async def _run(args: argparse.Namespace) -> int:
         except RPCError as exc:
             print(f"Fallback scan failed: {exc}")
 
-        print(
-            f"Fallback scan: {len(fallback)} | ids: {_summarize_ids(fallback, args.max_list)}"
-        )
+        fallback_ids = _summarize_ids(fallback, args.max_list)
+        print(f"Fallback scan: {len(fallback)} | ids: {fallback_ids}")
 
         if args.aggressive is None:
             aggressive_enabled = True
@@ -232,9 +232,8 @@ async def _run(args: argparse.Namespace) -> int:
                 )
             except RPCError as exc:
                 print(f"Aggressive scan failed: {exc}")
-        print(
-            f"Aggressive scan: {len(aggressive)} | ids: {_summarize_ids(aggressive, args.max_list)}"
-        )
+        aggressive_ids = _summarize_ids(aggressive, args.max_list)
+        print(f"Aggressive scan: {len(aggressive)} | ids: {aggressive_ids}")
         return 0
 
 

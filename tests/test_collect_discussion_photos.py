@@ -178,19 +178,23 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
             fallback=fallback,
             aggressive=aggressive,
         )
-        with patch(
-            "controller.data_controller.load_telegram_channels",
-            return_value=[{"channel_id": channel_id, "alias": "extra_photos"}],
-        ), patch(
-            "controller.data_controller._is_photo_message",
-            side_effect=lambda msg: getattr(msg, "is_photo", False),
-        ), patch.dict(
-            os.environ,
-            {
-                "SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES": "60",
-                "SHAFA_EXTRA_PHOTOS_AGGRESSIVE_LIMIT": "5",
-            },
-            clear=False,
+        with (
+            patch(
+                "controller.data_controller.load_telegram_channels",
+                return_value=[{"channel_id": channel_id, "alias": "extra_photos"}],
+            ),
+            patch(
+                "controller.data_controller._is_photo_message",
+                side_effect=lambda msg: getattr(msg, "is_photo", False),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES": "60",
+                    "SHAFA_EXTRA_PHOTOS_AGGRESSIVE_LIMIT": "5",
+                },
+                clear=False,
+            ),
         ):
             result = await dc._collect_discussion_photos(client, channel_id, message_id)
         self.assertEqual([msg.id for msg in result], [12, 13])

@@ -350,7 +350,9 @@ def _encode_multipart(
     for name, (filename, content_type, file_bytes) in files.items():
         add_part(f"--{boundary}".encode())
         add_part(
-            f'Content-Disposition: form-data; name="{name}"; filename="{filename}"'.encode()
+            (
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"'
+            ).encode()
         )
         add_part(f"Content-Type: {content_type}".encode())
         add_part(b"")
@@ -531,7 +533,8 @@ def main() -> None:
     if price_value is None or price_value <= 0:
         log(
             "ERROR",
-            f"Некорректная цена: {price_value}. Parsed price: {parsed_data.get('price')!r}.",
+            f"Некорректная цена: {price_value}. \n"
+            + f"Parsed price: {parsed_data.get('price')!r}.",
         )
         return
     price_with_markup = price_value + DEFAULT_MARKUP
@@ -567,7 +570,8 @@ def main() -> None:
         size_mb = size_bytes / (1024 * 1024)
         log(
             "INFO",
-            f"{photo_path.name} {size_mb:.2f} MB > лимита {max_mb:.2f} MB. Пытаюсь сжать.",
+            f"{photo_path.name} {size_mb:.2f} MB > лимита {max_mb:.2f} MB. \n"
+            + "Пытаюсь сжать.",
         )
         if Image is None:
             log("ERROR", "Pillow не установлен. Установи pillow, чтобы сжимать фото.")

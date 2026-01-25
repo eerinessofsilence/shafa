@@ -67,6 +67,7 @@ mutation UploadPhoto($file: String!) {
 }
 """
 
+
 def _get_env_int(name: str) -> Optional[int]:
     raw = os.getenv(name, "").strip()
     if not raw:
