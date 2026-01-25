@@ -926,7 +926,7 @@ def parse_message(message: str) -> dict:
     }
 
 
-async def _fetch_messages(message_amount: int = 35) -> int:
+async def _fetch_messages(message_amount: int = 75) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
     debug_verbose = _debug_fetch_verbose()
@@ -1408,7 +1408,7 @@ def build_product_raw_data(parsed: dict) -> dict:
     return _build_product_raw_data(parsed)
 
 
-def get_next_product_for_upload(message_amount: int = 35) -> Optional[dict]:
+def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
     asyncio.run(_fetch_messages(message_amount=message_amount))
     rows = [
         row
@@ -1463,5 +1463,5 @@ def mark_product_created(
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=35)
+    product = get_next_product_for_upload(message_amount=75)
     print(product)
