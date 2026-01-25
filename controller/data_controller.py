@@ -1428,8 +1428,7 @@ def build_product_raw_data(parsed: dict) -> dict:
     return _build_product_raw_data(parsed)
 
 
-def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
-    asyncio.run(_fetch_messages(message_amount=message_amount))
+def _pick_next_product_for_upload() -> Optional[dict]:
     rows = [
         row
         for channel_id in _get_channel_ids()
@@ -1452,7 +1451,25 @@ def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
     }
 
 
-def download_product_photos(
+async def get_next_product_for_upload_async(
+    message_amount: int = 75,
+) -> Optional[dict]:
+    await _fetch_messages(message_amount=message_amount)
+    return _pick_next_product_for_upload()
+
+
+def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(get_next_product_for_upload_async(message_amount=message_amount))
+    raise RuntimeError(
+        "get_next_product_for_upload cannot be called when an event loop is running. "
+        "Use get_next_product_for_upload_async."
+    )
+
+
+async def download_product_photos_async(
     message_id: int,
     target_dir: Path,
     channel_id: Optional[int] = None,
@@ -1461,13 +1478,34 @@ def download_product_photos(
     resolved_channel_id = (
         channel_id if channel_id is not None else _get_channel_ids()[0]
     )
-    return asyncio.run(
-        _download_message_photos(
-            resolved_channel_id,
-            message_id,
-            target_dir,
-            max_photos,
+    return await _download_message_photos(
+        resolved_channel_id,
+        message_id,
+        target_dir,
+        max_photos,
+    )
+
+
+def download_product_photos(
+    message_id: int,
+    target_dir: Path,
+    channel_id: Optional[int] = None,
+    max_photos: int = MAX_DOWNLOAD_PHOTOS,
+) -> int:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            download_product_photos_async(
+                message_id,
+                target_dir,
+                channel_id=channel_id,
+                max_photos=max_photos,
+            )
         )
+    raise RuntimeError(
+        "download_product_photos cannot be called when an event loop is running. "
+        "Use download_product_photos_async."
     )
 
 
