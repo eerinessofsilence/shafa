@@ -32,7 +32,13 @@ from data.const import (
     STORAGE_STATE_PATH,
     UPLOAD_PHOTO_MUTATION,
 )
-from data.db import init_db, load_cookies, save_cookies, save_sizes, save_uploaded_product
+from data.db import (
+    init_db,
+    load_cookies,
+    save_cookies,
+    save_sizes,
+    save_uploaded_product,
+)
 from models.product import Product
 from utils.logging import log
 from utils.media import list_media_files, reset_media_dir
@@ -276,7 +282,9 @@ def _request_json(
             raise RuntimeError("Response is not valid JSON") from exc
 
     if last_error:
-        raise RuntimeError(f"Request failed after retries: {last_error}") from last_error
+        raise RuntimeError(
+            f"Request failed after retries: {last_error}"
+        ) from last_error
     raise RuntimeError("Request failed after retries")
 
 
@@ -452,6 +460,7 @@ def create_product(
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
+
     def request(payload_data: dict) -> dict:
         return _request_json(
             API_URL,
@@ -472,7 +481,9 @@ def create_product(
             if cleaned != colors:
                 retry_raw = dict(product_raw_data)
                 retry_raw["colors"] = cleaned
-                retry_payload = _build_create_product_payload(photo_ids, retry_raw, markup)
+                retry_payload = _build_create_product_payload(
+                    photo_ids, retry_raw, markup
+                )
                 data = request(retry_payload)
                 errors = data.get("errors") or []
         if errors:
@@ -512,7 +523,9 @@ def main() -> None:
         if parsed_data:
             product_raw_data = build_product_raw_data(parsed_data)
         if product_raw_data.get("size") is None:
-            log("ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands.")
+            log(
+                "ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands."
+            )
             return
     price_value = product_raw_data.get("price")
     if price_value is None or price_value <= 0:
@@ -543,7 +556,10 @@ def main() -> None:
         try:
             size_bytes = photo_path.stat().st_size
         except OSError:
-            log("WARN", f"Не удалось определить размер файла {photo_path.name}. Пропускаю.")
+            log(
+                "WARN",
+                f"Не удалось определить размер файла {photo_path.name}. Пропускаю.",
+            )
             continue
         if size_bytes <= MAX_UPLOAD_BYTES:
             upload_items.append((photo_path, None, photo_path.name))
@@ -583,7 +599,9 @@ def main() -> None:
                     pass
 
     log("INFO", "Создаю товар...")
-    result = create_product(csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP)
+    result = create_product(
+        csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP
+    )
     errors = result.get("errors") or []
     if errors:
         log("ERROR", f"Ошибки создания товара: {errors}")

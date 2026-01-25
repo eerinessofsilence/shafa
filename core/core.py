@@ -6,6 +6,7 @@ from playwright.sync_api import BrowserContext
 
 from data.const import APP_PLATFORM, APP_VERSION, ORIGIN_URL, REFERER_URL
 
+
 def base_headers(csrftoken: str) -> dict:
     return {
         "Origin": ORIGIN_URL,

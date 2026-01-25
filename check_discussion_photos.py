@@ -56,7 +56,9 @@ async def _collect_with_add(
 
 async def _run(args: argparse.Namespace) -> int:
     async with TelegramClient("session", dc.api_id, dc.api_hash) as client:
-        channel_message = await client.get_messages(args.channel_id, ids=args.message_id)
+        channel_message = await client.get_messages(
+            args.channel_id, ids=args.message_id
+        )
         if not channel_message:
             print("Message not found in channel.")
             return 1
@@ -79,7 +81,9 @@ async def _run(args: argparse.Namespace) -> int:
         for candidate_id in candidate_ids:
             try:
                 result = await client(
-                    GetDiscussionMessageRequest(peer=args.channel_id, msg_id=candidate_id)
+                    GetDiscussionMessageRequest(
+                        peer=args.channel_id, msg_id=candidate_id
+                    )
                 )
             except RPCError as exc:
                 last_exc = exc
@@ -98,8 +102,7 @@ async def _run(args: argparse.Namespace) -> int:
                 )
             else:
                 print(
-                    "No discussion messages returned. "
-                    f"message_ids=[{preview}{suffix}]"
+                    f"No discussion messages returned. message_ids=[{preview}{suffix}]"
                 )
             return 1
 
@@ -120,7 +123,11 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
 
         root = next(
-            (msg for msg in result.messages if getattr(msg, "chat_id", None) == discussion_chat_id),
+            (
+                msg
+                for msg in result.messages
+                if getattr(msg, "chat_id", None) == discussion_chat_id
+            ),
             None,
         )
         if not root:
@@ -135,7 +142,9 @@ async def _run(args: argparse.Namespace) -> int:
         alias = dc._get_channel_alias(args.channel_id)
         print(f"Channel alias: {alias or '-'}")
         print(f"Discussion chat id: {discussion_chat_id}")
-        print(f"Root id: {root_id} | root date: {_format_dt(getattr(root, 'date', None))}")
+        print(
+            f"Root id: {root_id} | root date: {_format_dt(getattr(root, 'date', None))}"
+        )
 
         direct: list = []
         try:
@@ -146,7 +155,9 @@ async def _run(args: argparse.Namespace) -> int:
             )
         except RPCError as exc:
             print(f"Direct replies failed: {exc}")
-        print(f"Direct replies: {len(direct)} | ids: {_summarize_ids(direct, args.max_list)}")
+        print(
+            f"Direct replies: {len(direct)} | ids: {_summarize_ids(direct, args.max_list)}"
+        )
 
         fallback: list = []
         window_seconds = max(args.window_minutes, 0) * 60
@@ -172,7 +183,9 @@ async def _run(args: argparse.Namespace) -> int:
             fallback.append(reply)
 
         try:
-            async for reply in client.iter_messages(discussion_chat_id, limit=args.fallback_limit):
+            async for reply in client.iter_messages(
+                discussion_chat_id, limit=args.fallback_limit
+            ):
                 header = getattr(reply, "reply_to", None)
                 if header:
                     top_id = getattr(header, "reply_to_top_id", None)
@@ -196,7 +209,9 @@ async def _run(args: argparse.Namespace) -> int:
         except RPCError as exc:
             print(f"Fallback scan failed: {exc}")
 
-        print(f"Fallback scan: {len(fallback)} | ids: {_summarize_ids(fallback, args.max_list)}")
+        print(
+            f"Fallback scan: {len(fallback)} | ids: {_summarize_ids(fallback, args.max_list)}"
+        )
 
         if args.aggressive is None:
             aggressive_enabled = True
@@ -218,12 +233,16 @@ async def _run(args: argparse.Namespace) -> int:
                 )
             except RPCError as exc:
                 print(f"Aggressive scan failed: {exc}")
-        print(f"Aggressive scan: {len(aggressive)} | ids: {_summarize_ids(aggressive, args.max_list)}")
+        print(
+            f"Aggressive scan: {len(aggressive)} | ids: {_summarize_ids(aggressive, args.max_list)}"
+        )
         return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check discussion photos for a Telegram post.")
+    parser = argparse.ArgumentParser(
+        description="Check discussion photos for a Telegram post."
+    )
     parser.add_argument("--channel-id", type=int, required=True)
     parser.add_argument("--message-id", type=int, required=True)
     parser.add_argument("--fallback-limit", type=int, default=200)

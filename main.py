@@ -91,7 +91,10 @@ def main() -> None:
                 try:
                     size_bytes = photo_path.stat().st_size
                 except OSError:
-                    log("WARN", f"Не удалось определить размер файла {photo_path.name}. Пропускаю.")
+                    log(
+                        "WARN",
+                        f"Не удалось определить размер файла {photo_path.name}. Пропускаю.",
+                    )
                     continue
                 if size_bytes > MAX_UPLOAD_BYTES:
                     size_mb = size_bytes / (1024 * 1024)
@@ -102,9 +105,15 @@ def main() -> None:
                     continue
                 filtered_paths.append(photo_path)
             if photo_paths and not filtered_paths:
-                log("WARN", "Все файлы превышают лимит размера. Загрузка фото пропущена.")
+                log(
+                    "WARN",
+                    "Все файлы превышают лимит размера. Загрузка фото пропущена.",
+                )
             for idx, photo_path in enumerate(filtered_paths, start=1):
-                log("INFO", f"Загрузка фото {idx}/{len(filtered_paths)}: {photo_path.name}")
+                log(
+                    "INFO",
+                    f"Загрузка фото {idx}/{len(filtered_paths)}: {photo_path.name}",
+                )
                 photo_id = upload_photo(ctx, csrftoken, photo_path)
                 photo_ids.append(photo_id)
                 log("OK", f"Фото загружено: id={photo_id}")
@@ -133,7 +142,9 @@ def main() -> None:
                 channel_id=channel_id,
             )
             product_id = created_product.get("id")
-            log("OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}.")
+            log(
+                "OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}."
+            )
         finally:
             browser.close()
 

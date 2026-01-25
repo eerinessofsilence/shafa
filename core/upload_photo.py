@@ -5,6 +5,7 @@ from playwright.sync_api import BrowserContext
 from core.core import base_headers, read_response_json
 from data.const import API_URL, UPLOAD_PHOTO_MUTATION
 
+
 def upload_photo(ctx: BrowserContext, csrftoken: str, file_path: str) -> str:
     file_bytes = file_path.read_bytes()
     resp = ctx.request.post(
