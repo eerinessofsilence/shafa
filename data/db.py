@@ -7,6 +7,11 @@ from urllib.parse import urlparse
 from data.const import DB_PATH
 
 _COOKIE_BASE_DOMAIN = "shafa.ua"
+_DB_INITIALIZED = False
+_SIZE_ID_BY_NAME_CACHE: Optional[dict[str, int]] = None
+_SIZE_IDS_CACHE: Optional[set[int]] = None
+_BRAND_ID_BY_NAME_CACHE: Optional[dict[str, int]] = None
+_BRAND_NAMES_CACHE: Optional[list[str]] = None
 
 
 def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
@@ -17,6 +22,7 @@ def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
+    global _DB_INITIALIZED
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(
@@ -87,6 +93,74 @@ def init_db(db_path: Path = DB_PATH) -> None:
         )
         _ensure_uploaded_products_schema(conn)
         _ensure_telegram_channels_schema(conn)
+    _DB_INITIALIZED = True
+
+
+def _ensure_db_initialized() -> None:
+    if _DB_INITIALIZED:
+        return
+    init_db()
+
+
+def _load_sizes_cache() -> tuple[dict[str, int], set[int]]:
+    global _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
+    if _SIZE_ID_BY_NAME_CACHE is not None and _SIZE_IDS_CACHE is not None:
+        return _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
+    _ensure_db_initialized()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, primary_size_name
+            FROM sizes
+            """
+        ).fetchall()
+    mapping: dict[str, int] = {}
+    ids: set[int] = set()
+    for row in rows:
+        size_id = row["id"]
+        if size_id is None:
+            continue
+        size_id_int = int(size_id)
+        ids.add(size_id_int)
+        name = row["primary_size_name"]
+        if not name:
+            continue
+        key = str(name).strip().casefold()
+        if key and key not in mapping:
+            mapping[key] = size_id_int
+    _SIZE_ID_BY_NAME_CACHE = mapping
+    _SIZE_IDS_CACHE = ids
+    return mapping, ids
+
+
+def _load_brands_cache() -> tuple[dict[str, int], list[str]]:
+    global _BRAND_ID_BY_NAME_CACHE, _BRAND_NAMES_CACHE
+    if _BRAND_ID_BY_NAME_CACHE is not None and _BRAND_NAMES_CACHE is not None:
+        return _BRAND_ID_BY_NAME_CACHE, _BRAND_NAMES_CACHE
+    _ensure_db_initialized()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name
+            FROM brands
+            WHERE name IS NOT NULL AND TRIM(name) != ''
+            """
+        ).fetchall()
+    mapping: dict[str, int] = {}
+    names: list[str] = []
+    for row in rows:
+        brand_id = row["id"]
+        name = row["name"]
+        if brand_id is None or not name:
+            continue
+        names.append(name)
+        key = str(name).strip().casefold()
+        if key and key not in mapping:
+            mapping[key] = int(brand_id)
+    names = sorted(names)
+    _BRAND_ID_BY_NAME_CACHE = mapping
+    _BRAND_NAMES_CACHE = names
+    return mapping, names
 
 
 def _ensure_uploaded_products_schema(conn: sqlite3.Connection) -> None:
@@ -118,7 +192,7 @@ def save_uploaded_product(
     size = product_raw_data.get("size")
     if size is None or str(size).strip() == "":
         return
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         conn.execute(
             """
@@ -139,7 +213,7 @@ def save_uploaded_product(
 
 
 def list_uploaded_products(limit: int = 20) -> list[dict]:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         rows = conn.execute(
             """
@@ -168,7 +242,7 @@ def mark_uploaded_products_deactivated(product_ids: list[int]) -> int:
     normalized_ids = [str(pid).strip() for pid in product_ids if str(pid).strip()]
     if not normalized_ids:
         return 0
-    init_db()
+    _ensure_db_initialized()
     placeholders = ",".join(["?"] * len(normalized_ids))
     with _connect() as conn:
         cursor = conn.execute(
@@ -183,7 +257,7 @@ def mark_uploaded_products_deactivated(product_ids: list[int]) -> int:
 
 
 def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         if limit is None:
             rows = conn.execute(
@@ -219,6 +293,7 @@ def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
 
 
 def save_sizes(sizes: list[dict]) -> None:
+    global _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
     if not sizes:
         return
     rows: list[tuple[object, str]] = []
@@ -230,7 +305,7 @@ def save_sizes(sizes: list[dict]) -> None:
         rows.append((size_id, str(primary_name)))
     if not rows:
         return
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         conn.executemany(
             """
@@ -241,9 +316,23 @@ def save_sizes(sizes: list[dict]) -> None:
             """,
             rows,
         )
+    if _SIZE_ID_BY_NAME_CACHE is not None or _SIZE_IDS_CACHE is not None:
+        mapping = _SIZE_ID_BY_NAME_CACHE or {}
+        ids = _SIZE_IDS_CACHE or set()
+        for size_id, primary_name in rows:
+            if size_id is None:
+                continue
+            size_id_int = int(size_id)
+            ids.add(size_id_int)
+            key = str(primary_name).strip().casefold()
+            if key:
+                mapping[key] = size_id_int
+        _SIZE_ID_BY_NAME_CACHE = mapping
+        _SIZE_IDS_CACHE = ids
 
 
 def save_brands(brands: list[dict]) -> None:
+    global _BRAND_ID_BY_NAME_CACHE, _BRAND_NAMES_CACHE
     if not brands:
         return
     rows: list[tuple[object, str]] = []
@@ -255,7 +344,7 @@ def save_brands(brands: list[dict]) -> None:
         rows.append((brand_id, str(name)))
     if not rows:
         return
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         conn.executemany(
             """
@@ -266,71 +355,44 @@ def save_brands(brands: list[dict]) -> None:
             """,
             rows,
         )
+    if _BRAND_ID_BY_NAME_CACHE is not None or _BRAND_NAMES_CACHE is not None:
+        mapping = _BRAND_ID_BY_NAME_CACHE or {}
+        names_set = set(_BRAND_NAMES_CACHE or [])
+        for brand_id, name in rows:
+            if brand_id is None or not name:
+                continue
+            names_set.add(name)
+            key = str(name).strip().casefold()
+            if key:
+                mapping[key] = int(brand_id)
+        _BRAND_ID_BY_NAME_CACHE = mapping
+        _BRAND_NAMES_CACHE = sorted(names_set)
 
 
 def get_size_id_by_name(primary_size_name: str) -> Optional[int]:
     name = str(primary_size_name).strip()
     if not name:
         return None
-    init_db()
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT id
-            FROM sizes
-            WHERE primary_size_name = ?
-            COLLATE NOCASE
-            """,
-            (name,),
-        ).fetchone()
-    return row["id"] if row else None
+    mapping, _ = _load_sizes_cache()
+    return mapping.get(name.casefold())
 
 
 def size_id_exists(size_id: int) -> bool:
-    init_db()
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT 1
-            FROM sizes
-            WHERE id = ?
-            LIMIT 1
-            """,
-            (size_id,),
-        ).fetchone()
-    return bool(row)
+    _, ids = _load_sizes_cache()
+    return size_id in ids
 
 
 def get_brand_id_by_name(brand_name: str) -> Optional[int]:
     name = str(brand_name).strip()
     if not name:
         return None
-    init_db()
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT id
-            FROM brands
-            WHERE name = ?
-            COLLATE NOCASE
-            """,
-            (name,),
-        ).fetchone()
-    return row["id"] if row else None
+    mapping, _ = _load_brands_cache()
+    return mapping.get(name.casefold())
 
 
 def list_brand_names() -> list[str]:
-    init_db()
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT name
-            FROM brands
-            WHERE name IS NOT NULL AND TRIM(name) != ''
-            ORDER BY name
-            """
-        ).fetchall()
-    return [row["name"] for row in rows]
+    _, names = _load_brands_cache()
+    return list(names)
 
 
 def save_telegram_product(
@@ -342,7 +404,7 @@ def save_telegram_product(
     size = parsed_data.get("size")
     if size is None or str(size).strip() == "":
         return False
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         cursor = conn.execute(
             """
@@ -377,7 +439,7 @@ def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> No
         rows.append((int(channel_id), text, alias))
     if not rows:
         return
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         conn.executemany(
             """
@@ -392,7 +454,7 @@ def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> No
 
 
 def load_telegram_channels() -> list[dict]:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         rows = conn.execute(
             """
@@ -408,7 +470,7 @@ def load_telegram_channels() -> list[dict]:
 
 
 def delete_telegram_channel(channel_id: int) -> None:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         conn.execute(
             """
@@ -423,7 +485,7 @@ def rename_telegram_channel(channel_id: int, name: str) -> bool:
     text = str(name).strip()
     if not text:
         return False
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         cursor = conn.execute(
             """
@@ -439,7 +501,7 @@ def rename_telegram_channel(channel_id: int, name: str) -> bool:
 def update_telegram_channel_alias(channel_id: int, alias: Optional[str]) -> bool:
     text = str(alias).strip() if alias is not None else ""
     value = text or None
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         cursor = conn.execute(
             """
@@ -455,7 +517,7 @@ def update_telegram_channel_alias(channel_id: int, alias: Optional[str]) -> bool
 def update_telegram_channel_id(old_channel_id: int, new_channel_id: int) -> bool:
     if old_channel_id == new_channel_id:
         return False
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         try:
             cursor = conn.execute(
@@ -483,7 +545,7 @@ def update_telegram_channel_id(old_channel_id: int, new_channel_id: int) -> bool
 
 
 def get_next_uncreated_telegram_product(channel_id: int) -> Optional[sqlite3.Row]:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         return conn.execute(
             """
@@ -502,7 +564,7 @@ def mark_telegram_product_created(
     message_id: int,
     created_product_id: Optional[str] = None,
 ) -> None:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         conn.execute(
             """
@@ -519,7 +581,7 @@ def mark_telegram_product_created(
 def save_cookies(cookies: list[dict]) -> None:
     if not cookies:
         return
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         _cleanup_non_shafa_cookies(conn, allow_subdomains=True)
         for cookie in cookies:
@@ -561,7 +623,7 @@ def save_cookies(cookies: list[dict]) -> None:
 
 
 def load_cookies(domain: Optional[str] = None) -> list[dict]:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         if domain:
             normalized = _normalize_domain(domain)
@@ -602,7 +664,7 @@ def load_cookies(domain: Optional[str] = None) -> list[dict]:
 
 
 def delete_all_cookies() -> int:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         row = conn.execute("SELECT COUNT(*) AS count FROM cookies").fetchone()
         count = int(row["count"]) if row else 0
@@ -611,7 +673,7 @@ def delete_all_cookies() -> int:
 
 
 def cleanup_cookies(allow_subdomains: bool = True) -> int:
-    init_db()
+    _ensure_db_initialized()
     with _connect() as conn:
         return _cleanup_non_shafa_cookies(conn, allow_subdomains=allow_subdomains)
 
