@@ -21,8 +21,6 @@ def init_db(db_path: Path = DB_PATH) -> None:
     with _connect(db_path) as conn:
         conn.executescript(
             """
-            DROP TABLE IF EXISTS sold_products;
-
             CREATE TABLE IF NOT EXISTS uploaded_products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product_id TEXT,
