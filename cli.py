@@ -388,6 +388,7 @@ def _delete_account_cookies() -> None:
 
 def _deactivate_product() -> None:
     from core import deactivate_product
+    from data.db import mark_uploaded_products_deactivated
 
     products = _print_products()
     if not products:
@@ -418,6 +419,7 @@ def _deactivate_product() -> None:
         print(f"Deactivation errors: {errors}")
         return
     if result.get("isSuccess"):
+        mark_uploaded_products_deactivated(product_ids)
         print(f"Deactivated {len(product_ids)} product(s).")
         return
     print("Deactivation failed.")

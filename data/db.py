@@ -87,7 +87,20 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 ON cookies(domain);
             """
         )
+        _ensure_uploaded_products_schema(conn)
         _ensure_telegram_channels_schema(conn)
+
+
+def _ensure_uploaded_products_schema(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(uploaded_products)").fetchall()
+    }
+    if "is_active" not in columns:
+        conn.execute(
+            "ALTER TABLE uploaded_products ADD COLUMN is_active "
+            "INTEGER NOT NULL DEFAULT 1"
+        )
 
 
 def _ensure_telegram_channels_schema(conn: sqlite3.Connection) -> None:
@@ -135,6 +148,7 @@ def list_uploaded_products(limit: int = 20) -> list[dict]:
             SELECT product_id, name, created_at
             FROM uploaded_products
             WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
+              AND COALESCE(is_active, 1) = 1
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -148,6 +162,26 @@ def list_uploaded_products(limit: int = 20) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def mark_uploaded_products_deactivated(product_ids: list[int]) -> int:
+    if not product_ids:
+        return 0
+    normalized_ids = [str(pid).strip() for pid in product_ids if str(pid).strip()]
+    if not normalized_ids:
+        return 0
+    init_db()
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    with _connect() as conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE uploaded_products
+            SET is_active = 0
+            WHERE product_id IN ({placeholders})
+            """,
+            normalized_ids,
+        )
+    return cursor.rowcount
 
 
 def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
