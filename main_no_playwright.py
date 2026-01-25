@@ -620,6 +620,8 @@ def main() -> None:
         "Товар создан успешно. "
         f"Имя товара: {product_name}. ID: {product_id}. Фото: {len(photo_ids)}.",
     )
+    reset_media_dir(media_dir)
+    log("INFO", "Фото удалены после создания товара.")
 
 
 if __name__ == "__main__":

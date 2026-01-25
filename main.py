@@ -142,9 +142,9 @@ def main() -> None:
                 channel_id=channel_id,
             )
             product_id = created_product.get("id")
-            log(
-                "OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}."
-            )
+            log("OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}.")
+            reset_media_dir(media_dir)
+            log("INFO", "Фото удалены после создания товара.")
         finally:
             browser.close()
 
