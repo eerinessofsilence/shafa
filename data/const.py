@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+from typing import Optional
 
 CREATE_PRODUCT_MUTATION = """
 mutation WEB_CreateProduct(
@@ -65,8 +67,23 @@ mutation UploadPhoto($file: String!) {
 }
 """
 
-TELEGRAM_API_ID = 39423515
-TELEGRAM_API_HASH = "0417175f011283bfd6bd76e4925a4136"
+def _get_env_int(name: str) -> Optional[int]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+
+
+def _get_env_str(name: str) -> Optional[str]:
+    value = os.getenv(name, "").strip()
+    return value or None
+
+
+TELEGRAM_API_ID = _get_env_int("SHAFA_TELEGRAM_API_ID")
+TELEGRAM_API_HASH = _get_env_str("SHAFA_TELEGRAM_API_HASH")
 TELEGRAM_CHANNELS: list[tuple[int, str, str]] = [
     (-1001184429834, "GENERATION DROP / OPT 🌊", "main"),
     (-1001252296189, "", "extra_photos"),
