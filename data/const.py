@@ -2,6 +2,17 @@ import os
 from pathlib import Path
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+except ImportError as exc:  # pragma: no cover - runtime dependency
+    raise RuntimeError(
+        "python-dotenv is required to load .env. "
+        "Install it with: pip install python-dotenv"
+    ) from exc
+
+_ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=_ROOT_DIR / ".env", override=False)
+
 CREATE_PRODUCT_MUTATION = """
 mutation WEB_CreateProduct(
   $photosStr: [String],
