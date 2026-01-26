@@ -1,4 +1,5 @@
 import json
+import random
 import re
 import sys
 import time
@@ -114,9 +115,19 @@ def run_periodic(action: Callable[[], None], label: str) -> None:
         except Exception as exc:
             print(f"[ОШИБКА] {label} не выполнено: {exc}")
         try:
-            next_at = time.strftime("%H:%M:%S", time.localtime(time.time() + interval))
-            print(f"Следующий запуск в {next_at}. Нажмите Ctrl+C для остановки.")
-            time.sleep(interval)
+            percent = random.randint(1, 30)
+            sign = random.choice((-1, 1))
+            jitter = interval * (percent / 100.0)
+            delay = max(1.0, interval + sign * jitter)
+            next_at = time.strftime("%H:%M:%S", time.localtime(time.time() + delay))
+            direction = "+" if sign > 0 else "-"
+            delay_minutes = delay / 60.0
+            print(
+                "Следующий запуск в "
+                f"{next_at}. Пауза: {delay_minutes:.1f} мин ({direction}{percent}%). "
+                "Нажмите Ctrl+C для остановки."
+            )
+            time.sleep(delay)
         except KeyboardInterrupt:
             print()
             return
