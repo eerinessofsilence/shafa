@@ -19,9 +19,9 @@ def _print_menu(labels: list[str], title: str, quit_label: str) -> None:
     print(quit_label)
 
 
-def _read_choice(count: int, prompt: str = "Enter choice: ") -> Optional[int]:
+def _read_choice(count: int, prompt: str = "Введите номер: ") -> Optional[int]:
     value = input(prompt).strip().lower()
-    if value in {"q", "quit", "exit"}:
+    if value in {"q", "quit", "exit", "назад", "выход", "й"}:
         return None
     if not value.isdigit():
         return -1
@@ -32,7 +32,7 @@ def _read_choice(count: int, prompt: str = "Enter choice: ") -> Optional[int]:
 
 
 def _prompt_minutes() -> Optional[int]:
-    raw = input("Interval in minutes (>=1): ").strip()
+    raw = input("Интервал в минутах (>=1): ").strip()
     if not raw:
         return None
     if not raw.isdigit():
@@ -64,31 +64,31 @@ def _read_single_key() -> Optional[str]:
 def _choose_yes_no(question: str, default: bool = True) -> Optional[bool]:
     if not sys.stdin.isatty() or termios is None or tty is None:
         while True:
-            raw = input(f"{question} (y/n): ").strip().lower()
-            if raw in {"q", "quit"}:
+            raw = input(f"{question} (д/н): ").strip().lower()
+            if raw in {"q", "quit", "выход", "назад", "й"}:
                 return None
-            if raw in {"y", "yes"}:
+            if raw in {"y", "yes", "д", "да"}:
                 return True
-            if raw in {"n", "no"}:
+            if raw in {"n", "no", "н", "нет"}:
                 return False
         return None
 
     selection = default
     while True:
-        yes = "[Yes]" if selection else " Yes "
-        no = "[No]" if not selection else " No "
+        yes = "[Да]" if selection else " Да "
+        no = "[Нет]" if not selection else " Нет "
         print(f"\r{question} {yes} {no} ", end="", flush=True)
         key = _read_single_key()
         if key in {"\r", "\n"}:
             print()
             return selection
-        if key in {"y", "Y"}:
+        if key in {"y", "Y", "д", "Д"}:
             print()
             return True
-        if key in {"n", "N"}:
+        if key in {"n", "N", "н", "Н"}:
             print()
             return False
-        if key in {"q", "Q"}:
+        if key in {"q", "Q", "й", "Й"}:
             print()
             return None
         if key == "\x03":
@@ -103,19 +103,19 @@ def run_periodic(action: Callable[[], None], label: str) -> None:
         if minutes is None:
             minutes = 10
         if minutes == -1:
-            print("Invalid interval.")
+            print("Неверный интервал.")
             continue
         break
     interval = minutes * 60
-    print(f"Starting periodic mode for: {label}. Interval: {minutes} min.")
+    print(f"Запуск периодического режима: {label}. Интервал: {minutes} мин.")
     while True:
         try:
             action()
         except Exception as exc:
-            print(f"[ERROR] {label} failed: {exc}")
+            print(f"[ОШИБКА] {label} не выполнено: {exc}")
         try:
             next_at = time.strftime("%H:%M:%S", time.localtime(time.time() + interval))
-            print(f"Next run at {next_at}. Press Ctrl+C to stop.")
+            print(f"Следующий запуск в {next_at}. Нажмите Ctrl+C для остановки.")
             time.sleep(interval)
         except KeyboardInterrupt:
             print()
@@ -126,7 +126,7 @@ def _create_product() -> None:
     import main
     import main_no_playwright
 
-    use_gui = _choose_yes_no("With Browser GUI?", default=True)
+    use_gui = _choose_yes_no("С окном браузера?", default=True)
     if use_gui is None:
         return
     if use_gui:
@@ -139,13 +139,13 @@ def _auto_create_product() -> None:
     import main
     import main_no_playwright
 
-    use_gui = _choose_yes_no("With Browser GUI?", default=True)
+    use_gui = _choose_yes_no("С окном браузера?", default=True)
     if use_gui is None:
         return
     if use_gui:
         run_periodic(main.main, "Playwright")
     else:
-        run_periodic(main_no_playwright.main, "No Playwright")
+        run_periodic(main_no_playwright.main, "Без Playwright")
 
 
 def _bootstrap_project() -> None:
@@ -159,12 +159,12 @@ def _print_products(limit: int = 20) -> list[dict]:
 
     products = list_uploaded_products(limit=limit)
     if not products:
-        print("No products found.")
+        print("Товары не найдены.")
         return []
-    print("Products:")
+    print("Товары:")
     for idx, row in enumerate(products, start=1):
-        name = row.get("name") or "N/A"
-        product_id = row.get("product_id") or "N/A"
+        name = row.get("name") or "нет данных"
+        product_id = row.get("product_id") or "нет данных"
         print(f"{idx}. {name} | {product_id}")
     return products
 
@@ -188,22 +188,22 @@ def _parse_index_selection(value: str, count: int) -> list[int]:
 def _add_telegram_channel() -> None:
     from data.db import save_telegram_channels
 
-    raw_id = input("Telegram channel id: ").strip()
+    raw_id = input("ID Telegram-канала: ").strip()
     if not raw_id:
-        print("Channel id is required.")
+        print("ID канала обязателен.")
         return
     try:
         channel_id = int(raw_id)
     except ValueError:
-        print("Channel id must be a number.")
+        print("ID канала должен быть числом.")
         return
-    name = input("Channel name: ").strip()
+    name = input("Название канала: ").strip()
     if not name:
-        print("Channel name is required.")
+        print("Название канала обязательно.")
         return
-    alias = input("Alias (optional): ").strip() or None
+    alias = input("Алиас (необязательно): ").strip() or None
     save_telegram_channels([(channel_id, name, alias)])
-    print("Channel saved.")
+    print("Канал сохранен.")
 
 
 def _list_telegram_channels() -> None:
@@ -211,9 +211,9 @@ def _list_telegram_channels() -> None:
 
     channels = load_telegram_channels()
     if not channels:
-        print("No Telegram channels configured.")
+        print("Telegram-каналы не настроены.")
         return
-    print("Telegram channels:")
+    print("Telegram-каналы:")
     for idx, row in enumerate(channels, start=1):
         alias = row.get("alias") or "-"
         print(f"{idx}. {row['channel_id']} | {row['name']} | {alias}")
@@ -231,25 +231,25 @@ def _delete_telegram_channel(channel: dict) -> None:
     from data.db import delete_telegram_channel
 
     label = _format_channel_label(channel)
-    confirm = _choose_yes_no(f"Delete channel {label}?", default=False)
+    confirm = _choose_yes_no(f"Удалить канал {label}?", default=False)
     if confirm is None or not confirm:
         return
     delete_telegram_channel(channel["channel_id"])
-    print("Channel deleted.")
+    print("Канал удален.")
 
 
 def _rename_telegram_channel(channel: dict) -> None:
     from data.db import rename_telegram_channel
 
     name = channel.get("name") or str(channel.get("channel_id") or "")
-    raw = input(f"New name for {name}: ").strip()
+    raw = input(f"Новое имя для {name}: ").strip()
     if not raw:
-        print("Channel name is required.")
+        print("Название канала обязательно.")
         return
     if not rename_telegram_channel(channel["channel_id"], raw):
-        print("Rename failed.")
+        print("Переименование не удалось.")
         return
-    print("Channel renamed.")
+    print("Канал переименован.")
 
 
 def _change_telegram_channel_alias(channel: dict) -> None:
@@ -257,12 +257,14 @@ def _change_telegram_channel_alias(channel: dict) -> None:
 
     name = channel.get("name") or str(channel.get("channel_id") or "")
     current = channel.get("alias") or "-"
-    raw = input(f"New alias for {name} (blank to clear, current: {current}): ").strip()
+    raw = input(
+        f"Новый алиас для {name} (пусто - удалить, текущий: {current}): "
+    ).strip()
     alias = raw or None
     if not update_telegram_channel_alias(channel["channel_id"], alias):
-        print("Alias update failed.")
+        print("Не удалось обновить алиас.")
         return
-    print("Alias updated.")
+    print("Алиас обновлен.")
 
 
 def _change_telegram_channel_id(channel: dict) -> None:
@@ -270,33 +272,33 @@ def _change_telegram_channel_id(channel: dict) -> None:
 
     name = channel.get("name") or str(channel.get("channel_id") or "")
     current_id = channel.get("channel_id")
-    raw = input(f"New channel ID for {name} (current: {current_id}): ").strip()
+    raw = input(f"Новый ID канала для {name} (текущий: {current_id}): ").strip()
     if not raw:
-        print("Channel ID is required.")
+        print("ID канала обязателен.")
         return
     try:
         new_id = int(raw)
     except ValueError:
-        print("Invalid channel ID.")
+        print("Неверный ID канала.")
         return
     if new_id == current_id:
-        print("Channel ID unchanged.")
+        print("ID канала не изменен.")
         return
     if not update_telegram_channel_id(current_id, new_id):
-        print("Channel ID update failed.")
+        print("Не удалось обновить ID канала.")
         return
-    print("Channel ID updated.")
+    print("ID канала обновлен.")
 
 
 def _manage_telegram_channel_actions(channel: dict) -> None:
     labels = [
-        "Delete channel",
-        "Rename channel",
-        "Change alias (e.g. extra_photos)",
-        "Change ID",
+        "Удалить канал",
+        "Переименовать канал",
+        "Изменить алиас (например, extra_photos)",
+        "Изменить ID",
     ]
     while True:
-        _print_menu(labels, title="What we need to do?", quit_label="q. Back")
+        _print_menu(labels, title="Что нужно сделать?", quit_label="q. Назад")
         try:
             choice = _read_choice(len(labels))
         except (EOFError, KeyboardInterrupt):
@@ -305,7 +307,7 @@ def _manage_telegram_channel_actions(channel: dict) -> None:
         if choice is None:
             return
         if choice == -1:
-            print("Invalid choice.")
+            print("Неверный выбор.")
             continue
         if choice == 1:
             _delete_telegram_channel(channel)
@@ -327,8 +329,8 @@ def _manage_telegram_channels() -> None:
     while True:
         channels = load_telegram_channels()
         labels = [_format_channel_label(row) for row in channels]
-        labels.append("[ + ] Add Telegram channel")
-        _print_menu(labels, title="Manage Telegram channels:", quit_label="q. Back")
+        labels.append("[ + ] Добавить Telegram-канал")
+        _print_menu(labels, title="Управление Telegram-каналами:", quit_label="q. Назад")
         try:
             choice = _read_choice(len(labels))
         except (EOFError, KeyboardInterrupt):
@@ -337,7 +339,7 @@ def _manage_telegram_channels() -> None:
         if choice is None:
             return
         if choice == -1:
-            print("Invalid choice.")
+            print("Неверный выбор.")
             continue
         if choice == len(labels):
             _add_telegram_channel()
@@ -373,7 +375,7 @@ def _delete_account_cookies() -> None:
     from data.db import delete_all_cookies
 
     confirm = _choose_yes_no(
-        "Delete account cookies from DB and auth.json?",
+        "Удалить cookies аккаунта из БД и auth.json?",
         default=False,
     )
     if confirm is None or not confirm:
@@ -381,9 +383,9 @@ def _delete_account_cookies() -> None:
     removed = delete_all_cookies()
     auth_updated = _clear_storage_state_cookies(STORAGE_STATE_PATH)
     if auth_updated:
-        print(f"Deleted {removed} cookie(s). auth.json updated.")
+        print(f"Удалено cookies: {removed}. auth.json обновлен.")
     else:
-        print(f"Deleted {removed} cookie(s). auth.json not found.")
+        print(f"Удалено cookies: {removed}. auth.json не найден.")
 
 
 def _deactivate_product() -> None:
@@ -393,12 +395,12 @@ def _deactivate_product() -> None:
     products = _print_products()
     if not products:
         return
-    raw = input("Select product number(s) to deactivate: ").strip()
-    if not raw or raw.lower() in {"q", "quit"}:
+    raw = input("Введите номер(а) товара для деактивации: ").strip()
+    if not raw or raw.lower() in {"q", "quit", "назад", "выход", "й"}:
         return
     indexes = _parse_index_selection(raw, len(products))
     if not indexes:
-        print("No valid selections.")
+        print("Нет корректных выборов.")
         return
     product_ids: list[int] = []
     seen: set[int] = set()
@@ -409,31 +411,31 @@ def _deactivate_product() -> None:
                 seen.add(product_id)
                 product_ids.append(product_id)
     if not product_ids:
-        print("No valid product ids provided.")
+        print("Не переданы корректные ID товаров.")
         return
     result = deactivate_product.deactivate_products(product_ids)
     if not result:
         return
     errors = result.get("errors") or []
     if errors:
-        print(f"Deactivation errors: {errors}")
+        print(f"Ошибки деактивации: {errors}")
         return
     if result.get("isSuccess"):
         mark_uploaded_products_deactivated(product_ids)
-        print(f"Deactivated {len(product_ids)} product(s).")
+        print(f"Деактивировано товаров: {len(product_ids)}.")
         return
-    print("Deactivation failed.")
+    print("Деактивация не удалась.")
 
 
 def _product_management_menu() -> None:
     labels = [
-        "Create Product",
-        "Auto create product",
-        "Deactivate product",
-        "List of products",
+        "Создать товар",
+        "Автосоздание товара",
+        "Деактивировать товар",
+        "Список товаров",
     ]
     while True:
-        _print_menu(labels, title="Product management:", quit_label="q. Back")
+        _print_menu(labels, title="Управление товарами:", quit_label="q. Назад")
         try:
             choice = _read_choice(len(labels))
         except (EOFError, KeyboardInterrupt):
@@ -442,7 +444,7 @@ def _product_management_menu() -> None:
         if choice is None:
             return
         if choice == -1:
-            print("Invalid choice.")
+            print("Неверный выбор.")
             continue
         if choice == 1:
             _create_product()
@@ -456,12 +458,12 @@ def _product_management_menu() -> None:
 
 def _settings_menu() -> None:
     labels = [
-        "Bootstrap project",
-        "Manage Telegram channels",
-        "Delete account cookies",
+        "Инициализация проекта",
+        "Управление Telegram-каналами",
+        "Удалить cookies аккаунта",
     ]
     while True:
-        _print_menu(labels, title="Settings:", quit_label="q. Back")
+        _print_menu(labels, title="Настройки:", quit_label="q. Назад")
         try:
             choice = _read_choice(len(labels))
         except (EOFError, KeyboardInterrupt):
@@ -470,7 +472,7 @@ def _settings_menu() -> None:
         if choice is None:
             return
         if choice == -1:
-            print("Invalid choice.")
+            print("Неверный выбор.")
             continue
         if choice == 1:
             _bootstrap_project()
@@ -483,7 +485,7 @@ def _settings_menu() -> None:
 def _legacy_menu(actions: list[tuple[str, Callable[[], None]]]) -> None:
     labels = [label for label, _ in actions]
     while True:
-        _print_menu(labels, title="Select action:", quit_label="q. Quit")
+        _print_menu(labels, title="Выберите действие:", quit_label="q. Выход")
         try:
             choice = _read_choice(len(actions))
         except (EOFError, KeyboardInterrupt):
@@ -492,7 +494,7 @@ def _legacy_menu(actions: list[tuple[str, Callable[[], None]]]) -> None:
         if choice is None:
             return
         if choice == -1:
-            print("Invalid choice.")
+            print("Неверный выбор.")
             continue
         _, action = actions[choice - 1]
         action()
@@ -504,11 +506,11 @@ def main_cli(actions: Optional[list[tuple[str, Callable[[], None]]]] = None) -> 
         return
 
     labels = [
-        "Product management",
-        "Settings",
+        "Управление товарами",
+        "Настройки",
     ]
     while True:
-        _print_menu(labels, title="Select action:", quit_label="q. Quit")
+        _print_menu(labels, title="Выберите действие:", quit_label="q. Выход")
         try:
             choice = _read_choice(len(labels))
         except (EOFError, KeyboardInterrupt):
@@ -517,7 +519,7 @@ def main_cli(actions: Optional[list[tuple[str, Callable[[], None]]]] = None) -> 
         if choice is None:
             return
         if choice == -1:
-            print("Invalid choice.")
+            print("Неверный выбор.")
             continue
         if choice == 1:
             _product_management_menu()
