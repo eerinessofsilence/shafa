@@ -1,112 +1,154 @@
 import json
 import random
-import re
 import sys
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
-try:
-    import termios
-    import tty
-except ImportError:  # pragma: no cover - non-POSIX
-    termios = None
-    tty = None
+import inquirer
+
+_ADD_CHANNEL = object()
 
 
-def _print_menu(labels: list[str], title: str, quit_label: str) -> None:
-    print(title)
-    for idx, label in enumerate(labels, start=1):
-        print(f"{idx}. {label}")
-    print(quit_label)
+def _ensure_tty() -> bool:
+    if not sys.stdin.isatty():
+        print("Нужен интерактивный терминал.")
+        return False
+    return True
 
 
-def _read_choice(count: int, prompt: str = "Введите номер: ") -> Optional[int]:
-    value = input(prompt).strip().lower()
-    if value in {"q", "quit", "exit", "назад", "выход", "й"}:
+def _prompt_list(
+    message: str, choices: list[tuple[str, Any]], default: Any = None
+) -> Optional[Any]:
+    if not _ensure_tty():
         return None
-    if not value.isdigit():
-        return -1
-    choice = int(value)
-    if 1 <= choice <= count:
-        return choice
-    return -1
+    question = inquirer.List(
+        "choice",
+        message=message,
+        choices=choices,
+        default=default,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return answers.get("choice")
+
+
+def _prompt_checkbox(message: str, choices: list[tuple[str, Any]]) -> Optional[list[Any]]:
+    if not _ensure_tty():
+        return None
+    question = inquirer.Checkbox(
+        "items",
+        message=message,
+        choices=choices,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return answers.get("items") or []
+
+
+def _prompt_text(
+    message: str,
+    default: Optional[str] = None,
+    required: bool = False,
+    validator: Optional[Callable[[str], Any]] = None,
+) -> Optional[str]:
+    if not _ensure_tty():
+        return None
+
+    def _validate(_: dict, value: str) -> Any:
+        if required and not value:
+            return "Поле обязательно."
+        if validator is None:
+            return True
+        return validator(value)
+
+    question = inquirer.Text(
+        "value",
+        message=message,
+        default=default if default is not None else "",
+        validate=_validate if required or validator else None,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return str(answers.get("value") or "")
+
+
+def _prompt_int(
+    message: str,
+    default: Optional[int] = None,
+    min_value: Optional[int] = None,
+    required: bool = False,
+) -> Optional[int]:
+    if not _ensure_tty():
+        return None
+
+    def _validate(_: dict, value: str) -> Any:
+        if not value:
+            if required:
+                return "Введите число."
+            return True
+        if not value.isdigit():
+            return "Введите число."
+        number = int(value)
+        if min_value is not None and number < min_value:
+            return f"Минимум {min_value}."
+        return True
+
+    question = inquirer.Text(
+        "value",
+        message=message,
+        default=str(default) if default is not None else "",
+        validate=_validate if required or min_value is not None else None,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    raw = str(answers.get("value") or "").strip()
+    if not raw:
+        return None
+    return int(raw)
 
 
 def _prompt_minutes() -> Optional[int]:
-    raw = input("Интервал в минутах (>=1): ").strip()
-    if not raw:
-        return None
-    if not raw.isdigit():
-        return -1
-    value = int(raw)
-    if value < 1:
-        return -1
-    return value
-
-
-def _read_single_key() -> Optional[str]:
-    if not sys.stdin.isatty() or termios is None or tty is None:
-        return None
-    fd = sys.stdin.fileno()
-    try:
-        old_settings = termios.tcgetattr(fd)
-    except termios.error:
-        return None
-    try:
-        tty.setraw(fd)
-        key = sys.stdin.read(1)
-        if key == "\x1b":
-            key += sys.stdin.read(2)
-        return key
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return _prompt_int("Интервал в минутах (>=1):", default=10, min_value=1)
 
 
 def _choose_yes_no(question: str, default: bool = True) -> Optional[bool]:
-    if not sys.stdin.isatty() or termios is None or tty is None:
-        while True:
-            raw = input(f"{question} (д/н): ").strip().lower()
-            if raw in {"q", "quit", "выход", "назад", "й"}:
-                return None
-            if raw in {"y", "yes", "д", "да"}:
-                return True
-            if raw in {"n", "no", "н", "нет"}:
-                return False
+    if not _ensure_tty():
         return None
-
-    selection = default
-    while True:
-        yes = "[Да]" if selection else " Да "
-        no = "[Нет]" if not selection else " Нет "
-        print(f"\r{question} {yes} {no} ", end="", flush=True)
-        key = _read_single_key()
-        if key in {"\r", "\n"}:
-            print()
-            return selection
-        if key in {"y", "Y", "д", "Д"}:
-            print()
-            return True
-        if key in {"n", "N", "н", "Н"}:
-            print()
-            return False
-        if key in {"q", "Q", "й", "Й"}:
-            print()
-            return None
-        if key == "\x03":
-            raise KeyboardInterrupt
-        if key in {"\x1b[D", "\x1b[C"}:
-            selection = not selection
+    prompt = inquirer.Confirm("confirm", message=question, default=default)
+    try:
+        answers = inquirer.prompt([prompt])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return bool(answers.get("confirm"))
 
 
 def run_periodic(action: Callable[[], None], label: str) -> None:
-    while True:
-        minutes = _prompt_minutes()
-        if minutes is None:
-            minutes = 10
-        if minutes == -1:
-            print("Неверный интервал.")
-            continue
-        break
+    minutes = _prompt_minutes()
+    if minutes is None:
+        return
     interval = minutes * 60
     print(f"Запуск периодического режима: {label}. Интервал: {minutes} мин.")
     while True:
@@ -180,39 +222,44 @@ def _print_products(limit: int = 20) -> list[dict]:
     return products
 
 
-def _parse_index_selection(value: str, count: int) -> list[int]:
-    tokens = re.findall(r"\d+", value)
-    if not tokens:
+def _prompt_action_menu(
+    title: str,
+    actions: list[tuple[str, Callable[[], None]]],
+    exit_label: str,
+) -> Optional[Callable[[], None]]:
+    choices: list[tuple[str, Any]] = [(label, action) for label, action in actions]
+    if exit_label:
+        choices.append((exit_label, None))
+    return _prompt_list(title, choices)
+
+
+def _select_products_for_deactivation(products: list[dict]) -> list[str]:
+    choices: list[tuple[str, str]] = []
+    for idx, row in enumerate(products, start=1):
+        name = row.get("name") or "нет данных"
+        product_id = str(row.get("product_id") or "")
+        label = f"{idx}. {name} | {product_id or 'нет данных'}"
+        choices.append((label, product_id))
+
+    selected = _prompt_checkbox("Выберите товары для деактивации", choices)
+    if selected is None:
         return []
-    indexes: list[int] = []
-    seen: set[int] = set()
-    for token in tokens:
-        idx = int(token)
-        if not (1 <= idx <= count):
-            return []
-        if idx not in seen:
-            seen.add(idx)
-            indexes.append(idx)
-    return indexes
+    if not selected:
+        print("Ничего не выбрано.")
+        return []
+    return [str(value) for value in selected if value]
 
 
 def _add_telegram_channel() -> None:
     from data.db import save_telegram_channels
 
-    raw_id = input("ID Telegram-канала: ").strip()
-    if not raw_id:
-        print("ID канала обязателен.")
+    channel_id = _prompt_int("ID Telegram-канала:", required=True)
+    if channel_id is None:
         return
-    try:
-        channel_id = int(raw_id)
-    except ValueError:
-        print("ID канала должен быть числом.")
-        return
-    name = input("Название канала: ").strip()
+    name = _prompt_text("Название канала:", required=True)
     if not name:
-        print("Название канала обязательно.")
         return
-    alias = input("Алиас (необязательно): ").strip() or None
+    alias = _prompt_text("Алиас (необязательно):") or None
     save_telegram_channels([(channel_id, name, alias)])
     print("Канал сохранен.")
 
@@ -253,9 +300,8 @@ def _rename_telegram_channel(channel: dict) -> None:
     from data.db import rename_telegram_channel
 
     name = channel.get("name") or str(channel.get("channel_id") or "")
-    raw = input(f"Новое имя для {name}: ").strip()
+    raw = _prompt_text(f"Новое имя для {name}:", required=True)
     if not raw:
-        print("Название канала обязательно.")
         return
     if not rename_telegram_channel(channel["channel_id"], raw):
         print("Переименование не удалось.")
@@ -268,9 +314,11 @@ def _change_telegram_channel_alias(channel: dict) -> None:
 
     name = channel.get("name") or str(channel.get("channel_id") or "")
     current = channel.get("alias") or "-"
-    raw = input(
+    raw = _prompt_text(
         f"Новый алиас для {name} (пусто - удалить, текущий: {current}): "
-    ).strip()
+    )
+    if raw is None:
+        return
     alias = raw or None
     if not update_telegram_channel_alias(channel["channel_id"], alias):
         print("Не удалось обновить алиас.")
@@ -283,14 +331,11 @@ def _change_telegram_channel_id(channel: dict) -> None:
 
     name = channel.get("name") or str(channel.get("channel_id") or "")
     current_id = channel.get("channel_id")
-    raw = input(f"Новый ID канала для {name} (текущий: {current_id}): ").strip()
-    if not raw:
-        print("ID канала обязателен.")
-        return
-    try:
-        new_id = int(raw)
-    except ValueError:
-        print("Неверный ID канала.")
+    new_id = _prompt_int(
+        f"Новый ID канала для {name} (текущий: {current_id}): ",
+        required=True,
+    )
+    if new_id is None:
         return
     if new_id == current_id:
         print("ID канала не изменен.")
@@ -302,36 +347,19 @@ def _change_telegram_channel_id(channel: dict) -> None:
 
 
 def _manage_telegram_channel_actions(channel: dict) -> None:
-    labels = [
-        "Удалить канал",
-        "Переименовать канал",
-        "Изменить алиас (например, extra_photos)",
-        "Изменить ID",
+    actions = [
+        ("Удалить канал", lambda: _delete_telegram_channel(channel)),
+        ("Переименовать канал", lambda: _rename_telegram_channel(channel)),
+        (
+            "Изменить алиас (например, extra_photos)",
+            lambda: _change_telegram_channel_alias(channel),
+        ),
+        ("Изменить ID", lambda: _change_telegram_channel_id(channel)),
     ]
-    while True:
-        _print_menu(labels, title="Что нужно сделать?", quit_label="q. Назад")
-        try:
-            choice = _read_choice(len(labels))
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return
-        if choice is None:
-            return
-        if choice == -1:
-            print("Неверный выбор.")
-            continue
-        if choice == 1:
-            _delete_telegram_channel(channel)
-            return
-        if choice == 2:
-            _rename_telegram_channel(channel)
-            return
-        if choice == 3:
-            _change_telegram_channel_alias(channel)
-            return
-        if choice == 4:
-            _change_telegram_channel_id(channel)
-            return
+    action = _prompt_action_menu("Что нужно сделать?", actions, "Назад")
+    if action is None:
+        return
+    action()
 
 
 def _manage_telegram_channels() -> None:
@@ -339,24 +367,18 @@ def _manage_telegram_channels() -> None:
 
     while True:
         channels = load_telegram_channels()
-        labels = [_format_channel_label(row) for row in channels]
-        labels.append("[ + ] Добавить Telegram-канал")
-        _print_menu(labels, title="Управление Telegram-каналами:", quit_label="q. Назад")
-        try:
-            choice = _read_choice(len(labels))
-        except (EOFError, KeyboardInterrupt):
-            print()
+        choices: list[tuple[str, Any]] = [
+            (_format_channel_label(row), row) for row in channels
+        ]
+        choices.append(("[ + ] Добавить Telegram-канал", _ADD_CHANNEL))
+        choices.append(("Назад", None))
+        selection = _prompt_list("Управление Telegram-каналами", choices)
+        if selection is None:
             return
-        if choice is None:
-            return
-        if choice == -1:
-            print("Неверный выбор.")
-            continue
-        if choice == len(labels):
+        if selection is _ADD_CHANNEL:
             _add_telegram_channel()
             continue
-        channel = channels[choice - 1]
-        _manage_telegram_channel_actions(channel)
+        _manage_telegram_channel_actions(selection)
 
 
 def _clear_storage_state_cookies(path) -> bool:
@@ -406,108 +428,90 @@ def _deactivate_product() -> None:
     products = _print_products()
     if not products:
         return
-    raw = input("Введите номер(а) товара для деактивации: ").strip()
-    if not raw or raw.lower() in {"q", "quit", "назад", "выход", "й"}:
-        return
-    indexes = _parse_index_selection(raw, len(products))
-    if not indexes:
-        print("Нет корректных выборов.")
+    selected_values = _select_products_for_deactivation(products)
+    if not selected_values:
         return
     product_ids: list[int] = []
     seen: set[int] = set()
-    for idx in indexes:
-        product_id_raw = str(products[idx - 1].get("product_id") or "")
-        for product_id in deactivate_product.parse_product_ids(product_id_raw):
+    for value in selected_values:
+        for product_id in deactivate_product.parse_product_ids(value):
             if product_id not in seen:
                 seen.add(product_id)
                 product_ids.append(product_id)
     if not product_ids:
         print("Не переданы корректные ID товаров.")
         return
-    result = deactivate_product.deactivate_products(product_ids)
-    if not result:
-        return
-    errors = result.get("errors") or []
+    successes: list[int] = []
+    errors: list[dict] = []
+    for product_id in product_ids:
+        result = deactivate_product.deactivate_products([product_id])
+        if not result:
+            errors.append(
+                {
+                    "product_id": product_id,
+                    "error": "Не удалось получить ответ.",
+                }
+            )
+            break
+        result_errors = result.get("errors") or []
+        if result_errors:
+            errors.append(
+                {
+                    "product_id": product_id,
+                    "error": result_errors,
+                }
+            )
+            continue
+        if result.get("isSuccess"):
+            mark_uploaded_products_deactivated([product_id])
+            successes.append(product_id)
+            continue
+        errors.append(
+            {
+                "product_id": product_id,
+                "error": "Деактивация не удалась.",
+            }
+        )
     if errors:
         print(f"Ошибки деактивации: {errors}")
-        return
-    if result.get("isSuccess"):
-        mark_uploaded_products_deactivated(product_ids)
-        print(f"Деактивировано товаров: {len(product_ids)}.")
-        return
-    print("Деактивация не удалась.")
+    if successes:
+        print(f"Деактивировано товаров: {len(successes)}.")
+    if not successes and not errors:
+        print("Деактивация не удалась.")
 
 
 def _product_management_menu() -> None:
-    labels = [
-        "Создать товар",
-        "Автосоздание товара",
-        "Деактивировать товар",
-        "Список товаров",
+    actions = [
+        ("Создать товар", _create_product),
+        ("Автосоздание товара", _auto_create_product),
+        ("Деактивировать товары", _deactivate_product),
+        ("Список товаров", _print_products),
     ]
     while True:
-        _print_menu(labels, title="Управление товарами:", quit_label="q. Назад")
-        try:
-            choice = _read_choice(len(labels))
-        except (EOFError, KeyboardInterrupt):
-            print()
+        action = _prompt_action_menu("Управление товарами", actions, "Назад")
+        if action is None:
             return
-        if choice is None:
-            return
-        if choice == -1:
-            print("Неверный выбор.")
-            continue
-        if choice == 1:
-            _create_product()
-        elif choice == 2:
-            _auto_create_product()
-        elif choice == 3:
-            _deactivate_product()
-        elif choice == 4:
-            _print_products()
+        action()
 
 
 def _settings_menu() -> None:
-    labels = [
-        "Инициализация проекта",
-        "Управление Telegram-каналами",
-        "Удалить cookies аккаунта",
+    actions = [
+        ("Инициализация проекта", _bootstrap_project),
+        ("Управление Telegram-каналами", _manage_telegram_channels),
+        ("Удалить cookies аккаунта", _delete_account_cookies),
     ]
     while True:
-        _print_menu(labels, title="Настройки:", quit_label="q. Назад")
-        try:
-            choice = _read_choice(len(labels))
-        except (EOFError, KeyboardInterrupt):
-            print()
+        action = _prompt_action_menu("Настройки", actions, "Назад")
+        if action is None:
             return
-        if choice is None:
-            return
-        if choice == -1:
-            print("Неверный выбор.")
-            continue
-        if choice == 1:
-            _bootstrap_project()
-        elif choice == 2:
-            _manage_telegram_channels()
-        elif choice == 3:
-            _delete_account_cookies()
+        action()
 
 
 def _legacy_menu(actions: list[tuple[str, Callable[[], None]]]) -> None:
-    labels = [label for label, _ in actions]
     while True:
-        _print_menu(labels, title="Выберите действие:", quit_label="q. Выход")
-        try:
-            choice = _read_choice(len(actions))
-        except (EOFError, KeyboardInterrupt):
-            print()
+        action = _prompt_action_menu("Выберите действие", actions, "Выход")
+        if action is None:
             return
-        if choice is None:
-            return
-        if choice == -1:
-            print("Неверный выбор.")
-            continue
-        _, action = actions[choice - 1]
         action()
 
 
@@ -516,26 +520,15 @@ def main_cli(actions: Optional[list[tuple[str, Callable[[], None]]]] = None) -> 
         _legacy_menu(actions)
         return
 
-    labels = [
-        "Управление товарами",
-        "Настройки",
+    actions = [
+        ("Управление товарами", _product_management_menu),
+        ("Настройки", _settings_menu),
     ]
     while True:
-        _print_menu(labels, title="Выберите действие:", quit_label="q. Выход")
-        try:
-            choice = _read_choice(len(labels))
-        except (EOFError, KeyboardInterrupt):
-            print()
+        action = _prompt_action_menu("Выберите действие", actions, "Выход")
+        if action is None:
             return
-        if choice is None:
-            return
-        if choice == -1:
-            print("Неверный выбор.")
-            continue
-        if choice == 1:
-            _product_management_menu()
-        elif choice == 2:
-            _settings_menu()
+        action()
 
 
 if __name__ == "__main__":
