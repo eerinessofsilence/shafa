@@ -2,6 +2,7 @@ import json
 import random
 import sys
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import inquirer
@@ -14,6 +15,22 @@ def _ensure_tty() -> bool:
         print("Нужен интерактивный терминал.")
         return False
     return True
+
+
+def _print_ascii_banner() -> None:
+    path = Path(__file__).resolve().parent / "data" / "ascii.txt"
+    if not path.exists():
+        return
+    try:
+        banner = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not banner:
+        return
+    if banner.endswith("\n"):
+        sys.stdout.write(banner)
+    else:
+        sys.stdout.write(f"{banner}\n")
 
 
 def _prompt_list(
@@ -516,6 +533,7 @@ def _legacy_menu(actions: list[tuple[str, Callable[[], None]]]) -> None:
 
 
 def main_cli(actions: Optional[list[tuple[str, Callable[[], None]]]] = None) -> None:
+    _print_ascii_banner()
     if actions:
         _legacy_menu(actions)
         return
