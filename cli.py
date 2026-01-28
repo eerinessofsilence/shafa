@@ -92,7 +92,8 @@ def _prompt_text(
         "value",
         message=message,
         default=default if default is not None else "",
-        validate=_validate if required or validator else None,
+        # When not required and no custom validator, always accept input.
+        validate=_validate if required or validator else True,
     )
     try:
         answers = inquirer.prompt([question])
@@ -270,13 +271,13 @@ def _select_products_for_deactivation(products: list[dict]) -> list[str]:
 def _add_telegram_channel() -> None:
     from data.db import save_telegram_channels
 
-    channel_id = _prompt_int("ID Telegram-канала:", required=True)
+    channel_id = _prompt_int("ID Telegram-канала", required=True)
     if channel_id is None:
         return
-    name = _prompt_text("Название канала:", required=True)
+    name = _prompt_text("Название канала", required=True)
     if not name:
         return
-    alias = _prompt_text("Алиас (необязательно):") or None
+    alias = _prompt_text("Алиас (необязательно)") or None
     save_telegram_channels([(channel_id, name, alias)])
     print("Канал сохранен.")
 
@@ -288,7 +289,7 @@ def _list_telegram_channels() -> None:
     if not channels:
         print("Telegram-каналы не настроены.")
         return
-    print("Telegram-каналы:")
+    print("Telegram-канал")
     for idx, row in enumerate(channels, start=1):
         alias = row.get("alias") or "-"
         print(f"{idx}. {row['channel_id']} | {row['name']} | {alias}")
@@ -317,7 +318,7 @@ def _rename_telegram_channel(channel: dict) -> None:
     from data.db import rename_telegram_channel
 
     name = channel.get("name") or str(channel.get("channel_id") or "")
-    raw = _prompt_text(f"Новое имя для {name}:", required=True)
+    raw = _prompt_text(f"Новое имя для {name}", required=True)
     if not raw:
         return
     if not rename_telegram_channel(channel["channel_id"], raw):
@@ -332,7 +333,7 @@ def _change_telegram_channel_alias(channel: dict) -> None:
     name = channel.get("name") or str(channel.get("channel_id") or "")
     current = channel.get("alias") or "-"
     raw = _prompt_text(
-        f"Новый алиас для {name} (пусто - удалить, текущий: {current}): "
+        f"Новый алиас для {name} (пусто - удалить, текущий: {current}) "
     )
     if raw is None:
         return
@@ -349,7 +350,7 @@ def _change_telegram_channel_id(channel: dict) -> None:
     name = channel.get("name") or str(channel.get("channel_id") or "")
     current_id = channel.get("channel_id")
     new_id = _prompt_int(
-        f"Новый ID канала для {name} (текущий: {current_id}): ",
+        f"Новый ID канала для {name} (текущий: {current_id}) ",
         required=True,
     )
     if new_id is None:
