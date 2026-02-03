@@ -578,6 +578,30 @@ def mark_telegram_product_created(
         )
 
 
+def reset_telegram_products_created(channel_id: Optional[int] = None) -> int:
+    _ensure_db_initialized()
+    if channel_id is None:
+        where_clause = "created != 0 OR created_product_id IS NOT NULL"
+        params: tuple[object, ...] = ()
+    else:
+        where_clause = (
+            "(created != 0 OR created_product_id IS NOT NULL) AND channel_id = ?"
+        )
+        params = (channel_id,)
+    with _connect() as conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE telegram_products
+            SET created = 0,
+                created_product_id = NULL,
+                updated_at = datetime('now')
+            WHERE {where_clause}
+            """,
+            params,
+        )
+    return cursor.rowcount
+
+
 def save_cookies(cookies: list[dict]) -> None:
     if not cookies:
         return

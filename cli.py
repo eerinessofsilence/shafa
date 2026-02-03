@@ -439,6 +439,26 @@ def _delete_account_cookies() -> None:
         print(f"Удалено cookies: {removed}. auth.json не найден.")
 
 
+def _logout_and_reset_products() -> None:
+    from data.const import STORAGE_STATE_PATH
+    from data.db import delete_all_cookies, reset_telegram_products_created
+
+    confirm = _choose_yes_no(
+        "Выйти из аккаунта и вернуть все товары в очередь?",
+        default=False,
+    )
+    if confirm is None or not confirm:
+        return
+    removed = delete_all_cookies()
+    auth_updated = _clear_storage_state_cookies(STORAGE_STATE_PATH)
+    reset_count = reset_telegram_products_created()
+    if auth_updated:
+        print(f"Удалено cookies: {removed}. auth.json обновлен.")
+    else:
+        print(f"Удалено cookies: {removed}. auth.json не найден.")
+    print(f"Сброшено товаров: {reset_count}.")
+
+
 def _deactivate_product() -> None:
     from core import deactivate_product
     from data.db import mark_uploaded_products_deactivated
@@ -517,6 +537,7 @@ def _settings_menu() -> None:
         ("Инициализация проекта", _bootstrap_project),
         ("Управление Telegram-каналами", _manage_telegram_channels),
         ("Удалить cookies аккаунта", _delete_account_cookies),
+        ("Выйти и вернуть товары в очередь", _logout_and_reset_products),
     ]
     while True:
         action = _prompt_action_menu("Настройки", actions, "Назад")
