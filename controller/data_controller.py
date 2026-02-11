@@ -63,6 +63,10 @@ DEFAULT_DESCRIPTION = (
     "функціональності."
 )
 MAX_DOWNLOAD_PHOTOS = 10
+DEFAULT_SHOES_CATEGORY = "obuv/krossovki"
+WOMEN_SNEAKERS_CATEGORY = "zhenskaya-obuv/krossovki"
+WOMEN_SNEAKERS_MIN_SIZE = 36.0
+WOMEN_SNEAKERS_MAX_SIZE = 41.0
 
 _PRICE_HINTS = (
     "цена",
@@ -1341,6 +1345,39 @@ def _parse_price(value: Optional[str]) -> Optional[int]:
     return None
 
 
+def _parse_numeric_size(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+    else:
+        text = str(value).strip().replace(",", ".")
+        if not re.fullmatch(r"\d{2}(?:\.\d+)?", text):
+            return None
+        numeric = _to_number(text)
+    if numeric is None:
+        return None
+    if not (15 <= numeric <= 60):
+        return None
+    return numeric
+
+
+def _resolve_catalog_slug(size: object, additional_sizes: list[object]) -> str:
+    values = [size, *additional_sizes]
+    numeric_sizes = [
+        numeric_size
+        for value in values
+        for numeric_size in [_parse_numeric_size(value)]
+        if numeric_size is not None
+    ]
+    if numeric_sizes and all(
+        WOMEN_SNEAKERS_MIN_SIZE <= numeric_size <= WOMEN_SNEAKERS_MAX_SIZE
+        for numeric_size in numeric_sizes
+    ):
+        return WOMEN_SNEAKERS_CATEGORY
+    return DEFAULT_SHOES_CATEGORY
+
+
 def _resolve_brand_id(brand: Optional[str]) -> Optional[int]:
     if brand is None:
         return None
@@ -1409,16 +1446,22 @@ def _parse_additional_sizes(values: list[str]) -> list[int]:
 
 
 def _build_product_raw_data(parsed: dict) -> dict:
+    additional_size_values = parsed.get("additional_sizes", [])
+    if not isinstance(additional_size_values, list):
+        additional_size_values = []
     product_raw_data: dict = {
         "name": parsed.get("name", ""),
         "description": DEFAULT_DESCRIPTION,
-        "category": "obuv/krossovki",
+        "category": _resolve_catalog_slug(
+            parsed.get("size"),
+            additional_size_values,
+        ),
         "brand": _resolve_brand_id(parsed.get("brand")),
         "size": _resolve_size_id(parsed.get("size")),
         "price": _parse_price(parsed.get("price")),
     }
     product_raw_data["colors"] = _normalize_colors(parsed.get("color"))
-    additional_sizes = _parse_additional_sizes(parsed.get("additional_sizes", []))
+    additional_sizes = _parse_additional_sizes(additional_size_values)
     if additional_sizes:
         product_raw_data["additional_sizes"] = additional_sizes
     return product_raw_data
@@ -1462,7 +1505,9 @@ def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(get_next_product_for_upload_async(message_amount=message_amount))
+        return asyncio.run(
+            get_next_product_for_upload_async(message_amount=message_amount)
+        )
     raise RuntimeError(
         "get_next_product_for_upload cannot be called when an event loop is running. "
         "Use get_next_product_for_upload_async."
