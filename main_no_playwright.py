@@ -48,6 +48,9 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/122.0.0.0 Safari/537.36"
 )
+DEFAULT_CATALOG_SLUG = "obuv/krossovki"
+WOMEN_CATALOG_SLUG = "zhenskaya-obuv/krossovki"
+SIZE_CATALOG_SLUGS = (DEFAULT_CATALOG_SLUG, WOMEN_CATALOG_SLUG)
 
 try:
     from PIL import Image, ImageOps
@@ -291,7 +294,7 @@ def _request_json(
 def _fetch_sizes(
     csrftoken: str,
     cookies: list[dict],
-    catalog_slug: str = "obuv/krossovki",
+    catalog_slug: str = DEFAULT_CATALOG_SLUG,
 ) -> list[dict]:
     query = (
         "query WEB_ProductFormSizes($catalogSlug: String!) {\n"
@@ -329,6 +332,24 @@ def _fetch_sizes(
     sizes = data.get("data", {}).get("filterSize") or []
     save_sizes(sizes)
     return sizes
+
+
+def _refresh_sizes(
+    csrftoken: str,
+    cookies: list[dict],
+    catalog_slugs: tuple[str, ...] = SIZE_CATALOG_SLUGS,
+) -> int:
+    total = 0
+    seen: set[str] = set()
+    for catalog_slug in catalog_slugs:
+        slug = str(catalog_slug).strip()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        sizes = _fetch_sizes(csrftoken, cookies, catalog_slug=slug)
+        total += len(sizes)
+        log("INFO", f"Загружены размеры для {slug}: {len(sizes)}.")
+    return total
 
 
 def _encode_multipart(
@@ -518,7 +539,7 @@ def main() -> None:
     if product_raw_data.get("size") is None:
         log("WARN", "Размер не определён. Обновляю список размеров...")
         try:
-            _fetch_sizes(csrftoken, cookies)
+            _refresh_sizes(csrftoken, cookies)
         except Exception as exc:
             log("ERROR", f"Не удалось обновить размеры: {exc}")
             return

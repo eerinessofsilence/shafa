@@ -8,6 +8,8 @@ from core.get_sizes import get_sizes
 from data.const import HEADLESS, REFERER_URL, STORAGE_STATE_PATH
 from data.db import init_db, save_cookies
 
+SIZE_CATALOG_SLUGS = ("obuv/krossovki", "zhenskaya-obuv/krossovki")
+
 
 def main() -> None:
     init_db()
@@ -32,9 +34,13 @@ def main() -> None:
                 raise RuntimeError("csrftoken not found in context cookies")
             save_cookies(ctx.cookies())
 
-            sizes = get_sizes(ctx, csrftoken)
+            sizes_total = 0
+            for catalog_slug in SIZE_CATALOG_SLUGS:
+                sizes = get_sizes(ctx, csrftoken, catalog_slug=catalog_slug)
+                sizes_total += len(sizes)
+                print(f"Saved sizes for {catalog_slug}: {len(sizes)}")
             brands = get_brands(ctx, csrftoken)
-            print(f"Saved sizes: {len(sizes)}")
+            print(f"Saved sizes total: {sizes_total}")
             print(f"Saved brands: {len(brands)}")
         finally:
             browser.close()

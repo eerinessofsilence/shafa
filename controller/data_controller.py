@@ -1345,30 +1345,77 @@ def _parse_price(value: Optional[str]) -> Optional[int]:
     return None
 
 
-def _parse_numeric_size(value: object) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        numeric = float(value)
-    else:
-        text = str(value).strip().replace(",", ".")
-        if not re.fullmatch(r"\d{2}(?:\.\d+)?", text):
-            return None
-        numeric = _to_number(text)
-    if numeric is None:
-        return None
-    if not (15 <= numeric <= 60):
-        return None
-    return numeric
+def _extract_numeric_sizes(value: object) -> list[float]:
+    sizes: list[float] = []
 
+    def add_size(numeric: Optional[float]) -> None:
+        if numeric is None or not (15 <= numeric <= 60):
+            return
+        if numeric not in sizes:
+            sizes.append(numeric)
+
+    if value is None:
+        return sizes
+    if isinstance(value, (int, float)):
+        add_size(float(value))
+        return sizes
+
+    text = str(value).strip()
+    if not text:
+        return sizes
+
+    normalized = text.replace(",", ".")
+    without_length = re.sub(
+        r"\b\d{1,3}(?:\.\d+)?\s*(?:см|cm)\b",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+    for match in re.finditer(r"\b(\d{2})\s*[-–]\s*(\d{2})\b", without_length):
+        start = int(match.group(1))
+        end = int(match.group(2))
+        if not (15 <= start <= 60 and 15 <= end <= 60):
+            continue
+        if end < start or end - start > 20:
+            continue
+        for current in range(start, end + 1):
+            add_size(float(current))
+
+    for token in re.findall(r"(?<!\d)\d{2,3}(?:\.\d+)?(?!\d)", without_length):
+        add_size(_to_number(token))
+
+    return sizes
+
+
+def _size_name_candidates(value: object) -> list[str]:
+    text = str(value).strip()
+    candidates: list[str] = []
+
+    def add_candidate(candidate: str) -> None:
+        item = candidate.strip()
+        if item and item not in candidates:
+            candidates.append(item)
+
+    add_candidate(text)
+    add_candidate(text.replace(",", "."))
+    add_candidate(text.replace(".", ","))
+
+    for numeric in _extract_numeric_sizes(text):
+        normalized = f"{numeric:g}"
+        add_candidate(normalized)
+        add_candidate(normalized.replace(".", ","))
+        if numeric.is_integer():
+            add_candidate(str(int(numeric)))
+
+    return candidates
 
 def _resolve_catalog_slug(size: object, additional_sizes: list[object]) -> str:
     values = [size, *additional_sizes]
     numeric_sizes = [
         numeric_size
         for value in values
-        for numeric_size in [_parse_numeric_size(value)]
-        if numeric_size is not None
+        for numeric_size in _extract_numeric_sizes(value)
     ]
     if numeric_sizes and all(
         WOMEN_SNEAKERS_MIN_SIZE <= numeric_size <= WOMEN_SNEAKERS_MAX_SIZE
@@ -1395,21 +1442,16 @@ def _resolve_brand_id(brand: Optional[str]) -> Optional[int]:
     return BRAND_NAME_TO_ID.get(text.lower())
 
 
-def _resolve_size_id(value: Optional[str]) -> Optional[int]:
+def _resolve_size_id(value: Optional[object]) -> Optional[int]:
     if value is None:
         return None
     if isinstance(value, int):
         return value if size_id_exists(value) else None
     text = str(value).strip()
-    if not text:
-        return None
-    size_id = get_size_id_by_name(text)
-    if size_id is None and "," in text:
-        size_id = get_size_id_by_name(text.replace(",", "."))
-    if size_id is None and "." in text:
-        size_id = get_size_id_by_name(text.replace(".", ","))
-    if size_id is not None:
-        return size_id
+    for candidate in _size_name_candidates(text):
+        size_id = get_size_id_by_name(candidate)
+        if size_id is not None:
+            return size_id
     parsed = _parse_int(text)
     if parsed is None:
         return None
