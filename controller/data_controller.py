@@ -692,6 +692,13 @@ def _price_from_line(
     return _extract_last_price_token(line, allow_small=allow_small)
 
 
+def _looks_like_standalone_price_line(line: str) -> bool:
+    # Fallback price parsing should work only for mostly numeric lines
+    # to avoid treating model numbers in product names as prices.
+    cleaned = re.sub(r"[\d\s.,:/()+\-–—$€£₴]", "", line)
+    return cleaned == ""
+
+
 def extract_price(lines: list[str]) -> str:
     for line in lines:
         lower = line.casefold()
@@ -719,6 +726,8 @@ def extract_price(lines: list[str]) -> str:
         ):
             continue
         if _contains_any(lower, _SIZE_HINTS):
+            continue
+        if not _looks_like_standalone_price_line(line):
             continue
         compact = line.replace("\u00a0", " ")
         for token in re.findall(r"\d{2,6}(?:[.,]\d{1,2})?", compact):
@@ -798,11 +807,23 @@ def extract_sizes(lines: list[str]) -> tuple[str, list[str]]:
         else:
             fallback_lines.append(line)
 
-    candidates = hinted_lines or fallback_lines
-    for line in candidates:
-        for token in _extract_size_tokens_from_line(line):
-            if token not in sizes:
-                sizes.append(token)
+    if hinted_lines:
+        for line in hinted_lines:
+            for token in _extract_size_tokens_from_line(line):
+                if token not in sizes:
+                    sizes.append(token)
+    else:
+        for line in fallback_lines:
+            tokens = _extract_size_tokens_from_line(line)
+            if not tokens:
+                continue
+            if len(tokens) < 2:
+                cleaned = re.sub(r"[\d\s.,:/()+\-–—]", "", line)
+                if cleaned:
+                    continue
+            for token in tokens:
+                if token not in sizes:
+                    sizes.append(token)
     size = sizes[0] if sizes else ""
     additional_sizes = sizes[1:] if len(sizes) > 1 else []
     return size, additional_sizes
@@ -1514,26 +1535,37 @@ def build_product_raw_data(parsed: dict) -> dict:
 
 
 def _pick_next_product_for_upload() -> Optional[dict]:
-    rows = [
-        row
-        for channel_id in _get_channel_ids()
-        for row in [get_next_uncreated_telegram_product(channel_id)]
-        if row
-    ]
-    if not rows:
-        return None
-    row = max(rows, key=lambda item: item["created_at"])
-    parsed = json.loads(row["parsed_data"]) if row["parsed_data"] else {}
-    raw_message = row["raw_message"] or ""
-    reparsed = parse_message(raw_message) if raw_message else {}
-    if reparsed.get("price") and reparsed.get("size"):
-        parsed = reparsed
-    return {
-        "channel_id": row["channel_id"],
-        "message_id": row["message_id"],
-        "parsed_data": parsed,
-        "product_raw_data": _build_product_raw_data(parsed),
-    }
+    while True:
+        rows = [
+            row
+            for channel_id in _get_channel_ids()
+            for row in [get_next_uncreated_telegram_product(channel_id)]
+            if row
+        ]
+        if not rows:
+            return None
+        row = max(rows, key=lambda item: item["created_at"])
+        parsed_from_db = json.loads(row["parsed_data"]) if row["parsed_data"] else {}
+        raw_message = row["raw_message"] or ""
+        parsed = parse_message(raw_message) if raw_message else parsed_from_db
+        if not parsed.get("price") or not parsed.get("size"):
+            log(
+                "WARN",
+                f"Пропускаю сообщение channel_id={row['channel_id']} "
+                + f"message_id={row['message_id']}: нет цены/размера.",
+            )
+            mark_telegram_product_created(
+                row["channel_id"],
+                row["message_id"],
+                created_product_id="SKIPPED_MISSING_DATA",
+            )
+            continue
+        return {
+            "channel_id": row["channel_id"],
+            "message_id": row["message_id"],
+            "parsed_data": parsed,
+            "product_raw_data": _build_product_raw_data(parsed),
+        }
 
 
 async def get_next_product_for_upload_async(
