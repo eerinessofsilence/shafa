@@ -54,7 +54,9 @@ def _prompt_list(
     return answers.get("choice")
 
 
-def _prompt_checkbox(message: str, choices: list[tuple[str, Any]]) -> Optional[list[Any]]:
+def _prompt_checkbox(
+    message: str, choices: list[tuple[str, Any]]
+) -> Optional[list[Any]]:
     if not _ensure_tty():
         return None
     question = inquirer.Checkbox(
@@ -223,6 +225,48 @@ def _bootstrap_project() -> None:
     import bootstrap
 
     bootstrap.main()
+
+
+def _login_account() -> None:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+
+    from core.context import new_context_with_storage
+    from core.core import get_csrftoken_from_context
+    from data.const import REFERER_URL, STORAGE_STATE_PATH
+    from data.db import init_db, save_cookies
+
+    init_db()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        try:
+            ctx = new_context_with_storage(browser)
+            page = ctx.new_page()
+            page.set_default_timeout(60000)
+            page.goto(REFERER_URL, wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except PlaywrightTimeoutError:
+                pass
+
+            print("Выполни вход в аккаунт в окне браузера и нажми Enter.")
+            try:
+                input()
+            except KeyboardInterrupt:
+                print()
+                print("Вход отменен.")
+                return
+
+            ctx.storage_state(path=str(STORAGE_STATE_PATH))
+            csrftoken = get_csrftoken_from_context(ctx)
+            if not csrftoken:
+                print("Не удалось получить csrftoken. Проверь, что вход выполнен.")
+                return
+            cookies = ctx.cookies()
+            save_cookies(cookies)
+            print(f"Вход сохранен. Cookies: {len(cookies)}.")
+        finally:
+            browser.close()
 
 
 def _print_products(limit: int = 20) -> list[dict]:
@@ -535,6 +579,7 @@ def _product_management_menu() -> None:
 def _settings_menu() -> None:
     actions = [
         ("Инициализация проекта", _bootstrap_project),
+        ("Войти в аккаунт", _login_account),
         ("Управление Telegram-каналами", _manage_telegram_channels),
         ("Удалить cookies аккаунта", _delete_account_cookies),
         ("Выйти и вернуть товары в очередь", _logout_and_reset_products),
