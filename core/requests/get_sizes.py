@@ -48,5 +48,5 @@ def get_sizes(
         raise RuntimeError(f"GraphQL errors: {data['errors']}")
 
     sizes = data.get("data", {}).get("filterSize") or []
-    save_sizes(sizes)
+    save_sizes(sizes, catalog_slug=catalog_slug)
     return sizes

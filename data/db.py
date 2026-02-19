@@ -9,7 +9,9 @@ from data.const import DB_PATH
 _COOKIE_BASE_DOMAIN = "shafa.ua"
 _DB_INITIALIZED = False
 _SIZE_ID_BY_NAME_CACHE: Optional[dict[str, int]] = None
+_SIZE_ID_BY_NAME_CATALOG_CACHE: Optional[dict[tuple[str, str], int]] = None
 _SIZE_IDS_CACHE: Optional[set[int]] = None
+_SIZE_IDS_CATALOG_CACHE: Optional[dict[str, set[int]]] = None
 _BRAND_ID_BY_NAME_CACHE: Optional[dict[str, int]] = None
 _BRAND_NAMES_CACHE: Optional[list[str]] = None
 
@@ -64,10 +66,14 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 alias TEXT
             );
 
-            CREATE TABLE IF NOT EXISTS sizes (
-                id INTEGER PRIMARY KEY,
-                primary_size_name TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS size_catalogs (
+                catalog_slug TEXT NOT NULL,
+                size_id INTEGER NOT NULL,
+                primary_size_name TEXT NOT NULL,
+                PRIMARY KEY (catalog_slug, size_id)
             );
+            CREATE INDEX IF NOT EXISTS idx_size_catalogs_name
+                ON size_catalogs(catalog_slug, primary_size_name);
 
             CREATE TABLE IF NOT EXISTS brands (
                 id INTEGER PRIMARY KEY,
@@ -93,6 +99,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         )
         _ensure_uploaded_products_schema(conn)
         _ensure_telegram_channels_schema(conn)
+        _ensure_size_catalogs_schema(conn)
     _DB_INITIALIZED = True
 
 
@@ -102,22 +109,49 @@ def _ensure_db_initialized() -> None:
     init_db()
 
 
-def _load_sizes_cache() -> tuple[dict[str, int], set[int]]:
-    global _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
-    if _SIZE_ID_BY_NAME_CACHE is not None and _SIZE_IDS_CACHE is not None:
-        return _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
+def _normalize_catalog_slug(catalog_slug: Optional[str]) -> Optional[str]:
+    if catalog_slug is None:
+        return None
+    text = str(catalog_slug).strip()
+    if not text:
+        return None
+    return text.casefold()
+
+
+def _load_sizes_cache() -> tuple[
+    dict[str, int],
+    dict[tuple[str, str], int],
+    set[int],
+    dict[str, set[int]],
+]:
+    global _SIZE_ID_BY_NAME_CACHE, _SIZE_ID_BY_NAME_CATALOG_CACHE
+    global _SIZE_IDS_CACHE, _SIZE_IDS_CATALOG_CACHE
+    if (
+        _SIZE_ID_BY_NAME_CACHE is not None
+        and _SIZE_ID_BY_NAME_CATALOG_CACHE is not None
+        and _SIZE_IDS_CACHE is not None
+        and _SIZE_IDS_CATALOG_CACHE is not None
+    ):
+        return (
+            _SIZE_ID_BY_NAME_CACHE,
+            _SIZE_ID_BY_NAME_CATALOG_CACHE,
+            _SIZE_IDS_CACHE,
+            _SIZE_IDS_CATALOG_CACHE,
+        )
     _ensure_db_initialized()
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, primary_size_name
-            FROM sizes
+            SELECT catalog_slug, size_id, primary_size_name
+            FROM size_catalogs
             """
         ).fetchall()
     mapping: dict[str, int] = {}
+    mapping_by_catalog: dict[tuple[str, str], int] = {}
     ids: set[int] = set()
+    ids_by_catalog: dict[str, set[int]] = {}
     for row in rows:
-        size_id = row["id"]
+        size_id = row["size_id"]
         if size_id is None:
             continue
         size_id_int = int(size_id)
@@ -126,11 +160,24 @@ def _load_sizes_cache() -> tuple[dict[str, int], set[int]]:
         if not name:
             continue
         key = str(name).strip().casefold()
-        if key and key not in mapping:
+        if not key:
+            continue
+        current = mapping.get(key)
+        if current is None or size_id_int > current:
             mapping[key] = size_id_int
+        catalog_slug = _normalize_catalog_slug(row["catalog_slug"])
+        if not catalog_slug:
+            continue
+        catalog_key = (catalog_slug, key)
+        current_catalog = mapping_by_catalog.get(catalog_key)
+        if current_catalog is None or size_id_int > current_catalog:
+            mapping_by_catalog[catalog_key] = size_id_int
+        ids_by_catalog.setdefault(catalog_slug, set()).add(size_id_int)
     _SIZE_ID_BY_NAME_CACHE = mapping
+    _SIZE_ID_BY_NAME_CATALOG_CACHE = mapping_by_catalog
     _SIZE_IDS_CACHE = ids
-    return mapping, ids
+    _SIZE_IDS_CATALOG_CACHE = ids_by_catalog
+    return mapping, mapping_by_catalog, ids, ids_by_catalog
 
 
 def _load_brands_cache() -> tuple[dict[str, int], list[str]]:
@@ -182,6 +229,28 @@ def _ensure_telegram_channels_schema(conn: sqlite3.Connection) -> None:
     }
     if "alias" not in columns:
         conn.execute("ALTER TABLE telegram_channels ADD COLUMN alias TEXT")
+
+
+def _ensure_size_catalogs_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS size_catalogs (
+            catalog_slug TEXT NOT NULL,
+            size_id INTEGER NOT NULL,
+            primary_size_name TEXT NOT NULL,
+            PRIMARY KEY (catalog_slug, size_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_size_catalogs_name "
+        "ON size_catalogs(catalog_slug, primary_size_name)"
+    )
+    has_sizes_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sizes'"
+    ).fetchone()
+    if has_sizes_table:
+        conn.execute("DROP TABLE sizes")
 
 
 def save_uploaded_product(
@@ -292,43 +361,38 @@ def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
     ]
 
 
-def save_sizes(sizes: list[dict]) -> None:
-    global _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
+def save_sizes(sizes: list[dict], catalog_slug: Optional[str] = None) -> None:
+    global _SIZE_ID_BY_NAME_CACHE, _SIZE_ID_BY_NAME_CATALOG_CACHE
+    global _SIZE_IDS_CACHE, _SIZE_IDS_CATALOG_CACHE
     if not sizes:
         return
-    rows: list[tuple[object, str]] = []
+    normalized_catalog_slug = _normalize_catalog_slug(catalog_slug)
+    if normalized_catalog_slug is None:
+        return
+    rows: list[tuple[str, object, str]] = []
     for size in sizes:
         size_id = size.get("id")
         primary_name = size.get("primarySizeName")
         if size_id is None or not primary_name:
             continue
-        rows.append((size_id, str(primary_name)))
+        rows.append((normalized_catalog_slug, size_id, str(primary_name)))
     if not rows:
         return
     _ensure_db_initialized()
     with _connect() as conn:
         conn.executemany(
             """
-            INSERT INTO sizes (id, primary_size_name)
-            VALUES (?, ?)
-            ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO size_catalogs (catalog_slug, size_id, primary_size_name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(catalog_slug, size_id) DO UPDATE SET
                 primary_size_name = excluded.primary_size_name
             """,
             rows,
         )
-    if _SIZE_ID_BY_NAME_CACHE is not None or _SIZE_IDS_CACHE is not None:
-        mapping = _SIZE_ID_BY_NAME_CACHE or {}
-        ids = _SIZE_IDS_CACHE or set()
-        for size_id, primary_name in rows:
-            if size_id is None:
-                continue
-            size_id_int = int(size_id)
-            ids.add(size_id_int)
-            key = str(primary_name).strip().casefold()
-            if key:
-                mapping[key] = size_id_int
-        _SIZE_ID_BY_NAME_CACHE = mapping
-        _SIZE_IDS_CACHE = ids
+    _SIZE_ID_BY_NAME_CACHE = None
+    _SIZE_ID_BY_NAME_CATALOG_CACHE = None
+    _SIZE_IDS_CACHE = None
+    _SIZE_IDS_CATALOG_CACHE = None
 
 
 def save_brands(brands: list[dict]) -> None:
@@ -369,16 +433,29 @@ def save_brands(brands: list[dict]) -> None:
         _BRAND_NAMES_CACHE = sorted(names_set)
 
 
-def get_size_id_by_name(primary_size_name: str) -> Optional[int]:
+def get_size_id_by_name(
+    primary_size_name: str,
+    catalog_slug: Optional[str] = None,
+) -> Optional[int]:
     name = str(primary_size_name).strip()
     if not name:
         return None
-    mapping, _ = _load_sizes_cache()
-    return mapping.get(name.casefold())
+    key = name.casefold()
+    mapping, mapping_by_catalog, _, ids_by_catalog = _load_sizes_cache()
+    normalized_catalog_slug = _normalize_catalog_slug(catalog_slug)
+    if normalized_catalog_slug:
+        if normalized_catalog_slug in ids_by_catalog:
+            return mapping_by_catalog.get((normalized_catalog_slug, key))
+    return mapping.get(key)
 
 
-def size_id_exists(size_id: int) -> bool:
-    _, ids = _load_sizes_cache()
+def size_id_exists(size_id: int, catalog_slug: Optional[str] = None) -> bool:
+    _, _, ids, ids_by_catalog = _load_sizes_cache()
+    normalized_catalog_slug = _normalize_catalog_slug(catalog_slug)
+    if normalized_catalog_slug:
+        scoped_ids = ids_by_catalog.get(normalized_catalog_slug)
+        if scoped_ids is not None:
+            return size_id in scoped_ids
     return size_id in ids
 
 

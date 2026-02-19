@@ -25,6 +25,7 @@ from data.const import (
     APP_VERSION,
     CREATE_PRODUCT_MUTATION,
     DEFAULT_MARKUP,
+    LOG_CREATE_PRODUCT_REQUEST,
     MAX_UPLOAD_BYTES,
     MEDIA_DIR_PATH,
     ORIGIN_URL,
@@ -331,7 +332,7 @@ def _fetch_sizes(
     if data.get("errors"):
         raise RuntimeError(f"GraphQL errors: {data['errors']}")
     sizes = data.get("data", {}).get("filterSize") or []
-    save_sizes(sizes)
+    save_sizes(sizes, catalog_slug=catalog_slug)
     return sizes
 
 
@@ -440,6 +441,28 @@ def _extract_invalid_color_enums(errors: list[dict]) -> list[str]:
     return invalid
 
 
+def _log_create_product_payload(payload: dict) -> None:
+    if not LOG_CREATE_PRODUCT_REQUEST:
+        return
+    payload_preview = {
+        "operationName": payload.get("operationName"),
+        "variables": payload.get("variables"),
+    }
+    log(
+        "INFO",
+        "Запрос создания товара: "
+        + json.dumps(payload_preview, ensure_ascii=False),
+    )
+
+
+def _has_invalid_size_error(errors: list[dict]) -> bool:
+    for err in errors:
+        field = str(err.get("field") or "").strip().casefold()
+        if field == "size":
+            return True
+    return False
+
+
 def upload_photo(csrftoken: str, cookies: list[dict], file_path: Path) -> str:
     fields = {
         "operationName": "UploadPhoto",
@@ -486,6 +509,7 @@ def create_product(
     }
 
     def request(payload_data: dict) -> dict:
+        _log_create_product_payload(payload_data)
         return _request_json(
             API_URL,
             json.dumps(payload_data).encode("utf-8"),
@@ -638,6 +662,27 @@ def main() -> None:
         csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP
     )
     errors = result.get("errors") or []
+    if errors and _has_invalid_size_error(errors) and parsed_data:
+        catalog_slug = str(product_raw_data.get("category") or "").strip()
+        if not catalog_slug:
+            catalog_slug = DEFAULT_CATALOG_SLUG
+        log(
+            "WARN",
+            "API отклонил размер. Обновляю размеры и повторяю создание товара...",
+        )
+        try:
+            _refresh_sizes(csrftoken, cookies, catalog_slugs=(catalog_slug,))
+        except Exception as exc:
+            log("ERROR", f"Не удалось обновить размеры: {exc}")
+            return
+        product_raw_data = build_product_raw_data(parsed_data)
+        if product_raw_data.get("size") is None:
+            log("ERROR", "Не удалось определить размер после обновления размеров.")
+            return
+        result = create_product(
+            csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP
+        )
+        errors = result.get("errors") or []
     if errors:
         log("ERROR", f"Ошибки создания товара: {errors}")
         return

@@ -4,8 +4,14 @@ import re
 from playwright.sync_api import BrowserContext
 
 from core.core import base_headers, read_response_json
-from data.const import API_URL, CREATE_PRODUCT_MUTATION, DEFAULT_MARKUP
+from data.const import (
+    API_URL,
+    CREATE_PRODUCT_MUTATION,
+    DEFAULT_MARKUP,
+    LOG_CREATE_PRODUCT_REQUEST,
+)
 from models.product import Product
+from utils.logging import log
 
 
 def build_create_product_payload(
@@ -59,6 +65,20 @@ def _extract_invalid_color_enums(errors: list[dict]) -> list[str]:
     return invalid
 
 
+def _log_create_product_payload(payload: dict) -> None:
+    if not LOG_CREATE_PRODUCT_REQUEST:
+        return
+    payload_preview = {
+        "operationName": payload.get("operationName"),
+        "variables": payload.get("variables"),
+    }
+    log(
+        "INFO",
+        "Запрос создания товара: "
+        + json.dumps(payload_preview, ensure_ascii=False),
+    )
+
+
 def create_product(
     ctx: BrowserContext,
     csrftoken: str,
@@ -67,6 +87,7 @@ def create_product(
     markup: int = DEFAULT_MARKUP,
 ) -> dict:
     payload = build_create_product_payload(photo_ids, product_raw_data, markup)
+    _log_create_product_payload(payload)
     resp = ctx.request.post(
         API_URL,
         headers={
@@ -94,6 +115,7 @@ def create_product(
                     retry_raw,
                     markup,
                 )
+                _log_create_product_payload(retry_payload)
                 resp = ctx.request.post(
                     API_URL,
                     headers={

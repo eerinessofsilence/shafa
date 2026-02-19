@@ -69,6 +69,7 @@ cp .env.example .env
 | `SHAFA_DEBUG_FETCH` | `false` | Вывод статистики получения сообщений из Telegram |
 | `SHAFA_DEBUG_FETCH_VERBOSE` | `false` | Подробные причины пропуска Telegram-сообщений |
 | `SHAFA_DEBUG_HTTP` | `false` | Вывод превью HTTP-ответов Shafa |
+| `SHAFA_LOG_CREATE_PRODUCT_REQUEST` | `false` | Лог тела запроса `WEB_CreateProduct` перед отправкой |
 | `SHAFA_VERBOSE_PHOTO_LOGS` | `false` | Подробный лог по каждому фото вместо progress bar |
 | `SHAFA_HTTP_RETRIES` | `2` | Количество повторов HTTP-запросов в no-Playwright (`0..5`) |
 | `SHAFA_HTTP_RETRY_DELAY` | `2.0` | Базовая задержка между повторами в секундах (`0.1..30`) |
@@ -129,7 +130,7 @@ python main.py
 - `telegram_products`
 - `uploaded_products`
 - `telegram_channels`
-- `sizes`
+- `size_catalogs`
 - `brands`
 - `cookies`
 

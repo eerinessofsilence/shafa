@@ -1486,20 +1486,23 @@ def _resolve_brand_id(brand: Optional[str]) -> Optional[int]:
     return BRAND_NAME_TO_ID.get(text.lower())
 
 
-def _resolve_size_id(value: Optional[object]) -> Optional[int]:
+def _resolve_size_id(
+    value: Optional[object],
+    catalog_slug: Optional[str] = None,
+) -> Optional[int]:
     if value is None:
         return None
     if isinstance(value, int):
-        return value if size_id_exists(value) else None
+        return value if size_id_exists(value, catalog_slug=catalog_slug) else None
     text = str(value).strip()
     for candidate in _size_name_candidates(text):
-        size_id = get_size_id_by_name(candidate)
+        size_id = get_size_id_by_name(candidate, catalog_slug=catalog_slug)
         if size_id is not None:
             return size_id
     parsed = _parse_int(text)
     if parsed is None:
         return None
-    return parsed if size_id_exists(parsed) else None
+    return parsed if size_id_exists(parsed, catalog_slug=catalog_slug) else None
 
 
 def _normalize_colors(color_raw: Optional[str]) -> list[str]:
@@ -1522,10 +1525,13 @@ def _normalize_colors(color_raw: Optional[str]) -> list[str]:
     return colors or ["WHITE"]
 
 
-def _parse_additional_sizes(values: list[str]) -> list[int]:
+def _parse_additional_sizes(
+    values: list[str],
+    catalog_slug: Optional[str] = None,
+) -> list[int]:
     sizes: list[int] = []
     for value in values:
-        size = _resolve_size_id(value)
+        size = _resolve_size_id(value, catalog_slug=catalog_slug)
         if size is not None:
             sizes.append(size)
     return sizes
@@ -1535,19 +1541,23 @@ def _build_product_raw_data(parsed: dict) -> dict:
     additional_size_values = parsed.get("additional_sizes", [])
     if not isinstance(additional_size_values, list):
         additional_size_values = []
+    catalog_slug = _resolve_catalog_slug(
+        parsed.get("size"),
+        additional_size_values,
+    )
     product_raw_data: dict = {
         "name": parsed.get("name", ""),
         "description": DEFAULT_DESCRIPTION,
-        "category": _resolve_catalog_slug(
-            parsed.get("size"),
-            additional_size_values,
-        ),
+        "category": catalog_slug,
         "brand": _resolve_brand_id(parsed.get("brand")),
-        "size": _resolve_size_id(parsed.get("size")),
+        "size": _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug),
         "price": _parse_price(parsed.get("price")),
     }
     product_raw_data["colors"] = _normalize_colors(parsed.get("color"))
-    additional_sizes = _parse_additional_sizes(additional_size_values)
+    additional_sizes = _parse_additional_sizes(
+        additional_size_values,
+        catalog_slug=catalog_slug,
+    )
     if additional_sizes:
         product_raw_data["additional_sizes"] = additional_sizes
     return product_raw_data

@@ -94,6 +94,13 @@ def _get_env_str(name: str) -> Optional[str]:
     return value or None
 
 
+def _get_env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 TELEGRAM_API_ID = _get_env_int("SHAFA_TELEGRAM_API_ID")
 TELEGRAM_API_HASH = _get_env_str("SHAFA_TELEGRAM_API_HASH")
 TELEGRAM_CHANNELS: list[tuple[int, str, str]] = [
@@ -109,6 +116,7 @@ APP_PLATFORM = "web"
 APP_VERSION = "v2025.12.31.3"
 DEFAULT_MARKUP = 400
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+LOG_CREATE_PRODUCT_REQUEST = _get_env_bool("SHAFA_LOG_CREATE_PRODUCT_REQUEST")
 
 MEDIA_DIR_PATH = "media"
 STORAGE_STATE_PATH = Path("auth.json")

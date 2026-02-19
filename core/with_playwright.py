@@ -4,6 +4,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from controller.data_controller import (
+    build_product_raw_data,
     download_product_photos,
     get_next_product_for_upload,
     mark_product_created,
@@ -11,6 +12,7 @@ from controller.data_controller import (
 from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
 from core.requests.create_product import create_product
+from core.requests.get_sizes import get_sizes
 from core.requests.upload_photo import upload_photo
 from data.const import (
     DEFAULT_MARKUP,
@@ -24,6 +26,14 @@ from data.db import init_db, save_cookies, save_uploaded_product
 from utils.logging import log
 from utils.media import list_media_files, reset_media_dir
 from utils.progress import ProgressBar, verbose_photo_logs_enabled
+
+
+def _has_invalid_size_error(errors: list[dict]) -> bool:
+    for err in errors:
+        field = str(err.get("field") or "").strip().casefold()
+        if field == "size":
+            return True
+    return False
 
 
 def main() -> None:
@@ -141,6 +151,32 @@ def main() -> None:
                 markup=DEFAULT_MARKUP,
             )
             errors = result.get("errors") or []
+            if errors and _has_invalid_size_error(errors) and parsed_data:
+                catalog_slug = str(product_raw_data.get("category") or "").strip()
+                if not catalog_slug:
+                    catalog_slug = "obuv/krossovki"
+                log(
+                    "WARN",
+                    "API отклонил размер. Обновляю размеры и повторяю создание товара...",
+                )
+                try:
+                    sizes = get_sizes(ctx, csrftoken, catalog_slug=catalog_slug)
+                    log("INFO", f"Загружены размеры для {catalog_slug}: {len(sizes)}.")
+                except Exception as exc:
+                    log("ERROR", f"Не удалось обновить размеры: {exc}")
+                    return
+                product_raw_data = build_product_raw_data(parsed_data)
+                if product_raw_data.get("size") is None:
+                    log("ERROR", "Не удалось определить размер после обновления размеров.")
+                    return
+                result = create_product(
+                    ctx,
+                    csrftoken,
+                    photo_ids,
+                    product_raw_data,
+                    markup=DEFAULT_MARKUP,
+                )
+                errors = result.get("errors") or []
             if errors:
                 log("ERROR", f"Ошибки создания товара: {errors}")
                 return
