@@ -98,8 +98,6 @@ TELEGRAM_API_ID = _get_env_int("SHAFA_TELEGRAM_API_ID")
 TELEGRAM_API_HASH = _get_env_str("SHAFA_TELEGRAM_API_HASH")
 TELEGRAM_CHANNELS: list[tuple[int, str, str]] = [
     (-1001184429834, "GENERATION DROP / OPT 🌊", "main"),
-    (-1001252296189, "", "extra_photos"),
-    (-1001801709326, "", "extra_photos"),
 ]
 TELEGRAM_CHANNEL_IDS = [channel_id for channel_id, _, _ in TELEGRAM_CHANNELS]
 
