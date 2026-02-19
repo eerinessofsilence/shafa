@@ -110,6 +110,7 @@ TELEGRAM_CHANNEL_IDS = [channel_id for channel_id, _, _ in TELEGRAM_CHANNELS]
 
 API_URL = "https://shafa.ua/api/v3/graphiql"
 API_BATCH_URL = "https://shafa.ua/api/v3/graphiql-batch"
+API_V5_URL = "https://shafa.ua/api/v5/graphql"
 ORIGIN_URL = "https://shafa.ua"
 REFERER_URL = "https://shafa.ua/uk/new"
 APP_PLATFORM = "web"
