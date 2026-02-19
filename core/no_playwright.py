@@ -42,6 +42,7 @@ from data.db import (
 from models.product import Product
 from utils.logging import log
 from utils.media import list_media_files, reset_media_dir
+from utils.progress import ProgressBar, verbose_photo_logs_enabled
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -559,7 +560,6 @@ def main() -> None:
         )
         return
     price_with_markup = price_value + DEFAULT_MARKUP
-    log("INFO", f"Цена товара (база): {price_value}.")
     log("INFO", f"Цена товара (с наценкой {DEFAULT_MARKUP}): {price_with_markup}.")
 
     media_dir = Path(MEDIA_DIR_PATH)
@@ -607,21 +607,31 @@ def main() -> None:
         upload_items.append((temp_path, temp_path, photo_path.name))
     if photo_paths and not upload_items:
         log("WARN", "Нет фото для загрузки после фильтра/сжатия.")
-    for idx, (upload_path, cleanup_path, display_name) in enumerate(
-        upload_items,
-        start=1,
-    ):
-        log("INFO", f"Загрузка фото {idx}/{len(upload_items)}: {display_name}")
-        try:
-            photo_id = upload_photo(csrftoken, cookies, upload_path)
-            photo_ids.append(photo_id)
-            log("OK", f"Фото загружено: id={photo_id}")
-        finally:
-            if cleanup_path:
-                try:
-                    cleanup_path.unlink()
-                except OSError:
-                    pass
+    verbose_photo_logs = verbose_photo_logs_enabled()
+    with ProgressBar(
+        total=len(upload_items),
+        label="Загрузка фото",
+        enabled=not verbose_photo_logs,
+    ) as progress:
+        for idx, (upload_path, cleanup_path, display_name) in enumerate(
+            upload_items,
+            start=1,
+        ):
+            if verbose_photo_logs:
+                log("INFO", f"Загрузка фото {idx}/{len(upload_items)}: {display_name}")
+            try:
+                photo_id = upload_photo(csrftoken, cookies, upload_path)
+                photo_ids.append(photo_id)
+                if verbose_photo_logs:
+                    log("OK", f"Фото загружено: id={photo_id}")
+            finally:
+                if cleanup_path:
+                    try:
+                        cleanup_path.unlink()
+                    except OSError:
+                        pass
+            if not verbose_photo_logs:
+                progress.advance()
 
     log("INFO", "Создаю товар...")
     result = create_product(

@@ -14,8 +14,12 @@ def supports_color() -> bool:
     return sys.stdout.isatty() and os.getenv("NO_COLOR") is None
 
 
-def log(level: str, message: str) -> None:
+def format_tag(level: str) -> str:
     tag = f"[{level}]"
     if supports_color() and level in _COLORS:
-        tag = f"{_COLORS[level]}{tag}{_RESET}"
-    print(f"{tag} {message}")
+        return f"{_COLORS[level]}{tag}{_RESET}"
+    return tag
+
+
+def log(level: str, message: str) -> None:
+    print(f"{format_tag(level)} {message}")

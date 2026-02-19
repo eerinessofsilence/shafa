@@ -23,6 +23,7 @@ from data.const import (
 from data.db import init_db, save_cookies, save_uploaded_product
 from utils.logging import log
 from utils.media import list_media_files, reset_media_dir
+from utils.progress import ProgressBar, verbose_photo_logs_enabled
 
 
 def main() -> None:
@@ -50,7 +51,6 @@ def main() -> None:
         )
         return
     price_with_markup = price_value + DEFAULT_MARKUP
-    log("INFO", f"Цена товара (база): {price_value}.")
     log("INFO", f"Цена товара (с наценкой {DEFAULT_MARKUP}): {price_with_markup}.")
 
     media_dir = Path(MEDIA_DIR_PATH)
@@ -112,14 +112,25 @@ def main() -> None:
                     "WARN",
                     "Все файлы превышают лимит размера. Загрузка фото пропущена.",
                 )
-            for idx, photo_path in enumerate(filtered_paths, start=1):
-                log(
-                    "INFO",
-                    f"Загрузка фото {idx}/{len(filtered_paths)}: {photo_path.name}",
-                )
-                photo_id = upload_photo(ctx, csrftoken, photo_path)
-                photo_ids.append(photo_id)
-                log("OK", f"Фото загружено: id={photo_id}")
+            verbose_photo_logs = verbose_photo_logs_enabled()
+            with ProgressBar(
+                total=len(filtered_paths),
+                label="Загрузка фото",
+                enabled=not verbose_photo_logs,
+            ) as progress:
+                for idx, photo_path in enumerate(filtered_paths, start=1):
+                    if verbose_photo_logs:
+                        log(
+                            "INFO",
+                            f"Загрузка фото {idx}/{len(filtered_paths)}: "
+                            f"{photo_path.name}",
+                        )
+                    photo_id = upload_photo(ctx, csrftoken, photo_path)
+                    photo_ids.append(photo_id)
+                    if verbose_photo_logs:
+                        log("OK", f"Фото загружено: id={photo_id}")
+                    if not verbose_photo_logs:
+                        progress.advance()
 
             log("INFO", "Создаю товар...")
             result = create_product(

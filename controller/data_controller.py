@@ -37,6 +37,7 @@ from data.db import (
     size_id_exists,
 )
 from utils.logging import log
+from utils.progress import ProgressBar, verbose_photo_logs_enabled
 
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
@@ -1172,11 +1173,12 @@ async def _collect_discussion_photos(
         async for reply in client.iter_messages(discussion_chat_id, reply_to=root_id):
             await add_reply(reply)
     except RPCError as exc:
-        log(
-            "WARN",
-            "Не удалось получить ответы из обсуждения: "
-            f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
-        )
+        if verbose_photo_logs_enabled():
+            log(
+                "WARN",
+                "Не удалось получить ответы из обсуждения: "
+                f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
+            )
     if messages:
         return messages
 
@@ -1250,12 +1252,14 @@ async def _download_message_photos(
     api_id_value, api_hash_value = _require_telegram_credentials()
     async with TelegramClient("session", api_id_value, api_hash_value) as client:
         await _sync_channel_titles(client, _get_channel_ids())
-        log(
-            "INFO",
-            "Скачиваю фото из Telegram: \n"
-            + f"channel_id={channel_id}\n"
-            + f"message_id={message_id}.",
-        )
+        verbose_photo_logs = verbose_photo_logs_enabled()
+        if verbose_photo_logs:
+            log(
+                "INFO",
+                "Скачиваю фото из Telegram: \n"
+                + f"channel_id={channel_id}\n"
+                + f"message_id={message_id}.",
+            )        
         message = await client.get_messages(channel_id, ids=message_id)
         if not message or not _is_photo_message(message):
             return 0
@@ -1307,7 +1311,8 @@ async def _download_message_photos(
                 continue
             queue.append((msg, chat_id, size_bytes))
         if max_photos > 0 and len(queue) > max_photos:
-            log("INFO", f"Ограничение на фото: {max_photos}.")
+            if verbose_photo_logs:
+                log("INFO", f"Ограничение на фото: {max_photos}.")
             queue = queue[:max_photos]
         if skipped_large:
             log(
@@ -1318,22 +1323,40 @@ async def _download_message_photos(
         if not queue:
             log("WARN", "Нет подходящих фото для скачивания.")
             return 0
-        for idx, (msg, chat_id, size_bytes) in enumerate(queue, start=1):
-            size_label = _format_size_mb(size_bytes)
-            log(
-                "INFO",
-                f"Скачивание фото {idx}/{len(queue)}: "
-                f"message_id={msg.id} chat_id={chat_id} size={size_label}.",
-            )
-            result = await client.download_media(msg, file=str(target_dir))
-            if result:
-                downloaded += 1
-                log("OK", f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.")
-            else:
-                log(
-                    "WARN",
-                    f"Не удалось скачать фото {idx}/{len(queue)}: message_id={msg.id}.",
-                )
+        failed_downloads = 0
+        with ProgressBar(
+            total=len(queue),
+            label="Скачивание фото",
+            enabled=not verbose_photo_logs,
+        ) as progress:
+            for idx, (msg, chat_id, size_bytes) in enumerate(queue, start=1):
+                if verbose_photo_logs:
+                    size_label = _format_size_mb(size_bytes)
+                    log(
+                        "INFO",
+                        f"Скачивание фото {idx}/{len(queue)}: "
+                        f"message_id={msg.id} chat_id={chat_id} size={size_label}.",
+                    )
+                result = await client.download_media(msg, file=str(target_dir))
+                if result:
+                    downloaded += 1
+                    if verbose_photo_logs:
+                        log(
+                            "OK",
+                            f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.",
+                        )
+                else:
+                    failed_downloads += 1
+                    if verbose_photo_logs:
+                        log(
+                            "WARN",
+                            f"Не удалось скачать фото {idx}/{len(queue)}: "
+                            f"message_id={msg.id}.",
+                        )
+                if not verbose_photo_logs:
+                    progress.advance()
+        if failed_downloads and not verbose_photo_logs:
+            log("WARN", f"Не удалось скачать фото: {failed_downloads}/{len(queue)}.")
         return downloaded
 
 
