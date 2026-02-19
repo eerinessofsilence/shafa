@@ -3,8 +3,8 @@ from playwright.sync_api import sync_playwright
 
 from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
-from core.get_brands import get_brands
-from core.get_sizes import get_sizes
+from core.requests.get_brands import get_brands
+from core.requests.get_sizes import get_sizes
 from data.const import HEADLESS, REFERER_URL, STORAGE_STATE_PATH
 from data.db import init_db, save_cookies
 
