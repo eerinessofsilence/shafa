@@ -1,13 +1,13 @@
 import json
 from typing import Optional
 
-from data.const import API_URL
-from main_no_playwright import (
+from core.no_playwright import (
     _base_headers,
     _get_csrftoken_from_cookies,
     _load_shafa_cookies,
     _request_json,
 )
+from data.const import API_URL
 from utils.logging import log
 
 MY_CLOTHES_PRODUCTS_FEED_QUERY = """
