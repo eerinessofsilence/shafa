@@ -16,6 +16,7 @@ from core.requests.get_sizes import get_sizes
 from core.requests.upload_photo import upload_photo
 from data.const import (
     DEFAULT_MARKUP,
+    DEFAULT_MESSAGE_PARSE_LIMIT,
     HEADLESS,
     MAX_UPLOAD_BYTES,
     MEDIA_DIR_PATH,
@@ -38,7 +39,9 @@ def _has_invalid_size_error(errors: list[dict]) -> bool:
 
 def main() -> None:
     init_db()
-    product_data = get_next_product_for_upload(message_amount=75)
+    product_data = get_next_product_for_upload(
+        message_amount=DEFAULT_MESSAGE_PARSE_LIMIT
+    )
     if not product_data:
         log("INFO", "Нет новых товаров для создания.")
         return

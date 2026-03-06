@@ -25,6 +25,7 @@ from data.const import (
     APP_VERSION,
     CREATE_PRODUCT_MUTATION,
     DEFAULT_MARKUP,
+    DEFAULT_MESSAGE_PARSE_LIMIT,
     LOG_CREATE_PRODUCT_REQUEST,
     MAX_UPLOAD_BYTES,
     MEDIA_DIR_PATH,
@@ -542,7 +543,9 @@ def create_product(
 
 def main() -> None:
     init_db()
-    product_data = get_next_product_for_upload(message_amount=75)
+    product_data = get_next_product_for_upload(
+        message_amount=DEFAULT_MESSAGE_PARSE_LIMIT
+    )
     if not product_data:
         log("INFO", "Нет новых товаров для создания.")
         return

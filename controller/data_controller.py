@@ -21,6 +21,7 @@ from telethon.utils import get_peer_id
 from data.const import (
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
+    DEFAULT_MESSAGE_PARSE_LIMIT,
     MAX_UPLOAD_BYTES,
     TELEGRAM_API_HASH,
     TELEGRAM_API_ID,
@@ -981,7 +982,9 @@ def parse_message(message: str) -> dict:
     }
 
 
-async def _fetch_messages(message_amount: int = 75) -> int:
+async def _fetch_messages(
+    message_amount: int = DEFAULT_MESSAGE_PARSE_LIMIT,
+) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
     debug_verbose = _debug_fetch_verbose()
@@ -1618,13 +1621,15 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 
 
 async def get_next_product_for_upload_async(
-    message_amount: int = 75,
+    message_amount: int = DEFAULT_MESSAGE_PARSE_LIMIT,
 ) -> Optional[dict]:
     await _fetch_messages(message_amount=message_amount)
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
+def get_next_product_for_upload(
+    message_amount: int = DEFAULT_MESSAGE_PARSE_LIMIT,
+) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -1689,5 +1694,7 @@ def mark_product_created(
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=75)
+    product = get_next_product_for_upload(
+        message_amount=DEFAULT_MESSAGE_PARSE_LIMIT
+    )
     print(product)
