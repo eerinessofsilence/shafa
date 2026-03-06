@@ -1,9 +1,11 @@
 import os
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import controller.data_controller as dc
+from telethon.types import DocumentAttributeFilename
 
 
 class DummyMessage:
@@ -198,3 +200,26 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await dc._collect_discussion_photos(client, channel_id, message_id)
         self.assertEqual([msg.id for msg in result], [12, 13])
+
+
+class ImageDocumentTests(unittest.TestCase):
+    def test_rejects_heic_mime_type(self):
+        document = SimpleNamespace(mime_type="image/heic", attributes=[])
+
+        self.assertFalse(dc._is_image_document(document))
+
+    def test_rejects_heic_filename(self):
+        document = SimpleNamespace(
+            mime_type="image/jpeg",
+            attributes=[DocumentAttributeFilename(file_name="comment-photo.HEIC")],
+        )
+
+        self.assertFalse(dc._is_image_document(document))
+
+    def test_accepts_regular_image_document(self):
+        document = SimpleNamespace(
+            mime_type="image/jpeg",
+            attributes=[DocumentAttributeFilename(file_name="comment-photo.jpg")],
+        )
+
+        self.assertTrue(dc._is_image_document(document))

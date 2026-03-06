@@ -11,6 +11,7 @@ from telethon.errors import RPCError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from telethon.types import (
     DocumentAttributeAnimated,
+    DocumentAttributeFilename,
     DocumentAttributeSticker,
     MessageMediaDocument,
     MessageMediaPhoto,
@@ -68,6 +69,8 @@ DEFAULT_SHOES_CATEGORY = "obuv/krossovki"
 WOMEN_SNEAKERS_CATEGORY = "zhenskaya-obuv/krossovki"
 WOMEN_SNEAKERS_MIN_SIZE = 36.0
 WOMEN_SNEAKERS_MAX_SIZE = 41.0
+UNSUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/heic", "image/heif"})
+UNSUPPORTED_IMAGE_EXTENSIONS = frozenset({".heic", ".heif"})
 
 _PRICE_HINTS = (
     "цена",
@@ -371,11 +374,24 @@ def _discussion_fallback_limit() -> int:
     return min(parsed, 2000)
 
 
+def _get_document_filename(document) -> str:
+    attributes = getattr(document, "attributes", None) or []
+    for attr in attributes:
+        if isinstance(attr, DocumentAttributeFilename):
+            return getattr(attr, "file_name", "") or ""
+    return ""
+
+
 def _is_image_document(document) -> bool:
     if not document:
         return False
-    mime_type = getattr(document, "mime_type", "") or ""
+    mime_type = (getattr(document, "mime_type", "") or "").strip().casefold()
     if not mime_type.startswith("image/"):
+        return False
+    if mime_type in UNSUPPORTED_IMAGE_MIME_TYPES:
+        return False
+    file_name = _get_document_filename(document).strip().casefold()
+    if file_name and Path(file_name).suffix in UNSUPPORTED_IMAGE_EXTENSIONS:
         return False
     attributes = getattr(document, "attributes", None) or []
     for attr in attributes:
