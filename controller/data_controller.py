@@ -22,6 +22,7 @@ from data.const import (
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
     DEFAULT_MESSAGE_PARSE_LIMIT,
+    MAX_PRODUCT_CREATE_ATTEMPTS,
     MAX_UPLOAD_BYTES,
     TELEGRAM_API_HASH,
     TELEGRAM_API_ID,
@@ -31,6 +32,7 @@ from data.db import (
     get_brand_id_by_name,
     get_next_uncreated_telegram_product,
     get_size_id_by_name,
+    increment_telegram_product_attempt,
     list_brand_names,
     load_telegram_channels,
     mark_telegram_product_created,
@@ -45,6 +47,7 @@ api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
 DEFAULT_CHANNELS = TELEGRAM_CHANNELS
 DEFAULT_CHANNEL_IDS = [channel_id for channel_id, _, _ in DEFAULT_CHANNELS]
+SKIPPED_CREATE_RETRY_LIMIT = "SKIPPED_CREATE_RETRY_LIMIT"
 
 DEFAULT_DESCRIPTION = (
     "36 (23.0 см)\n"
@@ -1691,6 +1694,29 @@ def mark_product_created(
         channel_id if channel_id is not None else _get_channel_ids()[0]
     )
     mark_telegram_product_created(resolved_channel_id, message_id, created_product_id)
+
+
+def register_product_failure(
+    message_id: int,
+    failure_reason: str,
+    channel_id: Optional[int] = None,
+) -> tuple[int, bool]:
+    resolved_channel_id = (
+        channel_id if channel_id is not None else _get_channel_ids()[0]
+    )
+    attempts = increment_telegram_product_attempt(
+        resolved_channel_id,
+        message_id,
+        failure_reason=failure_reason,
+    )
+    if attempts >= MAX_PRODUCT_CREATE_ATTEMPTS:
+        mark_telegram_product_created(
+            resolved_channel_id,
+            message_id,
+            created_product_id=SKIPPED_CREATE_RETRY_LIMIT,
+        )
+        return attempts, True
+    return attempts, False
 
 
 if __name__ == "__main__":

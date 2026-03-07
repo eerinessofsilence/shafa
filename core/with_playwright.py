@@ -11,6 +11,10 @@ from controller.data_controller import (
 )
 from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
+from core.product_failures import (
+    handle_retryable_product_failure,
+    summarize_graph_errors,
+)
 from core.requests.create_product import create_product
 from core.requests.get_sizes import get_sizes
 from core.requests.upload_photo import upload_photo
@@ -53,14 +57,26 @@ def main() -> None:
     log("INFO", f"Товар для создания: {product_name}.")
 
     if product_raw_data.get("size") is None:
-        log("ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands.")
+        handle_retryable_product_failure(
+            message_id=message_id,
+            channel_id=channel_id,
+            failure_reason="SIZE_NOT_RESOLVED",
+            detail_message=(
+                "Не удалось определить размер. "
+                "Запусти Bootstrap sizes/brands."
+            ),
+        )
         return
     price_value = product_raw_data.get("price")
     if price_value is None or price_value <= 0:
-        log(
-            "ERROR",
-            f"Некорректная цена: {price_value}. \n"
-            + f"Parsed price: {parsed_data.get('price')!r}.",
+        handle_retryable_product_failure(
+            message_id=message_id,
+            channel_id=channel_id,
+            failure_reason="INVALID_PRICE",
+            detail_message=(
+                f"Некорректная цена: {price_value}. \n"
+                + f"Parsed price: {parsed_data.get('price')!r}."
+            ),
         )
         return
     price_with_markup = price_value + DEFAULT_MARKUP
@@ -125,6 +141,17 @@ def main() -> None:
                     "WARN",
                     "Все файлы превышают лимит размера. Загрузка фото пропущена.",
                 )
+            if not filtered_paths:
+                handle_retryable_product_failure(
+                    message_id=message_id,
+                    channel_id=channel_id,
+                    failure_reason="NO_UPLOADABLE_PHOTOS",
+                    detail_message=(
+                        "Не удалось подготовить ни одной фотографии для загрузки."
+                    ),
+                    detail_level="WARN",
+                )
+                return
             verbose_photo_logs = verbose_photo_logs_enabled()
             with ProgressBar(
                 total=len(filtered_paths),
@@ -160,7 +187,8 @@ def main() -> None:
                     catalog_slug = "obuv/krossovki"
                 log(
                     "WARN",
-                    "API отклонил размер. Обновляю размеры и повторяю создание товара...",
+                    "API отклонил размер. "
+                    "Обновляю размеры и повторяю создание товара...",
                 )
                 try:
                     sizes = get_sizes(ctx, csrftoken, catalog_slug=catalog_slug)
@@ -170,7 +198,14 @@ def main() -> None:
                     return
                 product_raw_data = build_product_raw_data(parsed_data)
                 if product_raw_data.get("size") is None:
-                    log("ERROR", "Не удалось определить размер после обновления размеров.")
+                    handle_retryable_product_failure(
+                        message_id=message_id,
+                        channel_id=channel_id,
+                        failure_reason="SIZE_NOT_RESOLVED",
+                        detail_message=(
+                            "Не удалось определить размер после обновления размеров."
+                        ),
+                    )
                     return
                 result = create_product(
                     ctx,
@@ -181,7 +216,14 @@ def main() -> None:
                 )
                 errors = result.get("errors") or []
             if errors:
-                log("ERROR", f"Ошибки создания товара: {errors}")
+                handle_retryable_product_failure(
+                    message_id=message_id,
+                    channel_id=channel_id,
+                    failure_reason=(
+                        f"CREATE_PRODUCT_ERRORS: {summarize_graph_errors(errors)}"
+                    ),
+                    detail_message=f"Ошибки создания товара: {errors}",
+                )
                 return
             created_product = result.get("createdProduct") or {}
             save_uploaded_product(

@@ -18,6 +18,10 @@ from controller.data_controller import (
     get_next_product_for_upload,
     mark_product_created,
 )
+from core.product_failures import (
+    handle_retryable_product_failure,
+    summarize_graph_errors,
+)
 from data.const import (
     API_BATCH_URL,
     API_URL,
@@ -574,16 +578,25 @@ def main() -> None:
         if parsed_data:
             product_raw_data = build_product_raw_data(parsed_data)
         if product_raw_data.get("size") is None:
-            log(
-                "ERROR", "Не удалось определить размер. Запусти Bootstrap sizes/brands."
+            handle_retryable_product_failure(
+                message_id=message_id,
+                channel_id=channel_id,
+                failure_reason="SIZE_NOT_RESOLVED",
+                detail_message=(
+                    "Не удалось определить размер. Запусти Bootstrap sizes/brands."
+                ),
             )
             return
     price_value = product_raw_data.get("price")
     if price_value is None or price_value <= 0:
-        log(
-            "ERROR",
-            f"Некорректная цена: {price_value}. \n"
-            + f"Parsed price: {parsed_data.get('price')!r}.",
+        handle_retryable_product_failure(
+            message_id=message_id,
+            channel_id=channel_id,
+            failure_reason="INVALID_PRICE",
+            detail_message=(
+                f"Некорректная цена: {price_value}. \n"
+                + f"Parsed price: {parsed_data.get('price')!r}."
+            ),
         )
         return
     price_with_markup = price_value + DEFAULT_MARKUP
@@ -634,6 +647,15 @@ def main() -> None:
         upload_items.append((temp_path, temp_path, photo_path.name))
     if photo_paths and not upload_items:
         log("WARN", "Нет фото для загрузки после фильтра/сжатия.")
+    if not upload_items:
+        handle_retryable_product_failure(
+            message_id=message_id,
+            channel_id=channel_id,
+            failure_reason="NO_UPLOADABLE_PHOTOS",
+            detail_message="Не удалось подготовить ни одной фотографии для загрузки.",
+            detail_level="WARN",
+        )
+        return
     verbose_photo_logs = verbose_photo_logs_enabled()
     with ProgressBar(
         total=len(upload_items),
@@ -680,14 +702,26 @@ def main() -> None:
             return
         product_raw_data = build_product_raw_data(parsed_data)
         if product_raw_data.get("size") is None:
-            log("ERROR", "Не удалось определить размер после обновления размеров.")
+            handle_retryable_product_failure(
+                message_id=message_id,
+                channel_id=channel_id,
+                failure_reason="SIZE_NOT_RESOLVED",
+                detail_message=(
+                    "Не удалось определить размер после обновления размеров."
+                ),
+            )
             return
         result = create_product(
             csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP
         )
         errors = result.get("errors") or []
     if errors:
-        log("ERROR", f"Ошибки создания товара: {errors}")
+        handle_retryable_product_failure(
+            message_id=message_id,
+            channel_id=channel_id,
+            failure_reason=f"CREATE_PRODUCT_ERRORS: {summarize_graph_errors(errors)}",
+            detail_message=f"Ошибки создания товара: {errors}",
+        )
         return
     created_product = result.get("createdProduct") or {}
     save_uploaded_product(

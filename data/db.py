@@ -98,6 +98,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
             """
         )
         _ensure_uploaded_products_schema(conn)
+        _ensure_telegram_products_schema(conn)
         _ensure_telegram_channels_schema(conn)
         _ensure_size_catalogs_schema(conn)
     _DB_INITIALIZED = True
@@ -220,6 +221,20 @@ def _ensure_uploaded_products_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE uploaded_products ADD COLUMN is_active "
             "INTEGER NOT NULL DEFAULT 1"
         )
+
+
+def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(telegram_products)").fetchall()
+    }
+    if "create_attempts" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN create_attempts "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_create_error" not in columns:
+        conn.execute("ALTER TABLE telegram_products ADD COLUMN last_create_error TEXT")
 
 
 def _ensure_telegram_channels_schema(conn: sqlite3.Connection) -> None:
@@ -655,14 +670,51 @@ def mark_telegram_product_created(
         )
 
 
+def increment_telegram_product_attempt(
+    channel_id: int,
+    message_id: int,
+    failure_reason: Optional[str] = None,
+) -> int:
+    _ensure_db_initialized()
+    normalized_reason = str(failure_reason or "").strip() or None
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE telegram_products
+            SET create_attempts = COALESCE(create_attempts, 0) + 1,
+                last_create_error = ?,
+                updated_at = datetime('now')
+            WHERE channel_id = ? AND message_id = ?
+            """,
+            (normalized_reason, channel_id, message_id),
+        )
+        row = conn.execute(
+            """
+            SELECT COALESCE(create_attempts, 0) AS create_attempts
+            FROM telegram_products
+            WHERE channel_id = ? AND message_id = ?
+            """,
+            (channel_id, message_id),
+        ).fetchone()
+    if not row:
+        return 0
+    return int(row["create_attempts"] or 0)
+
+
 def reset_telegram_products_created(channel_id: Optional[int] = None) -> int:
     _ensure_db_initialized()
     if channel_id is None:
-        where_clause = "created != 0 OR created_product_id IS NOT NULL"
+        where_clause = (
+            "created != 0 OR created_product_id IS NOT NULL "
+            "OR COALESCE(create_attempts, 0) != 0 OR last_create_error IS NOT NULL"
+        )
         params: tuple[object, ...] = ()
     else:
         where_clause = (
-            "(created != 0 OR created_product_id IS NOT NULL) AND channel_id = ?"
+            "("
+            "created != 0 OR created_product_id IS NOT NULL "
+            "OR COALESCE(create_attempts, 0) != 0 OR last_create_error IS NOT NULL"
+            ") AND channel_id = ?"
         )
         params = (channel_id,)
     with _connect() as conn:
@@ -671,6 +723,8 @@ def reset_telegram_products_created(channel_id: Optional[int] = None) -> int:
             UPDATE telegram_products
             SET created = 0,
                 created_product_id = NULL,
+                create_attempts = 0,
+                last_create_error = NULL,
                 updated_at = datetime('now')
             WHERE {where_clause}
             """,
