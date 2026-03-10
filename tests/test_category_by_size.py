@@ -30,3 +30,8 @@ class CategoryBySizeTests(unittest.TestCase):
     def test_resolve_size_id_supports_range_token(self, get_size_id_by_name):
         get_size_id_by_name.side_effect = lambda name: {"36": 171}.get(name)
         self.assertEqual(dc._resolve_size_id("36-41"), 171)
+
+    def test__is_clothing(self):
+        self.assertTrue(dc._is_clothing("майка"))
+        self.assertTrue(dc._is_clothing("джемпер"))
+        self.assertFalse(dc._is_clothing("кроссовки"))

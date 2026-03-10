@@ -65,6 +65,7 @@ DEFAULT_DESCRIPTION = (
 MAX_DOWNLOAD_PHOTOS = 10
 DEFAULT_SHOES_CATEGORY = "obuv/krossovki"
 WOMEN_SNEAKERS_CATEGORY = "zhenskaya-obuv/krossovki"
+DEFAULT_CLOTHES_CATEGORY = "clothes/women/verhnyaya-odezhda/palto"
 WOMEN_SNEAKERS_MIN_SIZE = 36.0
 WOMEN_SNEAKERS_MAX_SIZE = 41.0
 
@@ -316,6 +317,151 @@ _COLOR_MODIFIERS = {
     "светлая": "light",
     "светлое": "light",
 }
+_TOP_TOKENS = {
+
+# RU
+"майка","майки",
+"футболка","футболки",
+"кофта","кофты",
+"свитер","свитера",
+"толстовка",
+"джемпер",
+"рубашка",
+"блузка",
+"жакет",
+"пиджак",
+"кардиган",
+"жилетка",
+"жилет",
+
+# UA
+"майка",
+"футболка",
+"кофта",
+"светр",
+"светрик",
+"сорочка",
+"блуза",
+"жакет",
+"кардиган",
+"жилетка",
+
+# EN
+"t-shirt",
+"tshirt",
+"tee",
+"tank top",
+"top",
+"shirt",
+"blouse",
+"sweater",
+"jumper",
+"cardigan",
+"hoodie",
+"sweatshirt"
+}
+_OUTERWEAR_TOKENS = {
+
+# RU
+"куртка","куртки",
+"пальто",
+"плащ",
+"ветровка",
+"парка",
+
+# UA
+"куртка",
+"пальто",
+"плащ",
+"вітровка",
+"парка",
+
+# EN
+"jacket",
+"coat",
+"trench",
+"windbreaker",
+"parka"
+}
+_BOTTOM_TOKENS = {
+
+# RU
+"штаны",
+"брюки",
+"джинсы",
+"шорты",
+"юбка",
+"лосины",
+"леггинсы",
+
+# UA
+"штани",
+"брюки",
+"джинси",
+"шорти",
+"спідниця",
+"лосини",
+"легінси",
+
+# EN
+"pants",
+"trousers",
+"jeans",
+"shorts",
+"skirt",
+"leggings"
+}
+_DRESS_TOKENS = {
+
+# RU
+"платье",
+"сарафан",
+
+# UA
+"сукня",
+"сарафан",
+
+# EN
+"dress",
+"sundress"
+}
+_JUMPSUIT_TOKENS = {
+
+# RU
+"комбинезон",
+"комбез",
+
+# UA
+"комбінезон",
+
+# EN
+"jumpsuit",
+"romper",
+"playsuit"
+}
+_SET_TOKENS = {
+
+# RU
+"костюм",
+"комплект",
+"набор",
+"двойка",
+"тройка",
+
+# UA
+"костюм",
+"комплект",
+"набір",
+"двійка",
+"трійка",
+
+# EN
+"set",
+"outfit",
+"matching set",
+"two piece",
+"two-piece"
+}
 
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
@@ -522,7 +668,7 @@ def _clean_name(value: str) -> str:
     text = value.strip(" \t-–—|:;")
     text = re.sub(r"\s{2,}", " ", text)
     text = re.sub(
-        r"\s*[-–—:]?\s*\d{2,6}\s*(?:грн|uah|₴)\b.*$",
+        r"«><\s*[-–—:]?\s*\d{2,6}\s*(?:грн|uah|₴)\b.*$'",
         "",
         text,
         flags=re.IGNORECASE,
@@ -539,6 +685,8 @@ def _normalize_token(token: str) -> str:
 
 def _strip_name_prefix(text: str) -> str:
     tokens = text.split()
+    
+    
     if not tokens:
         return text
     idx = 0
@@ -547,10 +695,29 @@ def _strip_name_prefix(text: str) -> str:
         if not normalized:
             idx += 1
             continue
-        if normalized in _GENERIC_NAME_TOKENS:
+        elif normalized in _GENERIC_NAME_TOKENS:
             idx += 1
             continue
-        break
+        elif normalized in _OUTERWEAR_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _BOTTOM_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _DRESS_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _JUMPSUIT_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _SET_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _TOP_TOKENS:
+            idx += 1
+            continue
+        else:
+            break
     if idx > 0 and idx < len(tokens):
         return " ".join(tokens[idx:])
     return text
@@ -1431,7 +1598,23 @@ def _size_name_candidates(value: object) -> list[str]:
 
     return candidates
 
-def _resolve_catalog_slug(size: object, additional_sizes: list[object]) -> str:
+def _is_clothing(name: str) -> bool:
+    text = name.casefold()  # lowercase, чтобы не зависеть от регистра
+
+    clothing_tokens = (
+        _TOP_TOKENS |
+        _BOTTOM_TOKENS |
+        _OUTERWEAR_TOKENS |
+        _DRESS_TOKENS |
+        _JUMPSUIT_TOKENS |
+        _SET_TOKENS
+    )
+
+    return any(token in text for token in clothing_tokens)
+
+def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: str | None = None) -> str:
+     # или константа CATALOG_CLOTHING
+
     values = [size, *additional_sizes]
     numeric_sizes = [
         numeric_size
@@ -1442,6 +1625,8 @@ def _resolve_catalog_slug(size: object, additional_sizes: list[object]) -> str:
         WOMEN_SNEAKERS_MIN_SIZE <= numeric_size <= WOMEN_SNEAKERS_MAX_SIZE
         for numeric_size in numeric_sizes
     ):
+        if name and _is_clothing(name):
+            return DEFAULT_CLOTHES_CATEGORY 
         return WOMEN_SNEAKERS_CATEGORY
     return DEFAULT_SHOES_CATEGORY
 
@@ -1516,6 +1701,7 @@ def _build_product_raw_data(parsed: dict) -> dict:
         "name": parsed.get("name", ""),
         "description": DEFAULT_DESCRIPTION,
         "category": _resolve_catalog_slug(
+            parsed.get("name", ""),
             parsed.get("size"),
             additional_size_values,
         ),
