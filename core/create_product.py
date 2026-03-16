@@ -1,20 +1,34 @@
 import json
 import re
+import pprint
 
 from playwright.sync_api import BrowserContext
 
+from controller.catalog_filter import find_slug_by_word
 from core.core import base_headers, read_response_json
-from data.const import API_URL, CREATE_PRODUCT_MUTATION, DEFAULT_MARKUP
+from data.const import API_URL, CREATE_PRODUCT_MUTATION, DEFAULT_MARKUP, ORDINARY_CLOTHES_SIZES, DEFAULT_MARKUP_FOR_CLOTHES
 from models.product import Product
-
+from controller.data_controller import DEFAULT_CLOTHES_DESCRIPTION
 
 def build_create_product_payload(
     photo_ids: list[str],
     product_raw_data: dict,
     markup: int,
+    clohes_markup: int,
 ) -> dict:
     product = Product(**product_raw_data)
     count = max(product.amount, len(product.additional_sizes) + 1)
+    slug = find_slug_by_word(product.name)
+
+    if slug:
+        # основной размер
+        product.size = ORDINARY_CLOTHES_SIZES[0]
+        # дополнительные размеры
+        product.additional_sizes = [834, 835]
+        markup_price = clohes_markup
+        product.description = DEFAULT_CLOTHES_DESCRIPTION
+    else:
+        markup_price = markup
     variables: dict = {
         "nameUk": product.name,
         "descriptionUk": product.description,
@@ -28,7 +42,7 @@ def build_create_product_payload(
         "characteristics": product.characteristics,
         "count": count,
         "sellingCondition": product.selling_condition,
-        "price": product.price + markup,
+        "price": product.price + markup_price,
         "keyWords": product.keywords,
         "photosStr": photo_ids,
     }
@@ -64,9 +78,10 @@ def create_product(
     csrftoken: str,
     photo_ids: list[str],
     product_raw_data: dict,
-    markup: int = DEFAULT_MARKUP,
+    markup: int = DEFAULT_MARKUP ,
+    clohes_markup: int = DEFAULT_MARKUP_FOR_CLOTHES,
 ) -> dict:
-    payload = build_create_product_payload(photo_ids, product_raw_data, markup)
+    payload = build_create_product_payload(photo_ids, product_raw_data, markup, clohes_markup)
     resp = ctx.request.post(
         API_URL,
         headers={
@@ -77,6 +92,7 @@ def create_product(
         data=json.dumps(payload),
     )
 
+    pprint.pprint(payload)
     data = read_response_json(resp)
     errors = data.get("errors") or []
     if errors:
@@ -93,6 +109,7 @@ def create_product(
                     photo_ids,
                     retry_raw,
                     markup,
+                    clohes_markup,
                 )
                 resp = ctx.request.post(
                     API_URL,

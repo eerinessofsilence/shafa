@@ -9,6 +9,7 @@ class Product:
     brand: int
     size: int
     price: int
+    slug: str | None = None
 
     translation_enabled: bool = True
     condition: str = "NEW"

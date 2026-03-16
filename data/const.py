@@ -103,12 +103,16 @@ TELEGRAM_CHANNEL_IDS = [channel_id for channel_id, _, _ in TELEGRAM_CHANNELS]
 
 API_URL = "https://shafa.ua/api/v3/graphiql"
 API_BATCH_URL = "https://shafa.ua/api/v3/graphiql-batch"
+API_V5_URL = "https://shafa.ua/api/v5/graphql"
+API_V4_URL = "https://shafa.ua/api/v4/graphql"
 ORIGIN_URL = "https://shafa.ua"
 REFERER_URL = "https://shafa.ua/uk/new"
 APP_PLATFORM = "web"
 APP_VERSION = "v2025.12.31.3"
 DEFAULT_MARKUP = 400
+DEFAULT_MARKUP_FOR_CLOTHES = 500
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+ORDINARY_CLOTHES_SIZES = [834, 835]
 
 MEDIA_DIR_PATH = "media"
 STORAGE_STATE_PATH = Path("auth.json")

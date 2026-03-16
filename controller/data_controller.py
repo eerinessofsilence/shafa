@@ -17,6 +17,7 @@ from telethon.types import (
 )
 from telethon.utils import get_peer_id
 
+from controller.catalog_filter import find_slug_by_word
 from data.const import (
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
@@ -26,6 +27,7 @@ from data.const import (
     TELEGRAM_CHANNELS,
 )
 from data.db import (
+    _connect,
     get_brand_id_by_name,
     get_next_uncreated_telegram_product,
     get_size_id_by_name,
@@ -42,6 +44,8 @@ api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
 DEFAULT_CHANNELS = TELEGRAM_CHANNELS
 DEFAULT_CHANNEL_IDS = [channel_id for channel_id, _, _ in DEFAULT_CHANNELS]
+
+
 
 DEFAULT_DESCRIPTION = (
     "36 (23.0 см)\n"
@@ -62,12 +66,136 @@ DEFAULT_DESCRIPTION = (
     "розроблені, щоб забезпечити виняткове поєднання моди та "
     "функціональності."
 )
+DEFAULT_CLOTHES_DESCRIPTION = (
+    "Розмірна сітка:\n"
+    "S - 42\n"
+    "M - 44\n"
+    "L - 46\n"
+    "\n"
+    "Параметри та доступні розміри уточнюйте в повідомленнях. Якщо виникнуть додаткові запитання — пишіть у чат, із радістю відповім.\n"
+    
+    "Стильна річ для створення сучасного та впевненого образу. Добре поєднується з різними елементами гардеробу та підходить як для повсякденного носіння, так і для особливих випадків. Приємний матеріал забезпечує комфорт протягом усього дня, а універсальний дизайн легко вписується у будь-який стиль — від класичного до casual. Вдалий вибір для тих, хто цінує поєднання комфорту, практичності та актуального вигляду."
+)
 MAX_DOWNLOAD_PHOTOS = 10
 DEFAULT_SHOES_CATEGORY = "obuv/krossovki"
 WOMEN_SNEAKERS_CATEGORY = "zhenskaya-obuv/krossovki"
-DEFAULT_CLOTHES_CATEGORY = "clothes/women/verhnyaya-odezhda/palto"
+DEFAULT_CLOTHES_CATEGORY = "mayki-i-futbolki/futbolki"
+CLOTHES_CATEGORIES = {
+    "verhnyaya-odezhda/plashi": ["плащ", "плащі", "плащи", "плащь"],
+    "verhnyaya-odezhda/kurtki": ["куртка", "куртки", "бомбер", "парка", "ветровка"],
+    "verhnyaya-odezhda/shuby": ["шуба", "шубы", "шуби", "шубка", "шубки", "полушубок", "полушубки", "полушуба"],
+
+}
 WOMEN_SNEAKERS_MIN_SIZE = 36.0
 WOMEN_SNEAKERS_MAX_SIZE = 41.0
+
+CLOTHES_SIZE_MAPPING = {
+    "XS": range(32, 37),  # 32-36
+    "S": range(36, 41),   # 36-40
+    "M": range(40, 45),   # 40-44
+    "L": range(44, 49),   # 44-48
+    "XL": range(48, 53),  # 48-52
+    "XXL": range(52, 57), # 52-56
+}
+
+CLOTHES_SLUGS = [
+    "verhnyaya-odezhda/palto",
+    "verhnyaya-odezhda/plashi",
+    "verhnyaya-odezhda/kurtki",
+    "verhnyaya-odezhda/shuby",
+    "verhnyaya-odezhda/zhiletki",
+    "verhnyaya-odezhda/pidzhaki-i-zhakety",
+    "verhnyaya-odezhda/puhoviki",
+    "verhnyaya-odezhda/parki",
+    "verhnyaya-odezhda/dublenki",
+    "verhnyaya-odezhda/dozhdeviki",
+    "verhnyaya-odezhda/vetrovki",
+
+    "platya/mini",
+    "platya/midi",
+    "platya/maksi",
+    "platya/vechernie",
+    "platya/svadebnye",
+    "platya/sarafany",
+    "platya/tuniki",
+
+    "yubki/mini",
+    "yubki/midi",
+    "yubki/maksi",
+
+    "mayki-i-futbolki/futbolki",
+    "mayki-i-futbolki/mayki",
+    "mayki-i-futbolki/polo",
+    "mayki-i-futbolki/topy",
+
+    "rubashki-i-bluzy/rubashki",
+    "rubashki-i-bluzy/bluzy",
+    "rubashki-i-bluzy/vyshivanki",
+
+    "kofty/dzhempery",
+    "kofty/svitery",
+    "kofty/kardigany",
+    "kofty/vodolazki",
+    "kofty/svitshoty",
+    "kofty/hudi",
+    "kofty/pulovery",
+    "kofty/tolstovky",
+    "kofty/nakidki",
+    "kofty/bolero",
+    "kofty/poncho",
+    "kofty/reglan",
+    "kofty/longslivy",
+    "kofty/zhilety",
+
+    "nizhnee-bele-i-kupalniki/lifchiki",
+    "nizhnee-bele-i-kupalniki/trusiki",
+    "nizhnee-bele-i-kupalniki/komplekty",
+    "nizhnee-bele-i-kupalniki/kupalniki",
+    "nizhnee-bele-i-kupalniki/noski",
+    "nizhnee-bele-i-kupalniki/bodi",
+    "nizhnee-bele-i-kupalniki/korsety",
+    "nizhnee-bele-i-kupalniki/chulki",
+    "nizhnee-bele-i-kupalniki/kolgotki",
+    "nizhnee-bele-i-kupalniki/penyuary",
+    "nizhnee-bele-i-kupalniki/termobelye",
+    "nizhnee-bele-i-kupalniki/portupei",
+    "nizhnee-bele-i-kupalniki/eroticheskoye",
+    "nizhnee-bele-i-kupalniki/eroticheskiye-kostyumy",
+    "nizhnee-bele-i-kupalniki/belyevyye-mayki",
+    "nizhnee-bele-i-kupalniki/aksessuary",
+
+    "sport-otdyh/sportivnyye-kostyumy",
+    "sport-otdyh/sportivnyye-shtany",
+    "sport-otdyh/losiny",
+    "sport-otdyh/shorty",
+    "sport-otdyh/topy",
+    "sport-otdyh/kofty",
+    "sport-otdyh/mayki",
+    "sport-otdyh/kapri",
+    "sport-otdyh/kombinezony",
+    "sport-otdyh/belye",
+
+    "sport-otdyh/gornolyzhnyye/kurtki",
+    "sport-otdyh/gornolyzhnyye/kostyumy",
+    "sport-otdyh/gornolyzhnyye/shtany",
+    "sport-otdyh/gornolyzhnyye/kombinezony",
+
+    "zhenskie-kostyumy/kostyumy-s-platem",
+    "zhenskie-kostyumy/kostyumy-s-shortami",
+    "zhenskie-kostyumy/kostyumy-s-yubkoj",
+    "zhenskie-kostyumy/bryuchnye-kostyumy",
+
+    "zhenskie-kombinezony/dzhinsovye-kombinezony",
+    "zhenskie-kombinezony/bryuchnye-kombinezony",
+    "zhenskie-kombinezony/kombinezony-s-shortami",
+
+    "odezhda-dlya-doma-i-sna/domashnyaya-odezhda",
+    "odezhda-dlya-doma-i-sna/pizhamy",
+    "odezhda-dlya-doma-i-sna/nochnushki",
+    "odezhda-dlya-doma-i-sna/halaty",
+    "odezhda-dlya-doma-i-sna/masky-dlya-sna",
+    "odezhda-dlya-doma-i-sna/kigurumi",
+]
 
 _PRICE_HINTS = (
     "цена",
@@ -94,6 +222,14 @@ _SIZE_HINTS = (
     "сетк",
     "sizes",
 )
+SIZE_NAME_MAPPING = {
+    "XS": "34",
+    "S": "36",
+    "M": "38",
+    "L": "40",
+    "XL": "42",
+    "XXL": "44",
+}
 _NAME_LABELS = ("назва", "name", "модель", "model")
 _BRAND_LABELS = ("бренд", "brand")
 _COLOR_LABELS = ("колір", "цвет", "color")
@@ -166,8 +302,6 @@ _CONTACT_HINTS = (
     "самовивіз",
     "заказ",
     "замовлення",
-    "в наличии",
-    "в наявності",
 )
 _NON_NAME_HINTS = (
     _PRICE_HINTS
@@ -180,6 +314,7 @@ _NON_NAME_HINTS = (
         "штрихкод",
         "опис",
         "характеристики",
+        "в наявності",
     )
 )
 _NAME_EXCLUDE_HINTS = (
@@ -317,9 +452,144 @@ _COLOR_MODIFIERS = {
     "светлая": "light",
     "светлое": "light",
 }
-_TOP_TOKENS = {
+
+sizes_dict = {
+    # 94 размера
+    "nizhnee-bele-i-kupalniki/lifchiki": [
+        "nizhnee-bele-i-kupalniki/lifchiki",
+        "nizhnee-bele-i-kupalniki/komplekty",
+        "dlya-beremennyh/bele/byustgaltery"
+    ],
+    # 76 размеров
+    "verhnyaya-odezhda/palto": [
+        "verhnyaya-odezhda/palto",
+        "verhnyaya-odezhda/plashi",
+        "verhnyaya-odezhda/kurtki",
+        "verhnyaya-odezhda/shuby",
+        "verhnyaya-odezhda/zhiletki",
+        "verhnyaya-odezhda/pidzhaki-i-zhakety",
+        "verhnyaya-odezhda/puhoviki",
+        "verhnyaya-odezhda/parki",
+        "verhnyaya-odezhda/dublenki",
+        "verhnyaya-odezhda/dozhdeviki",
+        "verhnyaya-odezhda/vetrovki",
+        "platya/mini",
+        "platya/midi",
+        "platya/maksi",
+        "platya/vechernie",
+        "platya/svadebnye",
+        "platya/sarafany",
+        "platya/tuniki",
+        "yubki/mini",
+        "yubki/midi",
+        "yubki/maksi",
+        "mayki-i-futbolki/futbolki",
+        "mayki-i-futbolki/mayki",
+        "mayki-i-futbolki/polo",
+        "mayki-i-futbolki/topy",
+        "rubashki-i-bluzy/rubashki",
+        "rubashki-i-bluzy/bluzy",
+        "rubashki-i-bluzy/vyshivanki",
+        "kofty/dzhempery",
+        "kofty/svitery",
+        "kofty/kardigany",
+        "kofty/vodolazki",
+        "kofty/svitshoty",
+        "kofty/hudi",
+        "kofty/pulovery",
+        "kofty/tolstovky",
+        "kofty/nakidki",
+        "kofty/bolero",
+        "kofty/poncho",
+        "kofty/reglan",
+        "kofty/longslivy",
+        "kofty/zhilety",
+        "nizhnee-bele-i-kupalniki/trusiki",
+        "nizhnee-bele-i-kupalniki/kupalniki",
+        "nizhnee-bele-i-kupalniki/bodi",
+        "nizhnee-bele-i-kupalniki/korsety",
+        "nizhnee-bele-i-kupalniki/chulki",
+        "nizhnee-bele-i-kupalniki/kolgotki",
+        "nizhnee-bele-i-kupalniki/penyuary",
+        "nizhnee-bele-i-kupalniki/termobelye",
+        "nizhnee-bele-i-kupalniki/portupei",
+        "nizhnee-bele-i-kupalniki/eroticheskoye",
+        "nizhnee-bele-i-kupalniki/eroticheskiye-kostyumy",
+        "nizhnee-bele-i-kupalniki/belyevyye-mayki",
+        "nizhnee-bele-i-kupalniki/aksessuary",
+        "sport-otdyh/sportivnyye-kostyumy",
+        "sport-otdyh/sportivnyye-shtany",
+        "sport-otdyh/losiny",
+        "sport-otdyh/shorty",
+        "sport-otdyh/topy",
+        "sport-otdyh/kofty",
+        "sport-otdyh/mayki",
+        "sport-otdyh/kapri",
+        "sport-otdyh/kombinezony",
+        "sport-otdyh/belye",
+        "sport-otdyh/gornolyzhnyye/kurtki",
+        "sport-otdyh/gornolyzhnyye/kostyumy",
+        "sport-otdyh/gornolyzhnyye/shtany",
+        "sport-otdyh/gornolyzhnyye/kombinezony",
+        "zhenskie-kostyumy/kostyumy-s-platem",
+        "zhenskie-kostyumy/kostyumy-s-shortami",
+        "zhenskie-kostyumy/kostyumy-s-yubkoj",
+        "zhenskie-kostyumy/bryuchnye-kostyumy",
+        "zhenskie-kombinezony/dzhinsovye-kombinezony",
+        "zhenskie-kombinezony/bryuchnye-kombinezony",
+        "zhenskie-kombinezony/kombinezony-s-shortami",
+        "odezhda-dlya-doma-i-sna/domashnyaya-odezhda",
+        "odezhda-dlya-doma-i-sna/pizhamy",
+        "odezhda-dlya-doma-i-sna/nochnushki",
+        "odezhda-dlya-doma-i-sna/halaty",
+        "odezhda-dlya-doma-i-sna/masky-dlya-sna",
+        "odezhda-dlya-doma-i-sna/kigurumi",
+        "dlya-beremennyh/verhnyaya-odezhda",
+        "dlya-beremennyh/platya",
+        "dlya-beremennyh/sarafany",
+        "dlya-beremennyh/futbolki",
+        "dlya-beremennyh/shtany",
+        "dlya-beremennyh/bele/kolgoty",
+        "dlya-beremennyh/bele/bandazhi",
+        "dlya-beremennyh/bele/trusy",
+        "dlya-beremennyh/bele/komplekty",
+        "dlya-beremennyh/bele/kupalnyky",
+        "dlya-beremennyh/bele/halaty",
+        "dlya-beremennyh/bele/pizhamy",
+        "dlya-beremennyh/bele/sorochki",
+        "dlya-beremennyh/drugoe",
+        "dlya-beremennyh/losiny",
+        "dlya-beremennyh/kombinezony",
+        "dlya-beremennyh/kofty",
+        "dlya-beremennyh/longslivy",
+        "dlya-beremennyh/yubki",
+        "dlya-beremennyh/rubashki",
+        "shtany/bryuki",
+        "shtany/losiny-i-legginsy",
+        "shtany/shorty",
+        "shtany/bridzhi",
+        "dlya-beremennyh/platya"
+    ],
+    # 95 размеров — спецодежда
+    "specodezhda/sfera-obsluzhivaniya": [
+        "specodezhda/sfera-obsluzhivaniya",
+        "specodezhda/medicinskaya",
+        "specodezhda/rabochaya",
+        "specodezhda/zashchitnaya",
+        "specodezhda/akademicheskaya",
+        "specodezhda/formennaya"
+    ],
+    # 65 размеров
+    "dlya-beremennyh/dzhinsy": [
+        "dlya-beremennyh/dzhinsy",
+        "shtany/dzhinsy"
+    ]
+}
+
+_TOP_TOKENS = (
 
 # RU
+"бомбер",
 "майка","майки",
 "футболка","футболки",
 "кофта","кофты",
@@ -359,8 +629,8 @@ _TOP_TOKENS = {
 "cardigan",
 "hoodie",
 "sweatshirt"
-}
-_OUTERWEAR_TOKENS = {
+)
+_OUTERWEAR_TOKENS = (
 
 # RU
 "куртка","куртки",
@@ -382,8 +652,8 @@ _OUTERWEAR_TOKENS = {
 "trench",
 "windbreaker",
 "parka"
-}
-_BOTTOM_TOKENS = {
+)
+_BOTTOM_TOKENS = (
 
 # RU
 "штаны",
@@ -410,8 +680,8 @@ _BOTTOM_TOKENS = {
 "shorts",
 "skirt",
 "leggings"
-}
-_DRESS_TOKENS = {
+)
+_DRESS_TOKENS = (
 
 # RU
 "платье",
@@ -424,8 +694,8 @@ _DRESS_TOKENS = {
 # EN
 "dress",
 "sundress"
-}
-_JUMPSUIT_TOKENS = {
+)
+_JUMPSUIT_TOKENS = (
 
 # RU
 "комбинезон",
@@ -438,8 +708,8 @@ _JUMPSUIT_TOKENS = {
 "jumpsuit",
 "romper",
 "playsuit"
-}
-_SET_TOKENS = {
+)
+_SET_TOKENS = (
 
 # RU
 "костюм",
@@ -461,7 +731,16 @@ _SET_TOKENS = {
 "matching set",
 "two piece",
 "two-piece"
-}
+)
+_CLOTHES_NAME_HINTS = (
+    _TOP_TOKENS
+    + _BOTTOM_TOKENS
+    + _OUTERWEAR_TOKENS
+    + _DRESS_TOKENS
+    + _JUMPSUIT_TOKENS
+    + _SET_TOKENS
+)
+
 
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
@@ -754,13 +1033,24 @@ def _score_name_line(line: str) -> float:
         score += 0.05
     return score
 
+def _looks_like_article(text: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9\-]{3,}", text))
 
 def extract_name(lines: list[str]) -> str:
+    for line in lines:
+        lower = line.casefold()
+        lower = lower.split()
+        if any(bad in lower for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
+            continue
+        for word in _CLOTHES_NAME_HINTS:
+            if word in lower:
+                return _clean_name(word)
+
     for line in lines:
         match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
         if match:
             candidate = _clean_name(match.group(1))
-            if candidate:
+            if candidate and not _looks_like_article(candidate):
                 return candidate
     for line in lines:
         match = re.search(
@@ -800,7 +1090,7 @@ def extract_name(lines: list[str]) -> str:
             score -= 0.2
         if score > best_score:
             best = candidate
-            best_score = score
+            best_score = score       
     return best
 
 
@@ -1026,6 +1316,18 @@ def _fallback_brand_from_name(name: str) -> str:
         normalized = _normalize_token(token)
         if not normalized or normalized in _GENERIC_NAME_TOKENS:
             continue
+        if not normalized or normalized in _OUTERWEAR_TOKENS:
+            continue
+        if not normalized or normalized in _TOP_TOKENS:
+            continue
+        if not normalized or normalized in _BOTTOM_TOKENS:
+            continue
+        if not normalized or normalized in _JUMPSUIT_TOKENS:
+            continue
+        if not normalized or normalized in _SET_TOKENS:
+            continue
+        if not normalized or normalized in _DRESS_TOKENS:
+            continue
         return token.strip(".,;:()[]{}")
     return name.split()[0] if name else ""
 
@@ -1112,7 +1414,6 @@ def _calculate_confidence(
 def parse_message(message: str) -> dict:
     normalized = normalize_message(message)
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
-
     name = extract_name(lines)
     brand = extract_brand(lines, name)
     size, additional_sizes = extract_sizes(lines)
@@ -1598,35 +1899,26 @@ def _size_name_candidates(value: object) -> list[str]:
 
     return candidates
 
-def _is_clothing(name: str) -> bool:
-    text = name.casefold()  # lowercase, чтобы не зависеть от регистра
-
-    clothing_tokens = (
-        _TOP_TOKENS |
-        _BOTTOM_TOKENS |
-        _OUTERWEAR_TOKENS |
-        _DRESS_TOKENS |
-        _JUMPSUIT_TOKENS |
-        _SET_TOKENS
-    )
-
     return any(token in text for token in clothing_tokens)
 
-def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: str | None = None) -> str:
-     # или константа CATALOG_CLOTHING
-
+def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: str) -> str:
+    name = _clean_name(name)
+    
     values = [size, *additional_sizes]
     numeric_sizes = [
         numeric_size
         for value in values
         for numeric_size in _extract_numeric_sizes(value)
     ]
+    print(f"[DEBUG] resolving catalog slug for size={size} additional_sizes={additional_sizes} name={name} numeric_sizes={numeric_sizes}")
+    slug = find_slug_by_word(name)
+    if slug:
+        return slug
+    print(f"[DEBUG] no slug found by {name} {slug}, checking numeric sizes for sneakers category")
     if numeric_sizes and all(
         WOMEN_SNEAKERS_MIN_SIZE <= numeric_size <= WOMEN_SNEAKERS_MAX_SIZE
         for numeric_size in numeric_sizes
     ):
-        if name and _is_clothing(name):
-            return DEFAULT_CLOTHES_CATEGORY 
         return WOMEN_SNEAKERS_CATEGORY
     return DEFAULT_SHOES_CATEGORY
 
@@ -1647,21 +1939,42 @@ def _resolve_brand_id(brand: Optional[str]) -> Optional[int]:
         return brand_id
     return BRAND_NAME_TO_ID.get(text.lower())
 
+def _normalize_size_name(text: str) -> str:
+    text = str(text).strip()
+    # заменяем запятую на точку
+    text = text.replace(",", ".")
+    # убираем лишние пробелы
+    text = re.sub(r"\s+", "", text)
+    return text
 
-def _resolve_size_id(value: Optional[object]) -> Optional[int]:
+def _resolve_size_id(value: Optional[object], catalog_slug: str, slug: str | None = None) -> Optional[int]:
     if value is None:
         return None
-    if isinstance(value, int):
-        return value if size_id_exists(value) else None
     text = str(value).strip()
-    for candidate in _size_name_candidates(text):
-        size_id = get_size_id_by_name(candidate)
-        if size_id is not None:
-            return size_id
-    parsed = _parse_int(text)
-    if parsed is None:
-        return None
-    return parsed if size_id_exists(parsed) else None
+    mapped_text = SIZE_NAME_MAPPING.get(text.upper(), text)
+
+    reverse_sizes_dict = {}
+    for key, values in sizes_dict.items():
+        for v in values:
+            reverse_sizes_dict[v] = key
+
+    main_slug = reverse_sizes_dict.get(catalog_slug, catalog_slug)
+
+    if main_slug:
+        catalog_slug = main_slug
+    else:
+        catalog_slug = catalog_slug
+
+    with _connect() as conn:
+
+        row = conn.execute(
+            "SELECT id FROM sizes WHERE catalog_slug = ? AND primary_size_name = ?",
+            (main_slug, mapped_text)
+        ).fetchone()
+    print(f"[DEBUG] resolving size id for value={value} mapped_text={mapped_text} catalog_slug={catalog_slug}       {main_slug}      result={row}")
+    if row:
+        return row[0]
+    return None
 
 
 def _normalize_colors(color_raw: Optional[str]) -> list[str]:
@@ -1684,33 +1997,46 @@ def _normalize_colors(color_raw: Optional[str]) -> list[str]:
     return colors or ["WHITE"]
 
 
-def _parse_additional_sizes(values: list[str]) -> list[int]:
+def _parse_additional_sizes(values: list[str], catalog_slug: str) -> list[int]:
     sizes: list[int] = []
     for value in values:
-        size = _resolve_size_id(value)
+        size = _resolve_size_id(value, catalog_slug=catalog_slug)
         if size is not None:
             sizes.append(size)
     return sizes
 
 
-def _build_product_raw_data(parsed: dict) -> dict:
+def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
+
     additional_size_values = parsed.get("additional_sizes", [])
     if not isinstance(additional_size_values, list):
         additional_size_values = []
+    _name = parsed.get("name", "")
+    print(f"[DEBUG] building product raw data for name: {_name}")
+    size_value = parsed.get("size")
+    catalog_slug = _resolve_catalog_slug(size_value, additional_size_values, name=_name)
+
+    print(f"[DEBUG] parsed size: {size_value}, catalog_slug: {catalog_slug}")
+    resolved_size_id = _resolve_size_id(size_value, catalog_slug=catalog_slug)
+    print(f"[DEBUG] resolved size id: {resolved_size_id!r}")
+
+    if slug:
+        DESCRIPTION = DEFAULT_CLOTHES_DESCRIPTION
+    else:
+        DESCRIPTION = DEFAULT_DESCRIPTION
+
     product_raw_data: dict = {
         "name": parsed.get("name", ""),
-        "description": DEFAULT_DESCRIPTION,
-        "category": _resolve_catalog_slug(
-            parsed.get("name", ""),
-            parsed.get("size"),
-            additional_size_values,
-        ),
+        "description": DESCRIPTION,
+        "category": catalog_slug,
         "brand": _resolve_brand_id(parsed.get("brand")),
-        "size": _resolve_size_id(parsed.get("size")),
+        "size": _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug),
         "price": _parse_price(parsed.get("price")),
+        "slug": slug,
+        
     }
     product_raw_data["colors"] = _normalize_colors(parsed.get("color"))
-    additional_sizes = _parse_additional_sizes(additional_size_values)
+    additional_sizes = _parse_additional_sizes(additional_size_values, catalog_slug=WOMEN_SNEAKERS_CATEGORY)
     if additional_sizes:
         product_raw_data["additional_sizes"] = additional_sizes
     return product_raw_data
@@ -1828,3 +2154,5 @@ def mark_product_created(
 if __name__ == "__main__":
     product = get_next_product_for_upload(message_amount=75)
     print(product)
+
+

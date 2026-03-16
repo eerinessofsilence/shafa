@@ -3,7 +3,7 @@ from telethon import TelegramClient
 from data.const import TELEGRAM_CHANNELS
 from data.const import TELEGRAM_API_ID, TELEGRAM_API_HASH
 
-PHONE = '+380991590021'   # твой номер, только для первой авторизации
+PHONE = '+380689451550'   # твой номер, только для первой авторизации
 
 
 async def main():

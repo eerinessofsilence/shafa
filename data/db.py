@@ -25,7 +25,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
     global _DB_INITIALIZED
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
-        conn.executescript(
+        conn.executescript (
             """
             CREATE TABLE IF NOT EXISTS uploaded_products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +66,8 @@ def init_db(db_path: Path = DB_PATH) -> None:
 
             CREATE TABLE IF NOT EXISTS sizes (
                 id INTEGER PRIMARY KEY,
-                primary_size_name TEXT NOT NULL
+                primary_size_name TEXT NOT NULL,
+                catalog_slug TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS brands (
@@ -101,35 +102,47 @@ def _ensure_db_initialized() -> None:
         return
     init_db()
 
+def insert_size(id: int, primary_size_name: str, catalog_slug: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sizes (id, primary_size_name, catalog_slug)
+            VALUES (?, ?, ?)
+            """,
+            (id, primary_size_name, catalog_slug),
+        )
 
-def _load_sizes_cache() -> tuple[dict[str, int], set[int]]:
+def _load_sizes_cache():
     global _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
-    if _SIZE_ID_BY_NAME_CACHE is not None and _SIZE_IDS_CACHE is not None:
+
+    if _SIZE_ID_BY_NAME_CACHE is not None:
         return _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
+
     _ensure_db_initialized()
+
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, primary_size_name
+            SELECT id, primary_size_name, catalog_slug
             FROM sizes
             """
         ).fetchall()
-    mapping: dict[str, int] = {}
-    ids: set[int] = set()
+
+    mapping = {}
+    ids = set()
+
     for row in rows:
-        size_id = row["id"]
-        if size_id is None:
-            continue
-        size_id_int = int(size_id)
-        ids.add(size_id_int)
-        name = row["primary_size_name"]
-        if not name:
-            continue
-        key = str(name).strip().casefold()
-        if key and key not in mapping:
-            mapping[key] = size_id_int
+
+        size_id = int(row["id"])
+        name = str(row["primary_size_name"]).strip().casefold()
+        slug = row["catalog_slug"]
+
+        mapping[(slug, name)] = size_id
+        ids.add(size_id)
+
     _SIZE_ID_BY_NAME_CACHE = mapping
     _SIZE_IDS_CACHE = ids
+
     return mapping, ids
 
 
@@ -292,41 +305,59 @@ def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
     ]
 
 
-def save_sizes(sizes: list[dict]) -> None:
+def save_sizes(sizes: list[dict], catalog_slug: str) -> None:
     global _SIZE_ID_BY_NAME_CACHE, _SIZE_IDS_CACHE
+
     if not sizes:
         return
-    rows: list[tuple[object, str]] = []
+
+    rows: list[tuple[int, str, str]] = []
+
     for size in sizes:
         size_id = size.get("id")
         primary_name = size.get("primarySizeName")
+
         if size_id is None or not primary_name:
             continue
-        rows.append((size_id, str(primary_name)))
+
+        rows.append(
+            (
+                int(size_id),
+                str(primary_name),
+                catalog_slug,
+            )
+        )
+
     if not rows:
         return
+
     _ensure_db_initialized()
+
     with _connect() as conn:
         conn.executemany(
             """
-            INSERT INTO sizes (id, primary_size_name)
-            VALUES (?, ?)
+            INSERT INTO sizes (id, primary_size_name, catalog_slug)
+            VALUES (?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                primary_size_name = excluded.primary_size_name
+                primary_size_name = excluded.primary_size_name,
+                catalog_slug = excluded.catalog_slug
             """,
             rows,
         )
+    # обновляем кеш
     if _SIZE_ID_BY_NAME_CACHE is not None or _SIZE_IDS_CACHE is not None:
+
         mapping = _SIZE_ID_BY_NAME_CACHE or {}
         ids = _SIZE_IDS_CACHE or set()
-        for size_id, primary_name in rows:
-            if size_id is None:
-                continue
+
+        for size_id, primary_name, slug in rows:
+
             size_id_int = int(size_id)
             ids.add(size_id_int)
-            key = str(primary_name).strip().casefold()
-            if key:
-                mapping[key] = size_id_int
+
+            key = (slug, str(primary_name).strip().casefold())
+            mapping[key] = size_id_int
+
         _SIZE_ID_BY_NAME_CACHE = mapping
         _SIZE_IDS_CACHE = ids
 
@@ -369,13 +400,16 @@ def save_brands(brands: list[dict]) -> None:
         _BRAND_NAMES_CACHE = sorted(names_set)
 
 
-def get_size_id_by_name(primary_size_name: str) -> Optional[int]:
+def get_size_id_by_name(primary_size_name: str, catalog_slug: str) -> Optional[int]:
+
     name = str(primary_size_name).strip()
+
     if not name:
         return None
-    mapping, _ = _load_sizes_cache()
-    return mapping.get(name.casefold())
 
+    mapping, _ = _load_sizes_cache()
+
+    return mapping.get((catalog_slug, name.casefold()))
 
 def size_id_exists(size_id: int) -> bool:
     _, ids = _load_sizes_cache()

@@ -31,6 +31,7 @@ from data.const import (
     REFERER_URL,
     STORAGE_STATE_PATH,
     UPLOAD_PHOTO_MUTATION,
+    
 )
 from data.db import (
     init_db,
@@ -50,7 +51,8 @@ USER_AGENT = (
 )
 DEFAULT_CATALOG_SLUG = "obuv/krossovki"
 WOMEN_CATALOG_SLUG = "zhenskaya-obuv/krossovki"
-SIZE_CATALOG_SLUGS = (DEFAULT_CATALOG_SLUG, WOMEN_CATALOG_SLUG)
+DEFAULT_CLOTES_CATEGORY = "verhnyaya-odezhda/palto"
+SIZE_CATALOG_SLUGS = (DEFAULT_CATALOG_SLUG, WOMEN_CATALOG_SLUG, DEFAULT_CLOTES_CATEGORY)
 
 try:
     from PIL import Image, ImageOps
