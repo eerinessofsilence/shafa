@@ -2050,17 +2050,17 @@ def build_product_raw_data(parsed: dict) -> dict:
     return _build_product_raw_data(parsed)
 
 
-def pick_next_products_for_upload(count: int = 40) -> list[dict]:
-    products = []
-    rows = [
-        row
-        for channel_id in _get_channel_ids()
-        for row in [get_next_uncreated_telegram_product(channel_id)]
-        if row
-    ]
-    # сортируем по дате, чтобы брать самые последние
-    rows = sorted(rows, key=lambda item: item["created_at"], reverse=True)
-    for row in rows:
+def _pick_next_product_for_upload() -> Optional[dict]:
+    while True:
+        rows = [
+            row
+            for channel_id in _get_channel_ids()
+            for row in [get_next_uncreated_telegram_product(channel_id)]
+            if row
+        ]
+        if not rows:
+            return None
+        row = max(rows, key=lambda item: item["created_at"])
         parsed_from_db = json.loads(row["parsed_data"]) if row["parsed_data"] else {}
         raw_message = row["raw_message"] or ""
         parsed = parse_message(raw_message) if raw_message else parsed_from_db
@@ -2076,26 +2076,19 @@ def pick_next_products_for_upload(count: int = 40) -> list[dict]:
                 created_product_id="SKIPPED_MISSING_DATA",
             )
             continue
-        products.append(
-            {
-                "channel_id": row["channel_id"],
-                "message_id": row["message_id"],
-                "parsed_data": parsed,
-                "product_raw_data": _build_product_raw_data(parsed),
-            }
-        )
-        if len(products) >= count:
-            break
-    return products
+        return {
+            "channel_id": row["channel_id"],
+            "message_id": row["message_id"],
+            "parsed_data": parsed,
+            "product_raw_data": _build_product_raw_data(parsed),
+        }
+
 
 async def get_next_product_for_upload_async(
     message_amount: int = 75,
 ) -> Optional[dict]:
     await _fetch_messages(message_amount=message_amount)
-    products = pick_next_products_for_upload(count=40)
-    for product in products:
-        print(product["message_id"])
-    return pick_next_products_for_upload()
+    return _pick_next_product_for_upload()
 
 
 def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
