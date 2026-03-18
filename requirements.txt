@@ -2,7 +2,3 @@ playwright
 telethon
 python-dotenv
 inquirer
-sqlite3
-requests
-pytest
-unittest

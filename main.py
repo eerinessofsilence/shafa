@@ -35,6 +35,8 @@ def main() -> None:
             product_data = get_next_product_for_upload(message_amount=75)
             if not product_data:
                 log("INFO", "Нет новых товаров для создания.")
+                time.sleep(random.randint(300, 360))
+                continue 
                 # return
             channel_id = product_data.get("channel_id")
             product_raw_data = product_data["product_raw_data"]
@@ -157,9 +159,9 @@ def main() -> None:
                     log("INFO", "Фото удалены после создания товара.")
                 finally:
                     browser.close()
-            time.sleep(random.randint(300, 400))
+            time.sleep(random.randint(300, 360))
         except Exception as exc:
             log("ERROR", f"Ошибка в main loop: {exc}")
-            time.sleep(random.randint(300, 400))
+            time.sleep(random.randint(300, 360))
 if __name__ == "__main__":
     main()

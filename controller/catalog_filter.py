@@ -456,3 +456,21 @@ def find_slug_by_word(name: str) -> str | None:
             if word.lower() in text_lower:  # ищем вхождение слова
                 return slug
     return None
+
+def find_word(name: str) -> str | None:
+    # Очистка текста
+    text = name.strip(" \t-–—|:;")
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(
+        r"«><\s*[-–—:]?\s*\d{2,6}\s*(?:грн|uah|₴)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text_lower = text.lower()
+
+    for slug, words in SLUG_TO_WORDS.items():
+        for word in words:
+            if word.lower() in text_lower:  # ищем вхождение слова
+                return word
+    return None
