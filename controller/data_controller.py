@@ -1086,7 +1086,7 @@ def extract_name(lines: list[str]) -> str:
             if word:
                 word += f" {mod_numbers}"
     
-                return _clean_name(word)
+                return word
             
 
     for line in lines:
