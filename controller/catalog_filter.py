@@ -215,7 +215,8 @@ SLUG_TO_WORDS = {
         "джемпер",         # UA
         "jumper",          # EN
         "пуловер",         # RU, син.
-        "джемперок"        # RU, уменьш.
+        "джемперок",
+        "баска"       # RU, уменьш.
     ],
     "kofty/svitery": [
         "свитер",          # RU
@@ -296,14 +297,14 @@ SLUG_TO_WORDS = {
         "стринги",         # RU
         "шортики"          # RU
     ],
-    "nizhnee-bele-i-kupalniki/komplekty": [
+    "dlya-beremennyh/bele/komplekty": [
         "комплект",        # RU
         "комплект",        # UA
         "lingerie set",    # EN
         "бельевой",        # RU
         "сет"              # RU, сленг
     ],
-    "nizhnee-bele-i-kupalniki/kupalniki": [
+    "nizhnee-bele-i-kupalniki/komplekty": [
         "купальник",       # RU
         "купальник",       # UA
         "swimsuit",        # EN
@@ -329,7 +330,8 @@ SLUG_TO_WORDS = {
         "колготи",         # UA
         "tights",          # EN
         "чулки",           # RU
-        "капронки"         # RU, разг.
+        "капронки"         #
+        "лоcіни"           # RU, разг.
     ],
 
     # Женская одежда - Спортивный одяг

@@ -66,12 +66,15 @@ DEFAULT_DESCRIPTION = (
     "розроблені, щоб забезпечити виняткове поєднання моди та "
     "функціональності."
 )
+
+
 DEFAULT_CLOTHES_DESCRIPTION = (
     "Розмірна сітка:\n"
     "S - 42\n"
     "M - 44\n"
     "L - 46\n"
     "\n"
+
     "Параметри та доступні розміри уточнюйте в повідомленнях. Якщо виникнуть додаткові запитання — пишіть у чат, із радістю відповім.\n"
     
     "Стильна річ для створення сучасного та впевненого образу. Добре поєднується з різними елементами гардеробу та підходить як для повсякденного носіння, так і для особливих випадків. Приємний матеріал забезпечує комфорт протягом усього дня, а універсальний дизайн легко вписується у будь-який стиль — від класичного до casual. Вдалий вибір для тих, хто цінує поєднання комфорту, практичності та актуального вигляду."
@@ -452,7 +455,6 @@ _COLOR_MODIFIERS = {
     "светлая": "light",
     "светлое": "light",
 }
-
 sizes_dict = {
     # 94 размера
     "nizhnee-bele-i-kupalniki/lifchiki": [
@@ -1036,19 +1038,56 @@ def _score_name_line(line: str) -> float:
 def _looks_like_article(text: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9\-]{3,}", text))
 
+def extract_material(lines: list[str]) -> str:
+
+    for line in lines:
+        clean_line = line.lstrip("▫️•- ").strip()
+        match_material = re.search(
+            r"(?i)тканина[:\s]*([\w\s\(\)%\-]+)",  # двоеточие и пробелы после слова
+            clean_line
+        )
+        if match_material:
+            material = (
+                "Розмірна сітка:\n"
+                "S - 42\n"
+                "M - 44\n"
+                "L - 46\n"
+                "\n"
+                
+                f"{match_material.group(0)}\n"
+
+                "Параметри та доступні розміри уточнюйте в повідомленнях. Якщо виникнуть додаткові запитання — пишіть у чат, із радістю відповім.\n"
+                
+                "Стильна річ для створення сучасного та впевненого образу. Добре поєднується з різними елементами гардеробу та підходить як для повсякденного носіння, так і для особливих випадків. Приємний матеріал забезпечує комфорт протягом усього дня, а універсальний дизайн легко вписується у будь-який стиль — від класичного до casual. Вдалий вибір для тих, хто цінує поєднання комфорту, практичності та актуального вигляду."
+            )
+            return material
+    return ""
+
 def extract_name(lines: list[str]) -> str:
-    print(lines)
+    mod_numbers = ""
     for line in lines:
         lower = line.casefold()
         lower = lower.split()
-        print(lower)
         if any(bad in lower for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
             continue
-        
+        clean_line = line.lstrip("▫️•- ").strip()
+        match = re.search(r"(?i)мод[:\s]*([\d\-]+)", clean_line)
+        if match:
+            mod_numbers = match.group(1).strip()
+            break
+    for line in lines:
+        lower = line.casefold()
+        lower = lower.split()
+        if any(bad in lower for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
+            continue
         for word in lower:
             word = find_word(word)
+            
             if word:
+                word += f" {mod_numbers}"
+    
                 return _clean_name(word)
+            
 
     for line in lines:
         match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
@@ -1419,13 +1458,17 @@ def parse_message(message: str) -> dict:
     normalized = normalize_message(message)
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
     name = extract_name(lines)
+    material = extract_material(lines)
     brand = extract_brand(lines, name)
     size, additional_sizes = extract_sizes(lines)
     color = extract_colors(lines, name)
     price = extract_price(lines)
     confidence = _calculate_confidence(name, price, size, brand, color)
 
+
+
     return {
+        "material": material,
         "name": name,
         "brand": brand,
         "size": size,
@@ -1436,7 +1479,7 @@ def parse_message(message: str) -> dict:
     }
 
 
-async def _fetch_messages(message_amount: int = 75) -> int:
+async def _fetch_messages(message_amount: int = 500) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
     debug_verbose = _debug_fetch_verbose()
@@ -1461,10 +1504,6 @@ async def _fetch_messages(message_amount: int = 75) -> int:
             return
         preview_lines = normalize_message(text).splitlines() if text else []
         preview = preview_lines[0] if preview_lines else ""
-        print(
-            f"[DEBUG] skip channel_id={channel_id} message_id={message_id} "
-            f"reason={reason} text={preview}"
-        )
         verbose_count += 1
 
     api_id_value, api_hash_value = _require_telegram_credentials()
@@ -1472,7 +1511,7 @@ async def _fetch_messages(message_amount: int = 75) -> int:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
-            async for msg in client.iter_messages(channel_id, limit=message_amount):
+            async for msg in client.iter_messages(channel_id, limit=500):
                 if debug_fetch:
                     stats["total"] += 1
                 if not msg.media:
@@ -1722,12 +1761,12 @@ async def _download_message_photos(
     api_id_value, api_hash_value = _require_telegram_credentials()
     async with TelegramClient("session", api_id_value, api_hash_value) as client:
         await _sync_channel_titles(client, _get_channel_ids())
-        log(
-            "INFO",
-            "Скачиваю фото из Telegram: \n"
-            + f"channel_id={channel_id}\n"
-            + f"message_id={message_id}.",
-        )
+        #log(
+        #   "INFO",
+        #    "Скачиваю фото из Telegram: \n"
+        #    + f"channel_id={channel_id}\n"
+        #    + f"message_id={message_id}.",
+        #)
         message = await client.get_messages(channel_id, ids=message_id)
         if not message or not _is_photo_message(message):
             return 0
@@ -1792,15 +1831,15 @@ async def _download_message_photos(
             return 0
         for idx, (msg, chat_id, size_bytes) in enumerate(queue, start=1):
             size_label = _format_size_mb(size_bytes)
-            log(
-                "INFO",
-                f"Скачивание фото {idx}/{len(queue)}: "
-                f"message_id={msg.id} chat_id={chat_id} size={size_label}.",
-            )
+            #log(
+            #    "INFO",
+            #    f"Скачивание фото {idx}/{len(queue)}: "
+            #    f"message_id={msg.id} chat_id={chat_id} size={size_label}.",
+            #)
             result = await client.download_media(msg, file=str(target_dir))
             if result:
                 downloaded += 1
-                log("OK", f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.")
+            #    log("OK", f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.")
             else:
                 log(
                     "WARN",
@@ -1914,11 +1953,9 @@ def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: st
         for value in values
         for numeric_size in _extract_numeric_sizes(value)
     ]
-    print(f"[DEBUG] resolving catalog slug for size={size} additional_sizes={additional_sizes} name={name} numeric_sizes={numeric_sizes}")
     slug = find_slug_by_word(name)
     if slug:
         return slug
-    print(f"[DEBUG] no slug found by {name} {slug}, checking numeric sizes for sneakers category")
     if numeric_sizes and all(
         WOMEN_SNEAKERS_MIN_SIZE <= numeric_size <= WOMEN_SNEAKERS_MAX_SIZE
         for numeric_size in numeric_sizes
@@ -1975,7 +2012,6 @@ def _resolve_size_id(value: Optional[object], catalog_slug: str, slug: str | Non
             "SELECT id FROM sizes WHERE catalog_slug = ? AND primary_size_name = ?",
             (main_slug, mapped_text)
         ).fetchone()
-    print(f"[DEBUG] resolving size id for value={value} mapped_text={mapped_text} catalog_slug={catalog_slug}       {main_slug}      result={row}")
     if row:
         return row[0]
     return None
@@ -2016,16 +2052,16 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
     if not isinstance(additional_size_values, list):
         additional_size_values = []
     _name = parsed.get("name", "")
-    print(f"[DEBUG] building product raw data for name: {_name}")
     size_value = parsed.get("size")
     catalog_slug = _resolve_catalog_slug(size_value, additional_size_values, name=_name)
 
-    print(f"[DEBUG] parsed size: {size_value}, catalog_slug: {catalog_slug}")
     resolved_size_id = _resolve_size_id(size_value, catalog_slug=catalog_slug)
-    print(f"[DEBUG] resolved size id: {resolved_size_id!r}")
-
+    
+    slug = find_slug_by_word(_name)
+    
     if slug:
-        DESCRIPTION = DEFAULT_CLOTHES_DESCRIPTION
+        
+        DESCRIPTION = parsed.get("material", "")
     else:
         DESCRIPTION = DEFAULT_DESCRIPTION
 
@@ -2085,13 +2121,13 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 
 
 async def get_next_product_for_upload_async(
-    message_amount: int = 75,
+    message_amount: int = 500,
 ) -> Optional[dict]:
     await _fetch_messages(message_amount=message_amount)
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 75) -> Optional[dict]:
+def get_next_product_for_upload(message_amount: int = 500) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -2156,7 +2192,7 @@ def mark_product_created(
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=75)
+    product = get_next_product_for_upload(message_amount=500)
     print(product)
 
 

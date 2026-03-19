@@ -2,7 +2,7 @@ from pathlib import Path
 
 import random
 import time
-
+from data.db import mark_telegram_product_created
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -29,6 +29,7 @@ from utils.media import list_media_files, reset_media_dir
 
 
 def main() -> None:
+    amount_products_uploaded = 0
     while True:
         try:
             init_db()
@@ -36,7 +37,8 @@ def main() -> None:
             if not product_data:
                 log("INFO", "Нет новых товаров для создания.")
                 time.sleep(random.randint(300, 360))
-                continue 
+                continue
+ 
                 # return
             channel_id = product_data.get("channel_id")
             product_raw_data = product_data["product_raw_data"]
@@ -56,17 +58,17 @@ def main() -> None:
                     + f"Parsed price: {parsed_data.get('price')!r}.",
                 )
                 # return
-            price_with_markup = price_value + DEFAULT_MARKUP
-            log("INFO", f"Цена товара (база): {price_value}.")
-            log("INFO", f"Цена товара (с наценкой {DEFAULT_MARKUP}): {price_with_markup}.")
+            #price_with_markup = price_value + DEFAULT_MARKUP
+            #log("INFO", f"Цена товара (база): {price_value}.")
+            #log("INFO", f"Цена товара (с наценкой {DEFAULT_MARKUP}): {price_with_markup}.")
 
             media_dir = Path(MEDIA_DIR_PATH)
             reset_media_dir(media_dir)
             downloaded = download_product_photos(message_id, media_dir, channel_id=channel_id)
             if downloaded == 0:
                 log("WARN", f"Не нашёл фото для message_id={message_id} в Telegram.")
-            else:
-                log("INFO", f"Скачано фото: {downloaded}.")
+            #else:
+                #log("INFO", f"Скачано фото: {downloaded}.")
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=HEADLESS)
                 try:
@@ -120,13 +122,13 @@ def main() -> None:
                             "Все файлы превышают лимит размера. Загрузка фото пропущена.",
                         )
                     for idx, photo_path in enumerate(filtered_paths, start=1):
-                        log(
-                            "INFO",
-                            f"Загрузка фото {idx}/{len(filtered_paths)}: {photo_path.name}",
-                        )
+                        #log(
+                        #    "INFO",
+                        #    f"Загрузка фото {idx}/{len(filtered_paths)}: {photo_path.name}",
+                        #)
                         photo_id = upload_photo(ctx, csrftoken, photo_path)
                         photo_ids.append(photo_id)
-                        log("OK", f"Фото загружено: id={photo_id}")
+                        #log("OK", f"Фото загружено: id={photo_id}")
 
                     log("INFO", "Создаю товар...")
                     result = create_product(
@@ -139,7 +141,8 @@ def main() -> None:
                     errors = result.get("errors") or []
                     if errors:
                         log("ERROR", f"Ошибки создания товара: {errors}")
-                        return
+                        mark_telegram_product_created(channel_id, message_id, created_product_id="SKIPPED_MISSING_DATA")
+                        continue
                     created_product = result.get("createdProduct") or {}
                     save_uploaded_product(
                         product_id=created_product.get("id"),
@@ -152,13 +155,15 @@ def main() -> None:
                         channel_id=channel_id,
                     )
                     product_id = created_product.get("id")
+                    amount_products_uploaded += 1
                     log(
-                        "OK", f"Товар создан успешно. ID: {product_id}. Фото: {len(photo_ids)}."
+                        "OK", f"Товар номер {amount_products_uploaded} создан успешно. ID: {product_id}. Фото: {len(photo_ids)}."
                     )
                     reset_media_dir(media_dir)
-                    log("INFO", "Фото удалены после создания товара.")
+                    #log("INFO", "Фото удалены после создания товара.")
                 finally:
                     browser.close()
+            
             time.sleep(random.randint(300, 360))
         except Exception as exc:
             log("ERROR", f"Ошибка в main loop: {exc}")

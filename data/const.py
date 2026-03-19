@@ -98,6 +98,12 @@ TELEGRAM_API_ID = _get_env_int("SHAFA_TELEGRAM_API_ID")
 TELEGRAM_API_HASH = _get_env_str("SHAFA_TELEGRAM_API_HASH")
 TELEGRAM_CHANNELS: list[tuple[int, str, str]] = [
     (-1001849992155, "Fashionista_drop", "main"),
+    (-1001984470450, "2MOOD | Синя 1492", "main"),
+    (-1001276463844, "👑zazhigalka👑", "main"),
+    (-1001557491045, "ROZALINA синя 1530", "main"),
+    (-1002850204025, "REMEZ - РИНКОВА 4935", "main"),
+    (-1001568988278, "👑Valeri Butik👑1548Жіночий та чоловічий одяг", "main"),
+    (-1001160944182, "INNA Риночна 1541", "main"),
 ]
 TELEGRAM_CHANNEL_IDS = [channel_id for channel_id, _, _ in TELEGRAM_CHANNELS]
 
