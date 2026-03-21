@@ -917,6 +917,7 @@ def normalize_message(message: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\u00a0", " ")
     text = text.replace("–", "-").replace("—", "-")
+
     cleaned: list[str] = []
     for ch in text:
         if ch == "\n":
@@ -1064,17 +1065,18 @@ def extract_material(lines: list[str]) -> str:
     return ""
 
 def extract_name(lines: list[str]) -> str:
-    mod_numbers = ""
+    mod_number = ""
     for line in lines:
-        lower = line.casefold()
-        lower = lower.split()
+        lower = line.casefold().split()
         if any(bad in lower for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
             continue
-        clean_line = line.lstrip("▫️•- ").strip()
-        match = re.search(r"(?i)мод[:\s]*([\d\-]+)", clean_line)
+        clean_line = line.lstrip("▫️• ").strip()
+        match = re.search(r"(?i)(?:мод|модель|арт)[\s.:]*([\d\-#]+)", clean_line)
         if match:
-            mod_numbers = match.group(1).strip()
+            mod_number = match.group(1)
+            mod_number = re.sub(r"[^\w\d\-–—]+", "", mod_number)
             break
+
     for line in lines:
         lower = line.casefold()
         lower = lower.split()
@@ -1084,8 +1086,7 @@ def extract_name(lines: list[str]) -> str:
             word = find_word(word)
             
             if word:
-                word += f" {mod_numbers}"
-    
+                word += f" {mod_number}"
                 return word
             
 
@@ -1479,7 +1480,7 @@ def parse_message(message: str) -> dict:
     }
 
 
-async def _fetch_messages(message_amount: int = 500) -> int:
+async def _fetch_messages(message_amount: int = 100) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
     debug_verbose = _debug_fetch_verbose()
@@ -1511,7 +1512,7 @@ async def _fetch_messages(message_amount: int = 500) -> int:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
-            async for msg in client.iter_messages(channel_id, limit=500):
+            async for msg in client.iter_messages(channel_id, limit=100):
                 if debug_fetch:
                     stats["total"] += 1
                 if not msg.media:
@@ -1942,10 +1943,9 @@ def _size_name_candidates(value: object) -> list[str]:
 
     return candidates
 
-    return any(token in text for token in clothing_tokens)
-
 def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: str) -> str:
-    name = _clean_name(name)
+    check_slug = name.split()
+    slug_name = _clean_name(check_slug[0])
     
     values = [size, *additional_sizes]
     numeric_sizes = [
@@ -1953,7 +1953,8 @@ def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: st
         for value in values
         for numeric_size in _extract_numeric_sizes(value)
     ]
-    slug = find_slug_by_word(name)
+
+    slug = find_slug_by_word(slug_name)
     if slug:
         return slug
     if numeric_sizes and all(
@@ -1988,9 +1989,13 @@ def _normalize_size_name(text: str) -> str:
     text = re.sub(r"\s+", "", text)
     return text
 
+
+
+
 def _resolve_size_id(value: Optional[object], catalog_slug: str, slug: str | None = None) -> Optional[int]:
     if value is None:
         return None
+
     text = str(value).strip()
     mapped_text = SIZE_NAME_MAPPING.get(text.upper(), text)
 
@@ -2007,14 +2012,16 @@ def _resolve_size_id(value: Optional[object], catalog_slug: str, slug: str | Non
         catalog_slug = catalog_slug
 
     with _connect() as conn:
-
         row = conn.execute(
             "SELECT id FROM sizes WHERE catalog_slug = ? AND primary_size_name = ?",
             (main_slug, mapped_text)
         ).fetchone()
+
     if row:
         return row[0]
     return None
+
+
 
 
 def _normalize_colors(color_raw: Optional[str]) -> list[str]:
@@ -2099,6 +2106,7 @@ def _pick_next_product_for_upload() -> Optional[dict]:
         row = max(rows, key=lambda item: item["created_at"])
         parsed_from_db = json.loads(row["parsed_data"]) if row["parsed_data"] else {}
         raw_message = row["raw_message"] or ""
+
         parsed = parse_message(raw_message) if raw_message else parsed_from_db
         if not parsed.get("price") or not parsed.get("size"):
             log(
@@ -2121,13 +2129,13 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 
 
 async def get_next_product_for_upload_async(
-    message_amount: int = 500,
+    message_amount: int = 100,
 ) -> Optional[dict]:
     await _fetch_messages(message_amount=message_amount)
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 500) -> Optional[dict]:
+def get_next_product_for_upload(message_amount: int = 100) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -2192,7 +2200,7 @@ def mark_product_created(
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=500)
+    product = get_next_product_for_upload(message_amount=100)
     print(product)
 
 

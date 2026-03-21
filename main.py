@@ -141,7 +141,7 @@ def main() -> None:
                     errors = result.get("errors") or []
                     if errors:
                         log("ERROR", f"Ошибки создания товара: {errors}")
-                        mark_telegram_product_created(channel_id, message_id, created_product_id="SKIPPED_MISSING_DATA")
+                        #mark_telegram_product_created(channel_id, message_id, created_product_id="SKIPPED_MISSING_DATA")
                         continue
                     created_product = result.get("createdProduct") or {}
                     save_uploaded_product(

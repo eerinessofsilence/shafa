@@ -366,8 +366,6 @@ SLUG_TO_WORDS = {
 
     # Женская одежда - Костюмы
     "zhenskie-kostyumy/kostyumy-s-platem": [
-        "костюм",          # RU
-        "костюм",          # UA
         "suit",            # EN
         "двойка",          # RU
         "платье-костюм"    # RU
@@ -455,7 +453,7 @@ def find_slug_by_word(name: str) -> str | None:
 
     for slug, words in SLUG_TO_WORDS.items():
         for word in words:
-            if word.lower() in text_lower:  # ищем вхождение слова
+            if word.lower() in re.findall(r"\w+", text_lower):  # ищем вхождение слова
                 return slug
     return None
 

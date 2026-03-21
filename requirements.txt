@@ -2,3 +2,4 @@ playwright
 telethon
 python-dotenv
 inquirer
+Levenshtein

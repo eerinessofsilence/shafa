@@ -8,7 +8,7 @@ from controller.catalog_filter import find_slug_by_word
 from core.core import base_headers, read_response_json
 from data.const import API_URL, CREATE_PRODUCT_MUTATION, DEFAULT_MARKUP, ORDINARY_CLOTHES_SIZES, DEFAULT_MARKUP_FOR_CLOTHES
 from models.product import Product
-from controller.data_controller import DEFAULT_CLOTHES_DESCRIPTION
+from controller.material_filter import extract_fabric_ids_from_description
 
 def build_create_product_payload(
     photo_ids: list[str],
@@ -18,7 +18,11 @@ def build_create_product_payload(
     product = Product(**product_raw_data)
     count = max(product.amount, len(product.additional_sizes) + 1)
 
-    slug = find_slug_by_word(product.name)
+    check_slug = []
+    check_slug = product.name.split()
+
+    slug = find_slug_by_word(check_slug[0])
+    print(slug)
     if slug:
         # основной размер
         product.size = ORDINARY_CLOTHES_SIZES[0]
@@ -26,7 +30,14 @@ def build_create_product_payload(
         product.additional_sizes = [834, 835]
         markup = DEFAULT_MARKUP_FOR_CLOTHES
 
-    print(product.description)
+        product.brand = None
+
+    product.characteristics += [10273]
+    material = extract_fabric_ids_from_description(product.description, slug)
+    print(material)
+    if material:
+        product.characteristics += material
+
 
     variables: dict = {
         "nameUk": product.name,
@@ -45,6 +56,7 @@ def build_create_product_payload(
         "keyWords": product.keywords,
         "photosStr": photo_ids,
     }
+    print(variables)
 
     return {
         "operationName": "WEB_CreateProduct",
@@ -77,7 +89,7 @@ def create_product(
     csrftoken: str,
     photo_ids: list[str],
     product_raw_data: dict,
-    markup: int = DEFAULT_MARKUP ,
+    markup: int = DEFAULT_MARKUP,
 
 ) -> dict:
     payload = build_create_product_payload(photo_ids, product_raw_data, markup)
