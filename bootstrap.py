@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright
 from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
 from core.get_brands import get_brands
-from core.get_sizes import get_sizes, get_materials
+from core.get_sizes import get_sizes
 from data.const import HEADLESS, REFERER_URL, STORAGE_STATE_PATH
 from data.db import init_db, insert_size, save_cookies
 
@@ -55,7 +55,7 @@ def main() -> None:
 
             sizes_total = 0
             for catalog_slug in REFERENCE_SLUGS:
-                sizes = get_materials(ctx, csrftoken, catalog_slug=catalog_slug)
+                sizes = get_sizes(ctx, csrftoken, catalog_slug=catalog_slug)
                 sizes_total += len(sizes)
                 for size in sizes:
                     insert_size(

@@ -337,7 +337,8 @@ SLUG_TO_WORDS = {
     # Женская одежда - Спортивный одяг
     "sport-otdyh/sportivnyye-kostyumy": [
         "костюм",          # RU
-        "костюм",          # UA
+        "костюм",
+        "костюмчик",          # UA
         "tracksuit",       # EN
         "спортивка",       # RU, разг.
         "треники"          # RU, разг.

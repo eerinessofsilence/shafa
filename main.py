@@ -33,13 +33,14 @@ def main() -> None:
     while True:
         try:
             init_db()
-            product_data = get_next_product_for_upload(message_amount=75)
+            product_data = get_next_product_for_upload(
+            message_amount=200
+            )
             if not product_data:
                 log("INFO", "Нет новых товаров для создания.")
                 time.sleep(random.randint(300, 360))
                 continue
  
-                # return
             channel_id = product_data.get("channel_id")
             product_raw_data = product_data["product_raw_data"]
             parsed_data = product_data.get("parsed_data") or {}
@@ -141,7 +142,7 @@ def main() -> None:
                     errors = result.get("errors") or []
                     if errors:
                         log("ERROR", f"Ошибки создания товара: {errors}")
-                        #mark_telegram_product_created(channel_id, message_id, created_product_id="SKIPPED_MISSING_DATA")
+                        mark_telegram_product_created(channel_id, message_id, created_product_id="SKIPPED_MISSING_DATA")
                         continue
                     created_product = result.get("createdProduct") or {}
                     save_uploaded_product(

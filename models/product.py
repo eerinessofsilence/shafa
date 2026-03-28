@@ -11,6 +11,7 @@ class Product:
     price: int
     slug: str | None = None
     material: str | None = None
+    word_for_slack: str | None = None
 
     translation_enabled: bool = True
     condition: str = "NEW"

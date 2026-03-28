@@ -19,9 +19,9 @@ def build_create_product_payload(
     count = max(product.amount, len(product.additional_sizes) + 1)
 
     check_slug = []
-    check_slug = product.name.split()
+    check_slug = product.word_for_slack
 
-    slug = find_slug_by_word(check_slug[0])
+    slug = find_slug_by_word(check_slug)
     print(slug)
     if slug:
         # основной размер

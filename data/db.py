@@ -225,7 +225,7 @@ def save_uploaded_product(
         )
 
 
-def list_uploaded_products(limit: int = 20) -> list[dict]:
+def list_uploaded_products(limit: int = 40) -> list[dict]:
     _ensure_db_initialized()
     with _connect() as conn:
         rows = conn.execute(

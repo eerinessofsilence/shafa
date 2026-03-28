@@ -1039,55 +1039,121 @@ def _score_name_line(line: str) -> float:
 def _looks_like_article(text: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9\-]{3,}", text))
 
-def extract_material(lines: list[str]) -> str:
+def extract_description(lines: list[str]) -> str:
+
+    material_line = ""
+    color_line = ""
+    size_line = ""
+    mod_line = ""
+
+    capture = False
+    sizes_lines = []
+
 
     for line in lines:
         clean_line = line.lstrip("▫️•- ").strip()
-        match_material = re.search(
-            r"(?i)тканина[:\s]*([\w\s\(\)%\-]+)",  # двоеточие и пробелы после слова
-            clean_line
-        )
-        if match_material:
-            material = (
-                "Розмірна сітка:\n"
-                "S - 42\n"
-                "M - 44\n"
-                "L - 46\n"
-                "\n"
-                
-                f"{match_material.group(0)}\n"
-                "\n"
-                "Параметри та доступні розміри уточнюйте в повідомленнях. Якщо виникнуть додаткові запитання — пишіть у чат, із радістю відповім.\n"
-                
-                "Стильна річ для створення сучасного та впевненого образу. Добре поєднується з різними елементами гардеробу та підходить як для повсякденного носіння, так і для особливих випадків. Приємний матеріал забезпечує комфорт протягом усього дня, а універсальний дизайн легко вписується у будь-який стиль — від класичного до casual. Вдалий вибір для тих, хто цінує поєднання комфорту, практичності та актуального вигляду."
+        clean_line = re.sub(r"^[^\wА-Яа-яA-Za-z]+", "", line).strip()
+        if not material_line:
+            match_material = re.search(
+                r"(?i)тканина[:\s]*([\w\s\(\)%\-\u2013;/]+)", clean_line
             )
-            return material
-    return ""
+
+            if match_material:
+                material_line = match_material.group(1)
+
+        if not color_line:
+            match_color = re.search(
+                r"(?i)(?:колір|кольори)[:\s]*([\w\s\(\)%\-\u2013;/]+)", clean_line
+            )
+            if match_color:
+                color_line = match_color.group(1)
+
+        if not size_line:
+            match_size = re.search(
+                r"(?i)(?:розмірна\s*сітка|розміри|розмір|size)[:\s]*([\w\s\(\)%\-\u2013;/]+)", 
+                clean_line
+            )
+            if match_size:
+                size_line = match_size.group(1)
+
+        if not mod_line:
+            match_mod = re.search(
+                r"(?i)(?:модель|арт|назва|name|мод)[:\s]*([\w\s\(\)%\-\u2013;/]+)", 
+                clean_line
+            )
+            if match_mod:
+                mod_line = match_mod.group(1)
+
+        if not capture and re.search(r"(?i)замір|заміри|виміри", clean_line):
+            capture = True
+            continue
+
+        if capture:
+            if re.match(r"(?i)по всім питанням", clean_line):
+                capture = False
+                continue
+            clean_line = re.sub(r"^[▫️•\-]\s*", "", clean_line)
+            if clean_line:
+                sizes_lines.append(clean_line)
+
+    sizes_text = "\n".join(sizes_lines)
+    sizes_block = f"Заміри:\n{sizes_text}\n" if sizes_lines else ""
+            
+                
+    description = (
+        "\n"
+        "Параметри та доступні розміри уточнюйте в повідомленнях. Якщо виникнуть додаткові запитання — пишіть у чат, із радістю відповім.\n"
+        "Стильна річ для створення сучасного та впевненого образу. Добре поєднується з різними елементами гардеробу та підходить як для повсякденного носіння, так і для особливих випадків. Приємний матеріал забезпечує комфорт протягом усього дня, а універсальний дизайн легко вписується у будь-який стиль — від класичного до casual.\n"
+        f"Тканина: {material_line}\n"
+        f"Колір: {color_line}\n"
+        f"Розмір: {size_line}\n"
+        f"Модель: {mod_line}\n"
+        f"{sizes_block}"
+        "\n"
+        "Виробництво: Україна"
+    )
+    return description
+
+
+def clean_line_name(line: str) -> str:
+    cleaned = re.sub(r"[^\w\s\.\-,]", "", line)
+    cleaned = cleaned.strip()
+    return cleaned
+
+def capitalise_first_word(s: str) -> str:
+    s = s.strip()
+    if not s:
+        return s
+    return s[0].upper() + s[1:]
 
 def extract_name(lines: list[str]) -> str:
     mod_number = ""
-    for line in lines:
-        lower = line.casefold().split()
-        if any(bad in lower for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
-            continue
-        clean_line = line.lstrip("▫️• ").strip()
-        match = re.search(r"(?i)(?:мод|модель|арт)[\s.:]*([\d\-#]+)", clean_line)
-        if match:
-            mod_number = match.group(1)
-            mod_number = re.sub(r"[^\w\d\-–—]+", "", mod_number)
-            break
+    best_candidate = None
+    fallback_candidate = None
+    word_for_slack = ""
 
     for line in lines:
-        lower = line.casefold()
-        lower = lower.split()
-        if any(bad in lower for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
+        lower_words = line.casefold().split()
+        if any(bad in lower_words for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
             continue
-        for word in lower:
-            word = find_word(word)
-            
-            if word:
-                word += f" {mod_number}"
-                return word
+        for word in lower_words:
+            word_found = find_word(word)
+            if word_found:
+                word_for_slack = word_found
+                if len(lower_words) > 3 and best_candidate is None:
+                    best_candidate = line
+                    if "." in best_candidate:
+                        best_candidate = best_candidate.split(".")[0].strip().split(",")[0].strip()
+                elif fallback_candidate is None:
+                    fallback_candidate = line
+
+    result = best_candidate or fallback_candidate or ""
+    if result:
+        result = clean_line_name(result)
+        if mod_number:
+            result = f"{result}"
+        result = capitalise_first_word(result)
+        return result, word_for_slack or ""
             
 
     for line in lines:
@@ -1095,7 +1161,7 @@ def extract_name(lines: list[str]) -> str:
         if match:
             candidate = _clean_name(match.group(1))
             if candidate and not _looks_like_article(candidate):
-                return candidate
+                return candidate, word_for_slack or ""
     for line in lines:
         match = re.search(
             r"(?i)^(?:отримали|получили|поступили|поступление|завезли)\s+(?:новинк\w*\s+)?(.+)$",
@@ -1104,7 +1170,7 @@ def extract_name(lines: list[str]) -> str:
         if match:
             candidate = _clean_name(match.group(1))
             if candidate:
-                return candidate
+                return candidate, word_for_slack or ""
     for line in lines:
         match = re.search(
             r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line
@@ -1112,7 +1178,7 @@ def extract_name(lines: list[str]) -> str:
         if match:
             candidate = _clean_name(match.group(1))
             if candidate:
-                return candidate
+                return candidate, word_for_slack or ""
     for line in lines[:3]:
         if not _looks_like_name(line):
             continue
@@ -1120,7 +1186,7 @@ def extract_name(lines: list[str]) -> str:
         if candidate and (
             len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate)
         ):
-            return candidate
+            return candidate, word_for_slack or ""
     best = ""
     best_score = 0.0
     for idx, line in enumerate(lines):
@@ -1135,7 +1201,7 @@ def extract_name(lines: list[str]) -> str:
         if score > best_score:
             best = candidate
             best_score = score       
-    return best
+    return best, word_for_slack or ""
 
 
 def _normalize_number(value: str) -> str:
@@ -1458,8 +1524,8 @@ def _calculate_confidence(
 def parse_message(message: str) -> dict:
     normalized = normalize_message(message)
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
-    name = extract_name(lines)
-    material = extract_material(lines)
+    name, word_for_slack = extract_name(lines)
+    description = extract_description(lines)
     brand = extract_brand(lines, name)
     size, additional_sizes = extract_sizes(lines)
     color = extract_colors(lines, name)
@@ -1469,8 +1535,9 @@ def parse_message(message: str) -> dict:
 
 
     return {
-        "material": material,
+        "description": description,
         "name": name,
+        "word_for_slack": word_for_slack,
         "brand": brand,
         "size": size,
         "additional_sizes": additional_sizes,
@@ -1480,7 +1547,7 @@ def parse_message(message: str) -> dict:
     }
 
 
-async def _fetch_messages(message_amount: int = 100) -> int:
+async def _fetch_messages(message_amount: int = 450) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
     debug_verbose = _debug_fetch_verbose()
@@ -1943,10 +2010,8 @@ def _size_name_candidates(value: object) -> list[str]:
 
     return candidates
 
-def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: str) -> str:
-    check_slug = name.split()
-    slug_name = _clean_name(check_slug[0])
-    
+def _resolve_catalog_slug(size: object, additional_sizes: list[object], word_for_slack: str) -> str:
+
     values = [size, *additional_sizes]
     numeric_sizes = [
         numeric_size
@@ -1954,7 +2019,7 @@ def _resolve_catalog_slug(size: object, additional_sizes: list[object], name: st
         for numeric_size in _extract_numeric_sizes(value)
     ]
 
-    slug = find_slug_by_word(slug_name)
+    slug = find_slug_by_word(word_for_slack)
     if slug:
         return slug
     if numeric_sizes and all(
@@ -2022,8 +2087,6 @@ def _resolve_size_id(value: Optional[object], catalog_slug: str, slug: str | Non
     return None
 
 
-
-
 def _normalize_colors(color_raw: Optional[str]) -> list[str]:
     if not color_raw:
         return ["WHITE"]
@@ -2058,21 +2121,22 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
     additional_size_values = parsed.get("additional_sizes", [])
     if not isinstance(additional_size_values, list):
         additional_size_values = []
-    _name = parsed.get("name", "")
+    word_for_slack = parsed.get("word_for_slack", "")
     size_value = parsed.get("size")
-    catalog_slug = _resolve_catalog_slug(size_value, additional_size_values, name=_name)
+    catalog_slug = _resolve_catalog_slug(size_value, additional_size_values, word_for_slack=word_for_slack)
 
     resolved_size_id = _resolve_size_id(size_value, catalog_slug=catalog_slug)
     
-    slug = find_slug_by_word(_name)
+    slug = find_slug_by_word(word_for_slack)
     
     if slug:
         
-        DESCRIPTION = parsed.get("material", "")
+        DESCRIPTION = parsed.get("description", "")
     else:
         DESCRIPTION = DEFAULT_DESCRIPTION
 
     product_raw_data: dict = {
+        "word_for_slack": parsed.get("word_for_slack", ""),
         "name": parsed.get("name", ""),
         "description": DESCRIPTION,
         "category": catalog_slug,
@@ -2129,13 +2193,13 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 
 
 async def get_next_product_for_upload_async(
-    message_amount: int = 100,
+    message_amount: int = 450,
 ) -> Optional[dict]:
     await _fetch_messages(message_amount=message_amount)
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 100) -> Optional[dict]:
+def get_next_product_for_upload(message_amount: int = 450) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -2200,7 +2264,7 @@ def mark_product_created(
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=100)
+    product = get_next_product_for_upload(message_amount=450)
     print(product)
 
 

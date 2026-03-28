@@ -76,12 +76,3 @@ def extract_fabric_ids_from_description(description: str, slug: Optional[str] = 
                 result_ids.append(best_fid)
 
     return result_ids
-
-
-# ------------------- Пример использования -------------------
-if __name__ == "__main__":
-    desc = "Тканина: мікродайвінг"
-    slug = "kofty/longslivy"
-
-    ids = extract_fabric_ids_from_description(desc, slug)
-    print("Найденные ID:", ids)
