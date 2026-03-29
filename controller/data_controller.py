@@ -1051,8 +1051,7 @@ def extract_description(lines: list[str]) -> str:
 
 
     for line in lines:
-        clean_line = line.lstrip("▫️•- ").strip()
-        clean_line = re.sub(r"^[^\wА-Яа-яA-Za-z]+", "", line).strip()
+        clean_line = re.sub(r"^[^\wА-Яа-яA-Za-z]+|[^\w\s:().,\-–/]+", "", line.lstrip("▫️•- ")).strip()
         if not material_line:
             match_material = re.search(
                 r"(?i)тканина[:\s]*([\w\s\(\)%\-\u2013;/]+)", clean_line
@@ -1078,7 +1077,7 @@ def extract_description(lines: list[str]) -> str:
 
         if not mod_line:
             match_mod = re.search(
-                r"(?i)(?:модель|арт|назва|name|мод)[:\s]*([\w\s\(\)%\-\u2013;/]+)", 
+                r"(?i)(?:модель|арт|назва|мод)[:\s]*([\w\s\(\)%\-\u2013;/]+)", 
                 clean_line
             )
             if match_mod:
@@ -1547,7 +1546,7 @@ def parse_message(message: str) -> dict:
     }
 
 
-async def _fetch_messages(message_amount: int = 450) -> int:
+async def _fetch_messages(message_amount: int = 200) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
     debug_verbose = _debug_fetch_verbose()
@@ -2193,13 +2192,13 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 
 
 async def get_next_product_for_upload_async(
-    message_amount: int = 450,
+    message_amount: int = 200,
 ) -> Optional[dict]:
     await _fetch_messages(message_amount=message_amount)
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 450) -> Optional[dict]:
+def get_next_product_for_upload(message_amount: int = 200) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -2264,7 +2263,7 @@ def mark_product_created(
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=450)
+    product = get_next_product_for_upload(message_amount=200)
     print(product)
 
 
