@@ -1049,9 +1049,8 @@ def extract_description(lines: list[str]) -> str:
     capture = False
     sizes_lines = []
 
-
     for line in lines:
-        clean_line = re.sub(r"^[^\wА-Яа-яA-Za-z]+|[^\w\s:().,\-–/]+", "", line.lstrip("▫️•- ")).strip()
+        clean_line = re.sub(r"^[^\wА-Яа-яA-Za-z]+", "", line.lstrip("▫️•- ")).strip()
         if not material_line:
             match_material = re.search(
                 r"(?i)тканина[:\s]*([\w\s\(\)%\-\u2013;/]+)", clean_line
@@ -1077,7 +1076,7 @@ def extract_description(lines: list[str]) -> str:
 
         if not mod_line:
             match_mod = re.search(
-                r"(?i)(?:модель|арт|назва|мод)[:\s]*([\w\s\(\)%\-\u2013;/]+)", 
+                r"(?i)\b(?:модель|арт(?:икул)?|мод(?:ель)?)\b[:.\s№]*([A-Za-zА-Яа-я0-9\-_/]+)",
                 clean_line
             )
             if match_mod:
