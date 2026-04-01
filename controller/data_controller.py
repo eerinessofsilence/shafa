@@ -318,6 +318,8 @@ _NON_NAME_HINTS = (
         "опис",
         "характеристики",
         "в наявності",
+        "топ",
+        "продажів",
     )
 )
 _NAME_EXCLUDE_HINTS = (
@@ -1076,7 +1078,7 @@ def extract_description(lines: list[str]) -> str:
 
         if not mod_line:
             match_mod = re.search(
-                r"(?i)\b(?:модель|арт(?:икул)?|мод(?:ель)?)\b[:.\s№]*([A-Za-zА-Яа-я0-9\-_/]+)",
+                r"(?i)\b(?:модель|мод(?:\.|ель)?|арт(?:\.|икул)?|mod|mdl)\b[\s:№.-]*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9\-_/]*)",
                 clean_line
             )
             if match_mod:

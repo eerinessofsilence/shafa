@@ -38,7 +38,7 @@ def main() -> None:
             )
             if not product_data:
                 log("INFO", "Нет новых товаров для создания.")
-                time.sleep(random.randint(300, 360))
+                time.sleep(random.randint(480, 660))
                 continue
  
             channel_id = product_data.get("channel_id")
@@ -165,9 +165,9 @@ def main() -> None:
                 finally:
                     browser.close()
             
-            time.sleep(random.randint(300, 360))
+            time.sleep(random.randint(480, 660))
         except Exception as exc:
             log("ERROR", f"Ошибка в main loop: {exc}")
-            time.sleep(random.randint(300, 360))
+            time.sleep(random.randint(480, 660))
 if __name__ == "__main__":
     main()
