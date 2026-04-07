@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -33,16 +36,40 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Shafa Control"
+BRANCHES = ["main", "clothes-feature"]
+BASE_DIR = Path(__file__).resolve().parent
+STATE_FILE = BASE_DIR / "accounts_state.json"
 
 
 @dataclass
 class Account:
     name: str
     path: str
+    branch: str = "clothes-feature"
+    open_browser: bool = False
+    timer_minutes: int = 5
     status: str = "stopped"
     last_run: str = "—"
     errors: int = 0
     process: Optional[subprocess.Popen] = None
+
+    def to_json(self) -> dict:
+        data = asdict(self)
+        data.pop("process", None)
+        return data
+
+    @staticmethod
+    def from_json(data: dict) -> "Account":
+        return Account(
+            name=data.get("name", "unknown"),
+            path=data.get("path", ""),
+            branch=data.get("branch", "clothes-feature"),
+            open_browser=bool(data.get("open_browser", False)),
+            timer_minutes=int(data.get("timer_minutes", 5)),
+            status=data.get("status", "stopped"),
+            last_run=data.get("last_run", "—"),
+            errors=int(data.get("errors", 0)),
+        )
 
 
 class Worker(QObject):
@@ -50,10 +77,11 @@ class Worker(QObject):
     status = Signal(int, str)
     finished = Signal(int, bool, str)
 
-    def __init__(self, row: int, account_path: str) -> None:
+    def __init__(self, row: int, account_path: str, branch: str) -> None:
         super().__init__()
         self.row = row
         self.account_path = Path(account_path)
+        self.branch = branch
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -63,61 +91,95 @@ class Worker(QObject):
         self.log.emit(f"$ {' '.join(cmd)}")
         return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
 
+    def _git_current_commit(self) -> str:
+        result = self._run_cmd(["git", "rev-parse", "HEAD"], self.account_path)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "git rev-parse HEAD failed")
+        return result.stdout.strip()
+
+    def _git_remote_commit(self) -> str:
+        result = self._run_cmd(["git", "fetch", "origin", self.branch], self.account_path)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "git fetch failed")
+
+        remote_ref = f"origin/{self.branch}"
+        result = self._run_cmd(["git", "rev-parse", remote_ref], self.account_path)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"git rev-parse {remote_ref} failed")
+        return result.stdout.strip()
+
     def run(self) -> None:
         try:
             if not self.account_path.exists():
                 raise FileNotFoundError(f"Path not found: {self.account_path}")
 
-            self.status.emit(self.row, "updating")
-            self.log.emit(f"[{self.row}] Updating repository...")
+            self.status.emit(self.row, "checking")
+            self.log.emit(f"[{self.row}] Checking branch {self.branch} for updates...")
 
-            checkout = self._run_cmd(["git", "checkout", "main"], self.account_path)
+            checkout = self._run_cmd(["git", "checkout", self.branch], self.account_path)
             if checkout.returncode != 0:
                 raise RuntimeError(checkout.stderr.strip() or checkout.stdout.strip() or "git checkout failed")
-            if self._stop_requested:
-                raise RuntimeError("Stopped by user")
 
-            pull = self._run_cmd(["git", "pull"], self.account_path)
-            if pull.returncode != 0:
-                raise RuntimeError(pull.stderr.strip() or pull.stdout.strip() or "git pull failed")
+            local_commit = self._git_current_commit()
+            remote_commit = self._git_remote_commit()
+            repo_changed = local_commit != remote_commit
+            self.log.emit(f"[{self.row}] local={local_commit[:7]} remote={remote_commit[:7]} changed={repo_changed}")
+
+            if repo_changed:
+                self.status.emit(self.row, "updating")
+                pull = self._run_cmd(["git", "pull", "--ff-only"], self.account_path)
+                if pull.returncode != 0:
+                    raise RuntimeError(pull.stderr.strip() or pull.stdout.strip() or "git pull failed")
+            else:
+                self.log.emit(f"[{self.row}] No git changes detected, skipping pull and venv rebuild")
+
             if self._stop_requested:
                 raise RuntimeError("Stopped by user")
 
             venv_dir = self.account_path / ".venv"
-            if venv_dir.exists():
-                self.log.emit(f"[{self.row}] Removing existing .venv...")
-                shutil.rmtree(venv_dir)
+            need_recreate_venv = repo_changed or not venv_dir.exists()
 
-            self.status.emit(self.row, "creating venv")
-            self.log.emit(f"[{self.row}] Creating .venv...")
-            venv_result = self._run_cmd([sys.executable, "-m", "venv", ".venv"], self.account_path)
-            if venv_result.returncode != 0:
-                raise RuntimeError(venv_result.stderr.strip() or venv_result.stdout.strip() or "venv creation failed")
+            if need_recreate_venv:
+                self.status.emit(self.row, "creating venv")
+                if venv_dir.exists():
+                    self.log.emit(f"[{self.row}] Removing existing .venv...")
+                    shutil.rmtree(venv_dir)
 
-            if os.name == "nt":
-                py_bin = venv_dir / "Scripts" / "python.exe"
-                pip_bin = venv_dir / "Scripts" / "pip.exe"
+                self.log.emit(f"[{self.row}] Creating .venv...")
+                venv_result = self._run_cmd([sys.executable, "-m", "venv", ".venv"], self.account_path)
+                if venv_result.returncode != 0:
+                    raise RuntimeError(venv_result.stderr.strip() or venv_result.stdout.strip() or "venv creation failed")
+
+                if os.name == "nt":
+                    py_bin = venv_dir / "Scripts" / "python.exe"
+                    pip_bin = venv_dir / "Scripts" / "pip.exe"
+                else:
+                    py_bin = venv_dir / "bin" / "python"
+                    pip_bin = venv_dir / "bin" / "pip"
+
+                if not py_bin.exists() or not pip_bin.exists():
+                    raise FileNotFoundError("Python or pip not found inside .venv")
+
+                requirements = self.account_path / "requirements.txt"
+                if requirements.exists():
+                    self.status.emit(self.row, "installing deps")
+                    self.log.emit(f"[{self.row}] Installing dependencies...")
+                    pip_result = self._run_cmd([str(pip_bin), "install", "-r", "requirements.txt"], self.account_path)
+                    if pip_result.returncode != 0:
+                        raise RuntimeError(pip_result.stderr.strip() or pip_result.stdout.strip() or "pip install failed")
+                else:
+                    self.log.emit(f"[{self.row}] requirements.txt not found, skipping install")
             else:
-                py_bin = venv_dir / "bin" / "python"
-                pip_bin = venv_dir / "bin" / "pip"
-
-            if not py_bin.exists() or not pip_bin.exists():
-                raise FileNotFoundError("Python or pip not found inside .venv")
-
-            requirements = self.account_path / "requirements.txt"
-            if requirements.exists():
-                self.status.emit(self.row, "installing deps")
-                self.log.emit(f"[{self.row}] Installing dependencies...")
-                pip_result = self._run_cmd([str(pip_bin), "install", "-r", "requirements.txt"], self.account_path)
-                if pip_result.returncode != 0:
-                    raise RuntimeError(pip_result.stderr.strip() or pip_result.stdout.strip() or "pip install failed")
-            else:
-                self.log.emit(f"[{self.row}] requirements.txt not found, skipping install")
+                if os.name == "nt":
+                    py_bin = venv_dir / "Scripts" / "python.exe"
+                else:
+                    py_bin = venv_dir / "bin" / "python"
+                if not py_bin.exists():
+                    raise FileNotFoundError(f"Missing python in existing venv: {py_bin}")
 
             if self._stop_requested:
                 raise RuntimeError("Stopped by user")
 
-            # The main process is started in the GUI thread so it can be tracked and stopped later.
             self.status.emit(self.row, "ready")
             self.finished.emit(self.row, True, str(py_bin))
         except Exception as exc:
@@ -128,6 +190,7 @@ class StatCard(QFrame):
     def __init__(self, title: str, value: str, subtitle: str = "") -> None:
         super().__init__()
         self.setObjectName("StatCard")
+        self.setGraphicsEffect(_make_shadow())
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(6)
@@ -177,6 +240,7 @@ class DashboardPage(QWidget):
 
         left = QFrame()
         left.setObjectName("PanelCard")
+        left.setGraphicsEffect(_make_shadow())
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(16, 16, 16, 16)
         left_layout.addWidget(QLabel("Активность"))
@@ -187,6 +251,7 @@ class DashboardPage(QWidget):
 
         right = QFrame()
         right.setObjectName("PanelCard")
+        right.setGraphicsEffect(_make_shadow())
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(16, 16, 16, 16)
         right_layout.addWidget(QLabel("Состояние системы"))
@@ -210,8 +275,8 @@ class DashboardPage(QWidget):
 class AccountsPage(QWidget):
     selection_changed = Signal(int)
     log = Signal(str)
-    run_requested = Signal(int)
-    stop_requested = Signal(int)
+    run_requested = Signal(list)
+    stop_requested = Signal(list)
 
     def __init__(self, accounts: List[Account]) -> None:
         super().__init__()
@@ -223,59 +288,145 @@ class AccountsPage(QWidget):
 
         title = QLabel("Аккаунты")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("Управление папками аккаунтов, запуском и остановкой процессов")
+        subtitle = QLabel("Выбор ветки, браузера и таймера для каждого аккаунта")
         subtitle.setObjectName("MutedLabel")
         root.addWidget(title)
         root.addWidget(subtitle)
 
+        config = QFrame()
+        config.setObjectName("PanelCard")
+        config.setGraphicsEffect(_make_shadow())
+        grid = QHBoxLayout(config)
+        grid.setContentsMargins(16, 16, 16, 16)
+        grid.setSpacing(20)
+
+        self.branch_combo = QComboBox()
+        self.branch_combo.addItems(BRANCHES)
+        self.branch_combo.setMinimumWidth(180)
+
+        self.browser_toggle = QCheckBox("Открывать с браузером")
+        self.browser_toggle.setCursor(Qt.PointingHandCursor)
+
+        self.timer_spin = QSpinBox()
+        self.timer_spin.setRange(5, 10)
+        self.timer_spin.setValue(5)
+        self.timer_spin.setSuffix(" мин")
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(10)
+        left_col.addWidget(QLabel("Ветка"))
+        left_col.addWidget(self.branch_combo)
+        left_col.addWidget(self.browser_toggle)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(10)
+        right_col.addWidget(QLabel("Таймер"))
+        right_col.addWidget(self.timer_spin)
+
+        self.apply_btn = QPushButton("ОК")
+        self.apply_btn.setObjectName("PrimaryButton")
+        self.apply_btn.setCursor(Qt.PointingHandCursor)
+        right_col.addWidget(self.apply_btn, alignment=Qt.AlignLeft)
+
+        grid.addLayout(left_col, 3)
+        grid.addLayout(right_col, 1)
+        root.addWidget(config)
+
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
+        self.select_all = QCheckBox("Выбрать все")
+        self.select_all.setCursor(Qt.PointingHandCursor)
         self.add_btn = QPushButton("Добавить папку")
         self.run_btn = QPushButton("Запустить")
         self.stop_btn = QPushButton("Остановить")
+        toolbar.addWidget(self.select_all)
+        toolbar.addStretch()
         for btn in [self.add_btn, self.run_btn, self.stop_btn]:
             btn.setCursor(Qt.PointingHandCursor)
             toolbar.addWidget(btn)
-        toolbar.addStretch()
         root.addLayout(toolbar)
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 8)
         self.table.setObjectName("DataTable")
-        self.table.setHorizontalHeaderLabels(["Имя", "Путь", "Статус", "Последний запуск", "Ошибки"])
+        self.table.setHorizontalHeaderLabels(["", "Имя", "Путь", "Ветка", "Браузер", "Таймер", "Статус", "Ошибки"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.itemSelectionChanged.connect(self._emit_selection)
+        self.table.itemSelectionChanged.connect(self._load_selected_to_form)
+        self.table.itemChanged.connect(self._handle_item_changed)
         root.addWidget(self.table)
 
         self.add_btn.clicked.connect(self.add_account)
         self.run_btn.clicked.connect(self._run_selected)
         self.stop_btn.clicked.connect(self._stop_selected)
+        self.apply_btn.clicked.connect(self.apply_settings)
+        self.select_all.stateChanged.connect(self._toggle_all)
 
         self.refresh()
 
+    def _toggle_all(self, state: int) -> None:
+        checked = state == Qt.Checked
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None:
+                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self.table.blockSignals(False)
+
+    def _handle_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 0:
+            return
+        all_checked = True
+        any_checked = False
+        for row in range(self.table.rowCount()):
+            row_item = self.table.item(row, 0)
+            if row_item is not None and row_item.checkState() == Qt.Checked:
+                any_checked = True
+            else:
+                all_checked = False
+        self.select_all.blockSignals(True)
+        self.select_all.setTristate(False)
+        self.select_all.setChecked(all_checked and any_checked)
+        self.select_all.blockSignals(False)
+
     def refresh(self) -> None:
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         for acc in self.accounts:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            data = [acc.name, acc.path, acc.status, acc.last_run, str(acc.errors)]
-            for col, value in enumerate(data):
+
+            check_item = QTableWidgetItem()
+            check_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+            check_item.setCheckState(Qt.Unchecked)
+            self.table.setItem(row, 0, check_item)
+
+            data = [
+                acc.name,
+                acc.path,
+                acc.branch,
+                "Да" if acc.open_browser else "Нет",
+                str(acc.timer_minutes),
+                acc.status,
+                str(acc.errors),
+            ]
+            for col, value in enumerate(data, start=1):
                 item = QTableWidgetItem(value)
                 self.table.setItem(row, col, item)
             self._paint_status(row, acc.status)
+        self.table.blockSignals(False)
 
     def _paint_status(self, row: int, status: str) -> None:
-        item = self.table.item(row, 2)
+        item = self.table.item(row, 6)
         if not item:
             return
         if status == "running":
-            item.setForeground(QColor("#4ade80"))
+            item.setForeground(QColor("#86efac"))
         elif status == "error":
-            item.setForeground(QColor("#f87171"))
-        elif status == "updating" or status == "creating venv" or status == "installing deps" or status == "ready":
+            item.setForeground(QColor("#fca5a5"))
+        elif status in {"checking", "updating", "creating venv", "installing deps", "ready"}:
             item.setForeground(QColor("#fbbf24"))
         else:
             item.setForeground(QColor("#94a3b8"))
@@ -283,6 +434,39 @@ class AccountsPage(QWidget):
     def selected_row(self) -> int:
         rows = self.table.selectionModel().selectedRows()
         return rows[0].row() if rows else -1
+
+    def selected_account(self) -> Optional[Account]:
+        row = self.selected_row()
+        if row < 0 or row >= len(self.accounts):
+            return None
+        return self.accounts[row]
+
+    def checked_rows(self) -> List[int]:
+        rows: List[int] = []
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.checkState() == Qt.Checked:
+                rows.append(row)
+        return rows
+
+    def _load_selected_to_form(self) -> None:
+        acc = self.selected_account()
+        if not acc:
+            return
+        self.branch_combo.setCurrentText(acc.branch)
+        self.browser_toggle.setChecked(acc.open_browser)
+        self.timer_spin.setValue(acc.timer_minutes)
+
+    def apply_settings(self) -> None:
+        acc = self.selected_account()
+        if not acc:
+            QMessageBox.information(self, "Настройки", "Выберите аккаунт в таблице.")
+            return
+        acc.branch = self.branch_combo.currentText()
+        acc.open_browser = self.browser_toggle.isChecked()
+        acc.timer_minutes = int(self.timer_spin.value())
+        self.refresh()
+        self.log.emit(f"[SETTINGS] {acc.name}: branch={acc.branch}, browser={acc.open_browser}, timer={acc.timer_minutes}m")
 
     def add_account(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Выберите папку аккаунта")
@@ -294,23 +478,24 @@ class AccountsPage(QWidget):
         self.log.emit(f"[ADD] Added account folder: {name}")
 
     def _run_selected(self) -> None:
-        row = self.selected_row()
-        if row < 0:
-            QMessageBox.information(self, "Запуск", "Выберите аккаунт в таблице.")
-            return
-        self.run_requested.emit(row)
+        rows = self.checked_rows()
+        if not rows:
+            row = self.selected_row()
+            if row < 0:
+                QMessageBox.information(self, "Запуск", "Выберите аккаунт в таблице.")
+                return
+            rows = [row]
+        self.run_requested.emit(rows)
 
     def _stop_selected(self) -> None:
-        row = self.selected_row()
-        if row < 0:
-            QMessageBox.information(self, "Остановка", "Выберите аккаунт в таблице.")
-            return
-        self.stop_requested.emit(row)
-
-    def _emit_selection(self) -> None:
-        row = self.selected_row()
-        if row >= 0:
-            self.selection_changed.emit(row)
+        rows = self.checked_rows()
+        if not rows:
+            row = self.selected_row()
+            if row < 0:
+                QMessageBox.information(self, "Остановка", "Выберите аккаунт в таблице.")
+                return
+            rows = [row]
+        self.stop_requested.emit(rows)
 
 
 class ParsingPage(QWidget):
@@ -331,6 +516,7 @@ class ParsingPage(QWidget):
 
         card = QFrame()
         card.setObjectName("PanelCard")
+        card.setGraphicsEffect(_make_shadow())
         layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(14)
@@ -377,6 +563,7 @@ class ParsingPage(QWidget):
 
         result = QFrame()
         result.setObjectName("PanelCard")
+        result.setGraphicsEffect(_make_shadow())
         r_layout = QVBoxLayout(result)
         r_layout.setContentsMargins(16, 16, 16, 16)
         r_layout.addWidget(QLabel("Результаты"))
@@ -404,21 +591,32 @@ class StatsPage(QWidget):
 
         cards = QHBoxLayout()
         cards.setSpacing(14)
-        for t, v, s in [("Скорость", "42/min", "средняя"), ("Обработано", "9 531", "за всё время"), ("Баны", "2", "за неделю"), ("Таймауты", "14", "за 24 часа")]:
-            cards.addWidget(StatCard(t, v, s))
+        self.card_speed = StatCard("Скорость", "0/min", "средняя")
+        self.card_total = StatCard("Обработано", "0", "за всё время")
+        self.card_bans = StatCard("Баны", "0", "константа")
+        self.card_timeouts = StatCard("Таймауты", "0", "константа")
+        for card in [self.card_speed, self.card_total, self.card_bans, self.card_timeouts]:
+            cards.addWidget(card)
         root.addLayout(cards)
 
         panel = QFrame()
         panel.setObjectName("PanelCard")
+        panel.setGraphicsEffect(_make_shadow())
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.addWidget(QLabel("Графики и тренды"))
-        chart = QFrame()
-        chart.setObjectName("ChartPlaceholder")
-        chart.setMinimumHeight(280)
-        layout.addWidget(chart)
+        self.chart = QFrame()
+        self.chart.setObjectName("ChartPlaceholder")
+        self.chart.setMinimumHeight(280)
+        layout.addWidget(self.chart)
         root.addWidget(panel)
         root.addStretch()
+
+    def update_stats(self, speed: float, total: int, errors: int, bans: int = 0, timeouts: int = 0) -> None:
+        self.card_speed.set_value(f"{speed:.1f}/min")
+        self.card_total.set_value(str(total))
+        self.card_bans.set_value(str(bans))
+        self.card_timeouts.set_value(str(timeouts))
 
 
 class LogsPage(QWidget):
@@ -465,6 +663,7 @@ class SettingsPage(QWidget):
 
         panel = QFrame()
         panel.setObjectName("PanelCard")
+        panel.setGraphicsEffect(_make_shadow())
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -498,26 +697,61 @@ class SettingsPage(QWidget):
         root.addStretch()
 
 
+def _make_shadow() -> QGraphicsDropShadowEffect:
+    effect = QGraphicsDropShadowEffect()
+    effect.setBlurRadius(30)
+    effect.setOffset(0, 10)
+    effect.setColor(QColor(0, 0, 0, 120))
+    return effect
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(1440, 880)
+        self.resize(1440, 900)
 
-        self.accounts: List[Account] = []
+        self.accounts: List[Account] = self._load_accounts()
         self.workers: dict[int, Worker] = {}
         self.threads: dict[int, QThread] = {}
+        self.session_started = datetime.now()
+        self.success_count = 0
+        self.error_count = 0
+        self.last_log_ts: Optional[datetime] = None
 
         self._setup_palette()
         self._build_ui()
         self._apply_styles()
         self._setup_timer()
+        self._refresh_all()
+
+    def _load_accounts(self) -> List[Account]:
+        if not STATE_FILE.exists():
+            return []
+        try:
+            raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return [Account.from_json(item) for item in raw if item.get("path")]
+        except Exception:
+            return []
+
+    def _save_accounts(self) -> None:
+        try:
+            STATE_FILE.write_text(
+                json.dumps([acc.to_json() for acc in self.accounts], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.log(f"[ERROR] Failed to save accounts state: {exc}")
+
+    def closeEvent(self, event) -> None:
+        self._save_accounts()
+        super().closeEvent(event)
 
     def _setup_palette(self) -> None:
         pal = self.palette()
-        pal.setColor(QPalette.Window, QColor("#0b0f14"))
-        pal.setColor(QPalette.Base, QColor("#111827"))
-        pal.setColor(QPalette.AlternateBase, QColor("#0f172a"))
+        pal.setColor(QPalette.Window, QColor("#0d1117"))
+        pal.setColor(QPalette.Base, QColor("#141824"))
+        pal.setColor(QPalette.AlternateBase, QColor("#101521"))
         self.setPalette(pal)
 
     def _build_ui(self) -> None:
@@ -547,13 +781,14 @@ class MainWindow(QMainWindow):
 
         user = QFrame()
         user.setObjectName("PanelCard")
+        user.setGraphicsEffect(_make_shadow())
         u = QHBoxLayout(user)
         u.setContentsMargins(12, 12, 12, 12)
-        avatar = QLabel("SN")
+        avatar = QLabel("Ivan")
         avatar.setObjectName("Avatar")
         avatar.setAlignment(Qt.AlignCenter)
         info = QVBoxLayout()
-        info.addWidget(QLabel("Святослав Непейцев"))
+        info.addWidget(QLabel("Ivan"))
         role = QLabel("Admin")
         role.setObjectName("MutedLabel")
         info.addWidget(role)
@@ -604,8 +839,8 @@ class MainWindow(QMainWindow):
 
         self.accounts_page.log.connect(self.log)
         self.accounts_page.selection_changed.connect(self._sync_dashboard)
-        self.accounts_page.run_requested.connect(self.run_account)
-        self.accounts_page.stop_requested.connect(self.stop_account)
+        self.accounts_page.run_requested.connect(self.run_accounts)
+        self.accounts_page.stop_requested.connect(self.stop_accounts)
 
         root.addWidget(self.sidebar)
         root.addWidget(self.pages, 1)
@@ -620,11 +855,11 @@ class MainWindow(QMainWindow):
                 font-size: 14px;
                 color: #e5e7eb;
             }
-            QMainWindow, QWidget { background: #0b0f14; }
+            QMainWindow, QWidget { background: #0d1117; }
             #Sidebar {
-                background: #0f172a;
-                border: 1px solid #1f2937;
-                border-radius: 24px;
+                background: #11151d;
+                border: 1px solid #242c38;
+                border-radius: 26px;
             }
             #BrandTitle {
                 font-size: 22px;
@@ -637,7 +872,11 @@ class MainWindow(QMainWindow):
                 color: #f8fafc;
             }
             #MutedLabel {
-                color: #94a3b8;
+                color: #98a2b3;
+            }
+            #FieldLabel {
+                color: #cbd5e1;
+                font-weight: 600;
             }
             #Avatar {
                 min-width: 52px;
@@ -645,14 +884,14 @@ class MainWindow(QMainWindow):
                 min-height: 52px;
                 max-height: 52px;
                 border-radius: 16px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8b5cf6, stop:1 #06b6d4);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #6d28d9, stop:1 #0ea5e9);
                 color: white;
                 font-weight: 800;
             }
             #StatCard, #PanelCard {
-                background: #111827;
-                border: 1px solid #223042;
-                border-radius: 20px;
+                background: #141924;
+                border: 1px solid #262f3c;
+                border-radius: 22px;
             }
             #CardTitle { color: #cbd5e1; }
             #CardValue {
@@ -669,14 +908,14 @@ class MainWindow(QMainWindow):
             QPushButton {
                 padding: 11px 14px;
                 border-radius: 14px;
-                border: 1px solid #2b3647;
-                background: #111827;
+                border: 1px solid #2d3745;
+                background: #151b24;
                 color: #e5e7eb;
                 font-weight: 600;
             }
-            QPushButton:hover { background: #172033; }
+            QPushButton:hover { background: #1b2230; }
             QPushButton:checked {
-                background: rgba(59, 130, 246, 0.20);
+                background: rgba(59, 130, 246, 0.18);
                 border-color: rgba(59, 130, 246, 0.45);
                 color: white;
             }
@@ -693,19 +932,19 @@ class MainWindow(QMainWindow):
                 color: #fca5a5;
             }
             QPushButton#DangerButton:hover { background: #3a1515; }
-            QLineEdit, QComboBox, QTextEdit, QTableWidget {
-                background: #0f172a;
-                border: 1px solid #223042;
+            QLineEdit, QComboBox, QTextEdit, QTableWidget, QSpinBox {
+                background: #11161f;
+                border: 1px solid #263241;
                 border-radius: 14px;
                 padding: 10px 12px;
                 selection-background-color: #2563eb;
             }
             QHeaderView::section {
-                background: #0f172a;
+                background: #11161f;
                 color: #cbd5e1;
                 padding: 10px;
                 border: none;
-                border-bottom: 1px solid #223042;
+                border-bottom: 1px solid #263241;
                 font-weight: 700;
             }
             QScrollBar:vertical {
@@ -714,32 +953,55 @@ class MainWindow(QMainWindow):
                 margin: 4px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(148, 163, 184, 0.35);
+                background: rgba(148, 163, 184, 0.28);
                 border-radius: 5px;
                 min-height: 30px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 1px solid #3b4657;
+                background: #11161f;
+            }
+            QCheckBox::indicator:checked {
+                background: #2563eb;
+                border-color: #2563eb;
             }
             """
         )
 
     def _setup_timer(self) -> None:
-        self.ticks = 0
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self._demo_tick)
-        self.timer.start(5000)
+        self.timer.timeout.connect(self._refresh_stats)
+        self.timer.start(3000)
 
-    def _demo_tick(self) -> None:
-        self.ticks += 1
+    def _refresh_stats(self) -> None:
         total = len(self.accounts)
         active = sum(1 for a in self.accounts if a.status == "running")
+        speed = 0.0
+        elapsed_min = max((datetime.now() - self.session_started).total_seconds() / 60.0, 1 / 60)
+        speed = self.success_count / elapsed_min
         self.dashboard_page.total_accounts.set_value(str(total))
         self.dashboard_page.active_accounts.set_value(str(active))
-        self.dashboard_page.items_found.set_value(f"{1248 + self.ticks * 17:,}".replace(",", " "))
-        self.dashboard_page.errors_today.set_value(str(sum(a.errors for a in self.accounts)))
-        self.dashboard_page.queue_state.setText(f"Очередь: {self.ticks} задач")
-        self.logs_page.append("Автообновление статистики")
+        self.dashboard_page.items_found.set_value(str(self.success_count))
+        self.dashboard_page.errors_today.set_value(str(self.error_count))
+        self.dashboard_page.queue_state.setText(f"Очередь: {active} запущено")
+        self.dashboard_page.last_run.setText(f"Последний запуск: {self._last_run_text()}")
+        self.stats_page.update_stats(speed=speed, total=self.success_count, errors=self.error_count, bans=0, timeouts=0)
+
+    def _last_run_text(self) -> str:
+        runs = [a.last_run for a in self.accounts if a.last_run != "—"]
+        return max(runs) if runs else "—"
 
     def log(self, text: str) -> None:
         self.logs_page.append(text)
+        self.last_log_ts = datetime.now()
+        upper = text.lower()
+        if any(key in upper for key in ["[ok]", "created", "success", "started on"]):
+            self.success_count += 1
+        if "[error]" in upper or "error" in upper:
+            self.error_count += 1
 
     def _set_page(self, index: int) -> None:
         for i, btn in enumerate(self.nav_buttons):
@@ -749,7 +1011,17 @@ class MainWindow(QMainWindow):
             self.log("Открыта страница логов")
 
     def _sync_dashboard(self, _row: int) -> None:
-        self._demo_tick()
+        self._refresh_stats()
+
+    def _update_account_view(self, row: int, status: str) -> None:
+        if 0 <= row < len(self.accounts):
+            self.accounts[row].status = status
+            self.accounts_page.refresh()
+            self._refresh_stats()
+
+    def run_accounts(self, rows: List[int]) -> None:
+        for row in rows:
+            self.run_account(row)
 
     def run_account(self, row: int) -> None:
         if row < 0 or row >= len(self.accounts):
@@ -760,8 +1032,8 @@ class MainWindow(QMainWindow):
             self.log(f"[RUN] {acc.name} already running")
             return
 
-        self.log(f"[RUN] Starting {acc.name}")
-        worker = Worker(row, acc.path)
+        self.log(f"[RUN] Starting {acc.name} on branch {acc.branch}")
+        worker = Worker(row, acc.path, acc.branch)
         thread = QThread(self)
         worker.moveToThread(thread)
 
@@ -769,35 +1041,58 @@ class MainWindow(QMainWindow):
             if 0 <= r < len(self.accounts):
                 self.accounts[r].status = status
                 self.accounts_page.refresh()
-                self._demo_tick()
+                self._refresh_stats()
 
         def on_finished(r: int, ok: bool, info: str) -> None:
-            # IMPORTANT: no thread.wait() here. The signal may be delivered in the same thread context.
             if 0 <= r < len(self.accounts):
+                account = self.accounts[r]
                 if ok:
                     py_bin = info
                     try:
-                        proc = subprocess.Popen([py_bin, "main.py"], cwd=self.accounts[r].path)
-                        self.accounts[r].process = proc
-                        self.accounts[r].status = "running"
-                        self.accounts[r].last_run = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        self.log(f"[OK] {self.accounts[r].name} started (pid={proc.pid})")
+                        env = os.environ.copy()
+                        env.setdefault("QT_QPA_PLATFORM", "xcb")
+
+                        proc = subprocess.Popen(
+                            [py_bin, "main.py"],
+                            cwd=account.path,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1,
+                            env=env,
+                        )
+                        account.process = proc
+                        account.status = "running"
+                        account.last_run = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                        if account.branch == "main" and proc.stdin is not None:
+                            browser_answer = "y" if account.open_browser else "n"
+                            timer_answer = str(account.timer_minutes)
+                            proc.stdin.write(f"{browser_answer}\n{timer_answer}\n")
+                            proc.stdin.flush()
+                            self.log(
+                                f"[OK] {account.name} started on main with browser={browser_answer}, timer={timer_answer}m (pid={proc.pid})"
+                            )
+                        else:
+                            self.log(f"[OK] {account.name} started on {account.branch} (pid={proc.pid})")
                     except Exception as exc:
-                        self.accounts[r].status = "error"
-                        self.accounts[r].errors += 1
-                        self.log(f"[ERROR] Failed to start {self.accounts[r].name}: {exc}")
+                        account.status = "error"
+                        account.errors += 1
+                        self.log(f"[ERROR] Failed to start {account.name}: {exc}")
                 else:
-                    self.accounts[r].status = "error"
-                    self.accounts[r].errors += 1
-                    self.log(f"[ERROR] {self.accounts[r].name}: {info}")
+                    account.status = "error"
+                    account.errors += 1
+                    self.log(f"[ERROR] {account.name}: {info}")
                 self.accounts_page.refresh()
-                self._demo_tick()
+                self._refresh_stats()
 
             thread.quit()
-            thread.finished.connect(thread.deleteLater)
             worker.deleteLater()
+            thread.finished.connect(thread.deleteLater)
             self.workers.pop(r, None)
             self.threads.pop(r, None)
+            self._save_accounts()
 
         worker.log.connect(self.log)
         worker.status.connect(on_status)
@@ -807,6 +1102,10 @@ class MainWindow(QMainWindow):
         self.workers[row] = worker
         self.threads[row] = thread
         thread.start()
+
+    def stop_accounts(self, rows: List[int]) -> None:
+        for row in rows:
+            self.stop_account(row)
 
     def stop_account(self, row: int) -> None:
         if row < 0 or row >= len(self.accounts):
@@ -832,7 +1131,13 @@ class MainWindow(QMainWindow):
         acc.process = None
         acc.status = "stopped"
         self.accounts_page.refresh()
-        self._demo_tick()
+        self._refresh_stats()
+        self._save_accounts()
+
+    def _refresh_all(self) -> None:
+        self.accounts_page.refresh()
+        self._refresh_stats()
+        self._save_accounts()
 
 
 def main() -> None:
