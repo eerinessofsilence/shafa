@@ -3,3 +3,4 @@ telethon
 python-dotenv
 inquirer
 Levenshtein
+customtkinter

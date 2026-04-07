@@ -30,15 +30,22 @@ from utils.media import list_media_files, reset_media_dir
 
 def main() -> None:
     amount_products_uploaded = 0
+
+    first_fetch_check = True
+
     while True:
         try:
             init_db()
-            product_data = get_next_product_for_upload(
-            message_amount=200
-            )
+            if first_fetch_check:
+                product_data = get_next_product_for_upload(message_amount=200, first_fetch_check=True)
+                first_fetch_check = False
+            else:
+                product_data = get_next_product_for_upload(
+                message_amount=200
+                )
             if not product_data:
                 log("INFO", "Нет новых товаров для создания.")
-                time.sleep(random.randint(480, 660))
+                time.sleep(random.randint(240, 360))
                 continue
  
             channel_id = product_data.get("channel_id")
@@ -131,7 +138,7 @@ def main() -> None:
                         photo_ids.append(photo_id)
                         #log("OK", f"Фото загружено: id={photo_id}")
 
-                    log("INFO", "Создаю товар...")
+                    #log("INFO", "Создаю товар...")
                     result = create_product(
                         ctx,
                         csrftoken,
@@ -165,9 +172,9 @@ def main() -> None:
                 finally:
                     browser.close()
             
-            time.sleep(random.randint(480, 660))
+            time.sleep(random.randint(240, 360))
         except Exception as exc:
             log("ERROR", f"Ошибка в main loop: {exc}")
-            time.sleep(random.randint(480, 660))
+            time.sleep(random.randint(240, 360))
 if __name__ == "__main__":
     main()

@@ -1547,6 +1547,112 @@ def parse_message(message: str) -> dict:
     }
 
 
+async def first_fetch() -> int:
+    inserted = 0
+    debug_fetch = _debug_fetch_enabled()
+    debug_verbose = _debug_fetch_verbose()
+    stats = {
+        "total": 0,
+        "no_media": 0,
+        "non_photo_media": 0,
+        "no_text": 0,
+        "missing_name": 0,
+        "missing_price": 0,
+        "missing_size": 0,
+        "parsed_ok": 0,
+        "saved": 0,
+        "duplicate": 0,
+    }
+    verbose_limit = 5
+    verbose_count = 0
+    valid_messages = 0
+    all_valid_messages = 0
+    itter_amount = 0
+    
+    def log_skip(reason: str, text: str, message_id: int, channel_id: int) -> None:
+        nonlocal verbose_count
+        if not debug_verbose or verbose_count >= verbose_limit:
+            return
+        preview_lines = normalize_message(text).splitlines() if text else []
+        preview = preview_lines[0] if preview_lines else ""
+        verbose_count += 1
+
+
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    async with TelegramClient("session", api_id_value, api_hash_value) as client:
+        channel_ids = _get_channel_ids()
+        await _sync_channel_titles(client, channel_ids)
+        for channel_id in channel_ids:
+            async for msg in client.iter_messages(channel_id, limit=1000):
+                if debug_fetch:
+                    stats["total"] += 1
+                if not msg.media:
+                    if debug_fetch:
+                        stats["no_media"] += 1
+                    log_skip("no_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not _is_photo_message(msg):
+                    if debug_fetch:
+                        stats["non_photo_media"] += 1
+                    log_skip("non_photo_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not msg.message:
+                    if debug_fetch:
+                        stats["no_text"] += 1
+                    log_skip("no_text", "", msg.id, channel_id)
+                    continue
+                parsed = parse_message(msg.message)
+                if not parsed.get("name"):
+                    if debug_fetch:
+                        stats["missing_name"] += 1
+                    log_skip("missing_name", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("price"):
+                    if debug_fetch:
+                        stats["missing_price"] += 1
+                    log_skip("missing_price", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("size"):
+                    if debug_fetch:
+                        stats["missing_size"] += 1
+                    log_skip("missing_size", msg.message, msg.id, channel_id)
+                    continue
+                if debug_fetch:
+                    stats["parsed_ok"] += 1
+                if save_telegram_product(channel_id, msg.id, msg.message, parsed):
+                    inserted += 1
+                    if debug_fetch:
+                        stats["saved"] += 1
+                elif debug_fetch:
+                    stats["duplicate"] += 1
+                itter_amount += 1
+                valid_messages += 1
+                print(valid_messages)
+                if valid_messages >= 20:
+                    all_valid_messages += 20
+                    print(all_valid_messages)
+                    valid_messages = 0
+                    break
+                elif itter_amount >= 500:
+                    itter_amount = 0
+                    break
+
+    if debug_fetch:
+        print(
+            "[DEBUG] fetch stats: "
+            f"total={stats['total']} "
+            f"no_media={stats['no_media']} "
+            f"non_photo_media={stats['non_photo_media']} "
+            f"no_text={stats['no_text']} "
+            f"missing_name={stats['missing_name']} "
+            f"missing_price={stats['missing_price']} "
+            f"missing_size={stats['missing_size']} "
+            f"parsed_ok={stats['parsed_ok']} "
+            f"saved={stats['saved']} "
+            f"duplicate={stats['duplicate']}"
+        )
+    return inserted
+
 async def _fetch_messages(message_amount: int = 200) -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
@@ -1579,7 +1685,7 @@ async def _fetch_messages(message_amount: int = 200) -> int:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
-            async for msg in client.iter_messages(channel_id, limit=100):
+            async for msg in client.iter_messages(channel_id, limit=message_amount):
                 if debug_fetch:
                     stats["total"] += 1
                 if not msg.media:
@@ -2194,17 +2300,21 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 
 async def get_next_product_for_upload_async(
     message_amount: int = 200,
+    first_fetch_check: bool | None = None,
 ) -> Optional[dict]:
-    await _fetch_messages(message_amount=message_amount)
+    if first_fetch_check:
+        await first_fetch()
+    else:
+        await _fetch_messages(message_amount=message_amount)
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 200) -> Optional[dict]:
+def get_next_product_for_upload(message_amount: int = 200, first_fetch_check: bool | None = None) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(
-            get_next_product_for_upload_async(message_amount=message_amount)
+            get_next_product_for_upload_async(message_amount=message_amount, first_fetch_check=first_fetch_check)
         )
     raise RuntimeError(
         "get_next_product_for_upload cannot be called when an event loop is running. "
@@ -2264,7 +2374,7 @@ def mark_product_created(
 
 
 if __name__ == "__main__":
-    product = get_next_product_for_upload(message_amount=200)
+    product = get_next_product_for_upload(message_amount=200, first_fetch_check=True)
     print(product)
 
 

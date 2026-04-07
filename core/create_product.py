@@ -22,7 +22,6 @@ def build_create_product_payload(
     check_slug = product.word_for_slack
 
     slug = find_slug_by_word(check_slug)
-    print(slug)
     if slug:
         # основной размер
         product.size = ORDINARY_CLOTHES_SIZES[0]
@@ -34,7 +33,6 @@ def build_create_product_payload(
 
     product.characteristics += [10273]
     material = extract_fabric_ids_from_description(product.description, slug)
-    print(material)
     if material:
         product.characteristics += material
 
@@ -56,7 +54,6 @@ def build_create_product_payload(
         "keyWords": product.keywords,
         "photosStr": photo_ids,
     }
-    print(variables)
 
     return {
         "operationName": "WEB_CreateProduct",
