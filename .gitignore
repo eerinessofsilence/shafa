@@ -1,7 +1,1 @@
 .venv
-media/*
-auth.json
-*.session
-data/*.sqlite3
-.env
-.codexignore
