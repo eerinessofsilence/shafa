@@ -4,3 +4,7 @@ python-dotenv
 inquirer
 Levenshtein
 customtkinter
+pyinstaller
+PySide6
+nuitka
+appimage-builder
