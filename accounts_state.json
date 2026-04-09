@@ -2,11 +2,11 @@
   {
     "name": "shafa",
     "path": "/home/slava/shafa",
-    "branch": "clothes-feature",
+    "branch": "main",
     "open_browser": false,
     "timer_minutes": 5,
-    "status": "stopped",
-    "last_run": "—",
-    "errors": 0
+    "status": "error",
+    "last_run": "2026-04-09 16:44",
+    "errors": 11
   }
 ]
