@@ -23,3 +23,10 @@ sdist/
 var/
 *.egg
 *.bak
+shafa/venv/
+shafa/media/*
+shafa/auth.json
+shafa/*.session
+shafa/data/*.sqlite3
+shafa/.env
+shafa/.codexignore
