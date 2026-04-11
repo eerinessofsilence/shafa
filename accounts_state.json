@@ -1,12 +1,17 @@
 [
   {
+    "id": "c78de7d172b548a4a0218ccf08540a3d",
     "name": "shafa",
-    "path": "/home/slava/shafa",
+    "path": "/home/slava/shafa_app/shafa",
+    "phone_number": "",
     "branch": "main",
     "open_browser": false,
     "timer_minutes": 5,
-    "status": "error",
-    "last_run": "2026-04-09 16:44",
-    "errors": 11
+    "channel_links": [
+      "https://t.me/INNA_Satinova"
+    ],
+    "status": "stopped",
+    "last_run": "2026-04-11 21:12",
+    "errors": 0
   }
 ]

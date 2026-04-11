@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import time
 import json
 import os
 import shutil
 import subprocess
 import sys
 import threading
-from dataclasses import asdict, dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List
@@ -27,7 +29,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QInputDialog,
     QPushButton,
+    QListWidget,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -37,19 +41,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from account_store import AccountStore
+from telegram_channels import export_runtime_config, sanitize_channel_links
+
 APP_NAME = "Shafa Control"
 BRANCHES = ["main", "clothes-feature"]
 BASE_DIR = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "accounts_state.json"
+RUNTIME_DIR = BASE_DIR / "runtime"
+ACCOUNTS_DIR = BASE_DIR / "accounts"
+DEFAULT_PROJECT_DIR = BASE_DIR / "shafa"
 
 
 @dataclass
 class Account:
+    id: str
     name: str
     path: str
+    phone_number: str = ""
     branch: str = "main"
     open_browser: bool = False
     timer_minutes: int = 5
+    channel_links: list[str] = field(default_factory=list)
     status: str = "stopped"
     last_run: str = "—"
     errors: int = 0
@@ -57,11 +70,14 @@ class Account:
 
     def to_json(self) -> dict:
         return {
+            "id": self.id,
             "name": self.name,
             "path": self.path,
+            "phone_number": self.phone_number,
             "branch": self.branch,
             "open_browser": self.open_browser,
             "timer_minutes": self.timer_minutes,
+            "channel_links": self.channel_links,
             "status": self.status,
             "last_run": self.last_run,
             "errors": self.errors,
@@ -70,11 +86,14 @@ class Account:
     @staticmethod
     def from_json(data: dict) -> "Account":
         return Account(
+            id=str(data.get("id") or uuid.uuid4().hex),
             name=data.get("name", "unknown"),
             path=data.get("path", ""),
+            phone_number=str(data.get("phone_number") or ""),
             branch=data.get("branch", "main"),
             open_browser=bool(data.get("open_browser", False)),
             timer_minutes=int(data.get("timer_minutes", 5)),
+            channel_links=sanitize_channel_links(data.get("channel_links", [])),
             status=data.get("status", "stopped"),
             last_run=data.get("last_run", "—"),
             errors=int(data.get("errors", 0)),
@@ -352,6 +371,10 @@ class AccountsPage(QWidget):
     run_requested = Signal(list)
     stop_requested = Signal(list)
     delete_requested = Signal(list)
+    accounts_changed = Signal()
+    shafa_auth_requested = Signal(int)
+    telegram_auth_requested = Signal(int)
+    telegram_session_clone_requested = Signal(int)
 
     def __init__(self, accounts: List[Account]) -> None:
         super().__init__()
@@ -368,54 +391,6 @@ class AccountsPage(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
 
-        config = QFrame()
-        config.setObjectName("PanelCard")
-        config.setMaximumHeight(160)
-        config.setGraphicsEffect(_make_shadow())
-        grid = QGridLayout(config)
-        grid.setContentsMargins(16, 16, 16, 16)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(10)
-
-        self.branch_combo = QComboBox()
-        self.branch_combo.addItems(BRANCHES)
-        self.branch_combo.setCurrentText("main")  # По умолчанию выбираем main
-        self.branch_combo.setMinimumWidth(180)
-
-        self.browser_toggle = QCheckBox("Открывать с браузером")
-        self.browser_toggle.setCursor(Qt.PointingHandCursor)
-        self.browser_state = QLabel("Нет")
-        self.browser_state.setObjectName("ToggleStateOff")
-        self.browser_toggle.stateChanged.connect(self._sync_browser_state)
-
-        self.timer_spin = QSpinBox()
-        self.timer_spin.setRange(5, 10)
-        self.timer_spin.setValue(5)
-        self.timer_spin.setSuffix(" мин")
-
-        self.apply_btn = QPushButton("ОК")
-        self.apply_btn.setObjectName("PrimaryButton")
-        self.apply_btn.setCursor(Qt.PointingHandCursor)
-
-        grid.addWidget(QLabel("Ветка"), 0, 0)
-        grid.addWidget(self.branch_combo, 0, 1)
-        grid.addWidget(QLabel("Браузер"), 0, 2)
-        browser_row = QHBoxLayout()
-        browser_row.setContentsMargins(0, 0, 0, 0)
-        browser_row.addWidget(self.browser_toggle)
-        browser_row.addWidget(self.browser_state)
-        browser_row.addStretch()
-        browser_holder = QWidget()
-        browser_holder.setLayout(browser_row)
-        grid.addWidget(browser_holder, 0, 3)
-
-        grid.addWidget(QLabel("Таймер"), 1, 0)
-        grid.addWidget(self.timer_spin, 1, 1)
-        grid.addWidget(QWidget(), 1, 2)
-        grid.addWidget(self.apply_btn, 1, 3, alignment=Qt.AlignLeft)
-
-        root.addWidget(config)
-
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
         self.select_all = QCheckBox("Выбрать все")
@@ -431,11 +406,22 @@ class AccountsPage(QWidget):
             toolbar.addWidget(btn)
         root.addLayout(toolbar)
 
-        self.table = QTableWidget(0, 8)
+        content = QHBoxLayout()
+        content.setSpacing(16)
+
+        table_panel = QFrame()
+        table_panel.setObjectName("PanelCard")
+        table_panel.setGraphicsEffect(_make_shadow())
+        table_layout = QVBoxLayout(table_panel)
+        table_layout.setContentsMargins(16, 16, 16, 16)
+
+        self.table = QTableWidget(0, 9)
         self.table.setObjectName("DataTable")
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
-        self.table.setHorizontalHeaderLabels(["", "Имя", "Путь", "Ветка", "Браузер", "Таймер", "Статус", "Ошибки"])
+        self.table.setHorizontalHeaderLabels(
+            ["", "Имя", "Проект", "Ветка", "Браузер", "Таймер", "Каналы", "Статус", "Ошибки"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -444,13 +430,109 @@ class AccountsPage(QWidget):
         self.table.itemSelectionChanged.connect(self._load_selected_to_form)
         self.table.itemChanged.connect(self._handle_item_changed)
         self.table.setColumnWidth(0, 36)
-        root.addWidget(self.table)
+        table_layout.addWidget(self.table)
+
+        config_panel = QFrame()
+        config_panel.setObjectName("PanelCard")
+        config_panel.setGraphicsEffect(_make_shadow())
+        config_panel.setFixedWidth(380)
+        config_layout = QVBoxLayout(config_panel)
+        config_layout.setContentsMargins(16, 16, 16, 16)
+        config_layout.setSpacing(12)
+
+        config_title = QLabel("Конфигурация аккаунта")
+        config_title.setObjectName("FieldLabel")
+        self.selected_account_label = QLabel("Выберите аккаунт")
+        self.selected_account_label.setObjectName("MutedLabel")
+        config_layout.addWidget(config_title)
+        config_layout.addWidget(self.selected_account_label)
+
+        self.branch_combo = QComboBox()
+        self.branch_combo.addItems(BRANCHES)
+        self.branch_combo.setMinimumWidth(180)
+
+        self.project_path_edit = QLineEdit()
+        self.project_path_edit.setReadOnly(True)
+        self.project_path_edit.setPlaceholderText("Выберите корень проекта Shafa Soft")
+        self.project_browse_btn = QPushButton("Выбрать проект")
+        self.phone_input = QLineEdit()
+        self.phone_input.setPlaceholderText("+380...")
+
+        self.browser_toggle = QCheckBox("Открывать с браузером")
+        self.browser_toggle.setCursor(Qt.PointingHandCursor)
+        self.browser_state = QLabel("Нет")
+        self.browser_state.setObjectName("ToggleStateOff")
+        self.browser_toggle.stateChanged.connect(self._sync_browser_state)
+
+        self.timer_spin = QSpinBox()
+        self.timer_spin.setRange(1, 120)
+        self.timer_spin.setSuffix(" мин")
+
+        config_layout.addWidget(QLabel("Корень проекта"))
+        config_layout.addWidget(self.project_path_edit)
+        config_layout.addWidget(self.project_browse_btn)
+        config_layout.addWidget(QLabel("Ветка"))
+        config_layout.addWidget(self.branch_combo)
+        config_layout.addWidget(self.browser_toggle)
+        config_layout.addWidget(self.browser_state)
+        config_layout.addWidget(QLabel("Таймер"))
+        config_layout.addWidget(self.timer_spin)
+
+        channels_label = QLabel("Telegram-каналы")
+        channels_label.setObjectName("FieldLabel")
+        config_layout.addWidget(channels_label)
+
+        self.channel_links = QListWidget()
+        self.channel_links.setMinimumHeight(180)
+        config_layout.addWidget(self.channel_links)
+
+        self.channel_input = QLineEdit()
+        self.channel_input.setPlaceholderText("https://t.me/example_channel")
+        config_layout.addWidget(self.channel_input)
+
+        channel_actions = QHBoxLayout()
+        self.add_channel_btn = QPushButton("Добавить ссылку")
+        self.remove_channel_btn = QPushButton("Удалить ссылку")
+        channel_actions.addWidget(self.add_channel_btn)
+        channel_actions.addWidget(self.remove_channel_btn)
+        config_layout.addLayout(channel_actions)
+
+        self.apply_btn = QPushButton("Сохранить аккаунт")
+        self.apply_btn.setObjectName("PrimaryButton")
+        self.apply_btn.setCursor(Qt.PointingHandCursor)
+        self.shafa_auth_btn = QPushButton("Войти в Shafa")
+        self.telegram_auth_btn = QPushButton("Войти в Telegram")
+        self.clone_session_btn = QPushButton("Копировать TG сессию")
+        self.shafa_auth_status = QLabel("Shafa auth: отсутствует")
+        self.shafa_auth_status.setObjectName("MutedLabel")
+        self.telegram_auth_status = QLabel("Telegram session: отсутствует")
+        self.telegram_auth_status.setObjectName("MutedLabel")
+        config_layout.addWidget(self.apply_btn)
+        config_layout.addWidget(QLabel("Телефон Telegram"))
+        config_layout.addWidget(self.phone_input)
+        config_layout.addWidget(self.shafa_auth_btn)
+        config_layout.addWidget(self.telegram_auth_btn)
+        config_layout.addWidget(self.clone_session_btn)
+        config_layout.addWidget(self.shafa_auth_status)
+        config_layout.addWidget(self.telegram_auth_status)
+        config_layout.addStretch()
+
+        content.addWidget(table_panel, 1)
+        content.addWidget(config_panel)
+        root.addLayout(content)
 
         self.add_btn.clicked.connect(self.add_account)
         self.delete_btn.clicked.connect(self.delete_selected_accounts)
         self.run_btn.clicked.connect(self._run_selected)
         self.stop_btn.clicked.connect(self._stop_selected)
         self.apply_btn.clicked.connect(self.apply_settings)
+        self.add_channel_btn.clicked.connect(self.add_channel_link)
+        self.remove_channel_btn.clicked.connect(self.remove_selected_channel_link)
+        self.project_browse_btn.clicked.connect(self.select_project_directory)
+        self.phone_input.textChanged.connect(self._sync_telegram_button_state)
+        self.shafa_auth_btn.clicked.connect(self._request_shafa_auth)
+        self.telegram_auth_btn.clicked.connect(self._request_telegram_auth)
+        self.clone_session_btn.clicked.connect(self._request_clone_session)
         self.select_all.stateChanged.connect(self._toggle_all)
 
         self.refresh()
@@ -502,6 +584,7 @@ class AccountsPage(QWidget):
                 acc.branch,
                 "Да" if acc.open_browser else "Нет",
                 str(acc.timer_minutes),
+                str(len(acc.channel_links)),
                 acc.status,
                 str(acc.errors),
             ]
@@ -512,7 +595,7 @@ class AccountsPage(QWidget):
         self.table.blockSignals(False)
 
     def _paint_status(self, row: int, status: str) -> None:
-        item = self.table.item(row, 6)
+        item = self.table.item(row, 7)
         if not item:
             return
         if status == "running":
@@ -545,11 +628,25 @@ class AccountsPage(QWidget):
     def _load_selected_to_form(self) -> None:
         acc = self.selected_account()
         if not acc:
+            self.selected_account_label.setText("Выберите аккаунт")
+            self.project_path_edit.clear()
+            self.phone_input.clear()
+            self.channel_links.clear()
+            self.update_auth_status(False, False)
+            self._sync_telegram_button_state()
             return
+        self.selected_account_label.setText(acc.name)
+        self.project_path_edit.setText(acc.path)
+        self.phone_input.setText(acc.phone_number)
         self.branch_combo.setCurrentText(acc.branch)
         self.browser_toggle.setChecked(acc.open_browser)
         self.timer_spin.setValue(acc.timer_minutes)
+        self.channel_input.clear()
+        self.channel_links.clear()
+        self.channel_links.addItems(acc.channel_links)
         self._sync_browser_state()
+        self._sync_telegram_button_state()
+        self.selection_changed.emit(self.selected_row())
 
     def apply_settings(self) -> None:
         acc = self.selected_account()
@@ -557,20 +654,33 @@ class AccountsPage(QWidget):
             QMessageBox.information(self, "Настройки", "Выберите аккаунт в таблице.")
             return
         acc.branch = self.branch_combo.currentText()
+        acc.path = self.project_path_edit.text().strip() or acc.path
+        acc.phone_number = self.phone_input.text().strip()
         acc.open_browser = self.browser_toggle.isChecked()
         acc.timer_minutes = int(self.timer_spin.value())
+        acc.channel_links = sanitize_channel_links(
+            self.channel_links.item(index).text()
+            for index in range(self.channel_links.count())
+        )
         self.refresh()
-        self.log.emit(f"[SETTINGS] {acc.name}: branch={acc.branch}, browser={acc.open_browser}, timer={acc.timer_minutes}m")
-        self._save_accounts()
+        self._select_account(acc)
+        self.log.emit(
+            f"[SETTINGS] {acc.name}: project={acc.path}, branch={acc.branch}, "
+            f"browser={acc.open_browser}, timer={acc.timer_minutes}m, channels={len(acc.channel_links)}"
+        )
+        self.accounts_changed.emit()
 
     def add_account(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку аккаунта")
-        if not path:
+        name, ok = QInputDialog.getText(self, "Новый аккаунт", "Название аккаунта")
+        if not ok:
             return
-        name = Path(path).name
-        self.accounts.append(Account(name=name, path=path))
+        clean_name = name.strip() or f"Account {len(self.accounts) + 1}"
+        default_path = str(DEFAULT_PROJECT_DIR if DEFAULT_PROJECT_DIR.exists() else BASE_DIR)
+        self.accounts.append(Account(id=uuid.uuid4().hex, name=clean_name, path=default_path))
         self.refresh()
-        self.log.emit(f"[ADD] Added account folder: {name}")
+        self._select_row(len(self.accounts) - 1)
+        self.log.emit(f"[ADD] Added account: {clean_name}")
+        self.accounts_changed.emit()
 
     def delete_selected_accounts(self) -> None:
         rows = self.checked_rows()
@@ -601,6 +711,104 @@ class AccountsPage(QWidget):
                 return
             rows = [row]
         self.stop_requested.emit(rows)
+
+    def select_project_directory(self) -> None:
+        acc = self.selected_account()
+        if not acc:
+            QMessageBox.information(self, "Проект", "Сначала выберите аккаунт.")
+            return
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Выберите корень проекта Shafa Soft",
+            self.project_path_edit.text().strip() or acc.path,
+        )
+        if not path:
+            return
+        self.project_path_edit.setText(path)
+        self.apply_settings()
+
+    def add_channel_link(self) -> None:
+        acc = self.selected_account()
+        if not acc:
+            QMessageBox.information(self, "Telegram-каналы", "Сначала выберите аккаунт.")
+            return
+        raw_link = self.channel_input.text().strip()
+        if not raw_link:
+            QMessageBox.information(self, "Telegram-каналы", "Введите ссылку на канал.")
+            return
+        try:
+            link = sanitize_channel_links([raw_link])[0]
+        except (IndexError, ValueError) as exc:
+            QMessageBox.warning(self, "Telegram-каналы", str(exc))
+            return
+        existing = {self.channel_links.item(i).text().casefold() for i in range(self.channel_links.count())}
+        if link.casefold() in existing:
+            self.channel_input.clear()
+            return
+        self.channel_links.addItem(link)
+        self.channel_input.clear()
+        self.apply_settings()
+
+    def remove_selected_channel_link(self) -> None:
+        acc = self.selected_account()
+        if not acc:
+            QMessageBox.information(self, "Telegram-каналы", "Сначала выберите аккаунт.")
+            return
+        current_row = self.channel_links.currentRow()
+        if current_row < 0:
+            QMessageBox.information(self, "Telegram-каналы", "Выберите ссылку для удаления.")
+            return
+        self.channel_links.takeItem(current_row)
+        self.apply_settings()
+
+    def _select_account(self, account: Account) -> None:
+        for row, current in enumerate(self.accounts):
+            if current is account:
+                self._select_row(row)
+                return
+
+    def _select_row(self, row: int) -> None:
+        if row < 0 or row >= self.table.rowCount():
+            return
+        self.table.selectRow(row)
+
+    def update_auth_status(self, shafa_ready: bool, telegram_ready: bool) -> None:
+        self.shafa_auth_status.setText(
+            "Shafa auth: готово" if shafa_ready else "Shafa auth: отсутствует"
+        )
+        self.telegram_auth_status.setText(
+            "Telegram session: готово" if telegram_ready else "Telegram session: отсутствует"
+        )
+
+    def _sync_telegram_button_state(self) -> None:
+        has_phone = bool(self.phone_input.text().strip())
+        self.telegram_auth_btn.setEnabled(has_phone)
+
+    def _request_shafa_auth(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Shafa auth", "Сначала выберите аккаунт.")
+            return
+        self.apply_settings()
+        self.shafa_auth_requested.emit(row)
+
+    def _request_telegram_auth(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Telegram auth", "Сначала выберите аккаунт.")
+            return
+        if not self.phone_input.text().strip():
+            QMessageBox.information(self, "Telegram auth", "Заполните номер телефона.")
+            return
+        self.apply_settings()
+        self.telegram_auth_requested.emit(row)
+
+    def _request_clone_session(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Telegram session", "Сначала выберите аккаунт.")
+            return
+        self.telegram_session_clone_requested.emit(row)
 
 
 class ParsingPage(QWidget):
@@ -1017,6 +1225,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(APP_NAME)
             self.resize(1440, 900)
 
+            self.account_store = AccountStore(STATE_FILE, Account.from_json)
             self.accounts: List[Account] = self._load_accounts()
             # Останавливаем все аккаунты при запуске на всякий случай
             self.stop_all_accounts()
@@ -1043,24 +1252,14 @@ class MainWindow(QMainWindow):
             raise
 
     def _load_accounts(self) -> List[Account]:
-        if not STATE_FILE.exists():
-            return []
         try:
-            raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            accounts = [Account.from_json(item) for item in raw if item.get("path")]
-            # Сбрасываем статус всех аккаунтов при загрузке, чтобы они не отображались как рабочие
-            for acc in accounts:
-                acc.status = "stopped"
-                acc.process = None
-            return accounts
+            return self.account_store.load()
         except Exception:
             return []
 
     def _save_accounts(self) -> None:
         try:
-            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump([acc.to_json() for acc in self.accounts], f, ensure_ascii=False, indent=2)
+            self.account_store.save(self.accounts)
         except Exception as exc:
             self.log(f"[ERROR] Failed to save accounts state: {exc}")
 
@@ -1069,7 +1268,6 @@ class MainWindow(QMainWindow):
         self.stop_all_accounts()
             
         # Ждём завершения процессов
-        import time
         time.sleep(2)
         
         # Сохраняем состояние всех аккаунтов как stopped
@@ -1173,9 +1371,14 @@ class MainWindow(QMainWindow):
 
         self.accounts_page.log.connect(self.log)
         self.accounts_page.selection_changed.connect(self._sync_dashboard)
+        self.accounts_page.selection_changed.connect(self._sync_account_auth_status)
         self.accounts_page.delete_requested.connect(self.delete_accounts)
         self.accounts_page.run_requested.connect(self.run_accounts)
         self.accounts_page.stop_requested.connect(self.stop_accounts)
+        self.accounts_page.accounts_changed.connect(self._save_accounts)
+        self.accounts_page.shafa_auth_requested.connect(self.authenticate_shafa_account)
+        self.accounts_page.telegram_auth_requested.connect(self.authenticate_telegram_account)
+        self.accounts_page.telegram_session_clone_requested.connect(self.clone_telegram_session)
 
         root.addWidget(self.sidebar)
         root.addWidget(self.pages, 1)
@@ -1301,6 +1504,16 @@ class MainWindow(QMainWindow):
     def _sync_dashboard(self, _row: int) -> None:
         self._refresh_stats()
 
+    def _sync_account_auth_status(self, row: int) -> None:
+        if row < 0 or row >= len(self.accounts):
+            self.accounts_page.update_auth_status(False, False)
+            return
+        account = self.accounts[row]
+        self.accounts_page.update_auth_status(
+            shafa_ready=self._account_auth_file(account).exists(),
+            telegram_ready=self._account_telegram_session_file(account).exists(),
+        )
+
     def delete_accounts(self, rows: List[int]) -> None:
         rows = sorted(set(rows), reverse=True)
         if not rows:
@@ -1322,6 +1535,7 @@ class MainWindow(QMainWindow):
         self.accounts_page.refresh()
         self._refresh_stats()
         self._save_accounts()
+        self._sync_account_auth_status(self.accounts_page.selected_row())
         self.log(f"[DELETE] Removed {len(rows)} account(s)")
 
     def run_accounts(self, rows: List[int]) -> None:
@@ -1358,20 +1572,20 @@ class MainWindow(QMainWindow):
                 print(f"[PROC:ERROR] log reader failed for {account_name}: {exc}")
             self.log(f"[ERROR] log reader failed for {account_name}: {exc}")
 
-    def _run_bootstrap(self, py_bin: str, account_path: Path, account_name: str) -> None:
-        self.log(f"[BOOTSTRAP] {account_name}: bootstrap.py")
-        result = subprocess.run(
-            [py_bin, "bootstrap.py"],
-            cwd=str(account_path),
-            capture_output=True,
-            text=True,
-        )
-        if result.stdout:
-            for line in result.stdout.splitlines():
-                self.log(f"[{account_name}] {line}")
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "bootstrap failed").strip()
-            raise RuntimeError(err)
+    # def _run_bootstrap(self, py_bin: str, account_path: Path, account_name: str) -> None:
+    #     self.log(f"[BOOTSTRAP] {account_name}: bootstrap.py")
+    #     result = subprocess.run(
+    #         [py_bin, "bootstrap.py"],
+    #         cwd=str(account_path),
+    #         capture_output=True,
+    #         text=True,
+    #     )
+    #     if result.stdout:
+    #        for line in result.stdout.splitlines():
+    #            self.log(f"[{account_name}] {line}")
+    #     if result.returncode != 0:
+    #         err = (result.stderr or result.stdout or "bootstrap failed").strip()
+    #        raise RuntimeError(err)
 
     def run_account(self, row: int) -> None:
         if row < 0 or row >= len(self.accounts):
@@ -1403,11 +1617,17 @@ class MainWindow(QMainWindow):
                 if ok:
                     py_bin = info
                     try:
-                        env = os.environ.copy()
-                        env.setdefault("PYTHONUNBUFFERED", "1")  # Отключаем буферизацию stdout
+                        env = self._account_env(account)
+                        channels_file = export_runtime_config(
+                            account_name=account.name,
+                            account_path=account.path,
+                            links=account.channel_links,
+                            output_dir=self._account_state_dir(account),
+                        )
+                        env["SHAFA_TELEGRAM_CHANNEL_LINKS_FILE"] = str(channels_file)
 
                         # bootstrap.py first, then main.py
-                        self._run_bootstrap(py_bin, Path(account.path), account.name)
+                        # self._run_bootstrap(py_bin, Path(account.path), account.name)
 
                         # Проверяем, что main.py существует
                         main_py_path = Path(account.path) / "main.py"
@@ -1418,20 +1638,19 @@ class MainWindow(QMainWindow):
                             print(f"[DEBUG] main.py found at {main_py_path}")
                             print(f"[DEBUG] Creating Popen for {account.name}: {py_bin} main.py")
                         proc = subprocess.Popen(
-                            [py_bin, "main.py"],
+                            [py_bin, "main.py", "--shafa"],
                             cwd=account.path,
                             stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,  # Объединяем stderr с stdout
+                            stderr=subprocess.STDOUT,
                             text=True,
-                            bufsize=0,  # Небуферизованное чтение
+                            bufsize=0,
                             env=env,
                         )
                         if self.DEBUG_PROCESS:
                             print(f"[DEBUG] Popen created, pid={proc.pid}")
                         
                         # Проверяем, что процесс действительно запустился
-                        import time
                         time.sleep(0.1)  # Даём процессу время запуститься
                         if proc.poll() is not None:
                             # Процесс уже завершился
@@ -1449,7 +1668,6 @@ class MainWindow(QMainWindow):
                         
                         # Добавляем проверку статуса процесса через 5 секунд
                         def check_process_status():
-                            import time
                             time.sleep(5)
                             if proc.poll() is not None:
                                 if self.DEBUG_PROCESS:
@@ -1488,6 +1706,10 @@ class MainWindow(QMainWindow):
                             self.log(
                                 f"[OK] {account.name} started on {account.branch} with browser={browser_answer}, timer={timer_answer}m (pid={proc.pid})"
                             )
+                            if account.channel_links:
+                                self.log(
+                                    f"[CHANNELS] {account.name}: exported {len(account.channel_links)} link(s) to {channels_file.name}"
+                                )
                         else:
                             self.log(f"[OK] {account.name} started on {account.branch} (pid={proc.pid})")
                     except Exception as exc:
@@ -1500,6 +1722,7 @@ class MainWindow(QMainWindow):
                     self.log(f"[ERROR] {account.name}: {info}")
                 self.accounts_page.refresh()
                 self._refresh_stats()
+                self._sync_account_auth_status(r)
 
             thread.quit()
             worker.deleteLater()
@@ -1555,9 +1778,151 @@ class MainWindow(QMainWindow):
         self._refresh_stats()
         self._save_accounts()
 
+    def authenticate_shafa_account(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        result = self._run_account_command(account, ["main.py", "--login-shafa"])
+        if result.returncode == 0:
+            self.log(f"[AUTH] Shafa auth saved for {account.name}")
+        else:
+            self.log(f"[ERROR] Shafa auth failed for {account.name}: {self._command_error(result)}")
+        self._sync_account_auth_status(row)
+
+    def authenticate_telegram_account(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        phone = account.phone_number.strip()
+        if not phone:
+            self.log(f"[ERROR] Telegram auth requires phone number for {account.name}")
+            return
+        send_code_result = self._run_account_command(
+            account,
+            ["main.py", "--telegram-send-code", phone],
+        )
+        if send_code_result.returncode != 0:
+            self.log(
+                f"[ERROR] Telegram code request failed for {account.name}: {self._command_error(send_code_result)}"
+            )
+            return
+        code, ok = QInputDialog.getText(
+            self,
+            "Telegram code",
+            f"Введите код Telegram для {account.name}",
+        )
+        if not ok or not code.strip():
+            self.log(f"[AUTH] Telegram login cancelled for {account.name}")
+            return
+        login_result = self._run_account_command(
+            account,
+            ["main.py", "--telegram-login-phone", phone, "--telegram-login-code", code.strip()],
+        )
+        if login_result.returncode == 0:
+            self.log(f"[AUTH] Telegram session saved for {account.name}")
+        else:
+            self.log(
+                f"[ERROR] Telegram login failed for {account.name}: {self._command_error(login_result)}"
+            )
+        self._sync_account_auth_status(row)
+
+    def clone_telegram_session(self, row: int) -> None:
+        target_account = self._account_by_row(row)
+        if target_account is None:
+            return
+        sources = [
+            account
+            for index, account in enumerate(self.accounts)
+            if index != row and self._account_telegram_session_file(account).exists()
+        ]
+        if not sources:
+            QMessageBox.information(self, "Telegram session", "Нет доступных аккаунтов с Telegram сессией.")
+            return
+        labels = [source.name for source in sources]
+        source_name, ok = QInputDialog.getItem(
+            self,
+            "Копировать Telegram сессию",
+            "Источник сессии",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not source_name:
+            return
+        source_account = next(account for account in sources if account.name == source_name)
+        self._copy_telegram_session(source_account, target_account)
+        self.log(f"[AUTH] Telegram session copied from {source_account.name} to {target_account.name}")
+        self._sync_account_auth_status(row)
+
+    def _account_by_row(self, row: int) -> Optional[Account]:
+        if row < 0 or row >= len(self.accounts):
+            return None
+        return self.accounts[row]
+
+    def _account_state_dir(self, account: Account) -> Path:
+        state_dir = ACCOUNTS_DIR / account.id
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir
+
+    def _account_auth_file(self, account: Account) -> Path:
+        return self._account_state_dir(account) / "auth.json"
+
+    def _account_db_file(self, account: Account) -> Path:
+        return self._account_state_dir(account) / "shafa.sqlite3"
+
+    def _account_telegram_session_file(self, account: Account) -> Path:
+        return self._account_state_dir(account) / "telegram.session"
+
+    def _account_telegram_login_state_file(self, account: Account) -> Path:
+        return self._account_state_dir(account) / "telegram_login_state.json"
+
+    def _account_channels_file(self, account: Account) -> Path:
+        return self._account_state_dir(account) / "shafa_telegram_channels.json"
+
+    def _account_env(self, account: Account) -> dict[str, str]:
+        env = os.environ.copy()
+        state_dir = self._account_state_dir(account)
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
+        env["SHAFA_STORAGE_STATE_PATH"] = str(self._account_auth_file(account))
+        env["SHAFA_DB_PATH"] = str(self._account_db_file(account))
+        env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self._account_telegram_session_file(account))
+        env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self._account_telegram_login_state_file(account))
+        env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self._account_channels_file(account))
+        return env
+
+    def _account_python(self, account: Account) -> str:
+        if os.name == "nt":
+            candidate = Path(account.path) / ".venv" / "Scripts" / "python.exe"
+        else:
+            candidate = Path(account.path) / ".venv" / "bin" / "python"
+        return str(candidate if candidate.exists() else Path(sys.executable))
+
+    def _run_account_command(self, account: Account, args: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [self._account_python(account), *args],
+            cwd=account.path,
+            capture_output=True,
+            text=True,
+            env=self._account_env(account),
+        )
+
+    def _command_error(self, result: subprocess.CompletedProcess) -> str:
+        return (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+
+    def _copy_telegram_session(self, source: Account, target: Account) -> None:
+        source_file = self._account_telegram_session_file(source)
+        target_file = self._account_telegram_session_file(target)
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_file, target_file)
+        source_journal = Path(f"{source_file}-journal")
+        if source_journal.exists():
+            shutil.copy2(source_journal, Path(f"{target_file}-journal"))
+
     def _refresh_all(self) -> None:
         self.accounts_page.refresh()
         self._refresh_stats()
+        self._sync_account_auth_status(self.accounts_page.selected_row())
         self._save_accounts()
 
 
