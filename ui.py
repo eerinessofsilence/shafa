@@ -8,7 +8,6 @@ import subprocess
 import sys
 import threading
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List
@@ -32,6 +31,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QPushButton,
     QListWidget,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -42,62 +42,23 @@ from PySide6.QtWidgets import (
 )
 
 from account_store import AccountStore
+from shafa_control import (
+    Account,
+    AccountSessionStore,
+    LogRecord,
+    LogStore,
+    ShafaAuthService,
+    TelegramAuthService,
+)
 from telegram_channels import export_runtime_config, sanitize_channel_links
 
 APP_NAME = "Shafa Control"
 BRANCHES = ["main", "clothes-feature"]
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "accounts_state.json"
 RUNTIME_DIR = BASE_DIR / "runtime"
 ACCOUNTS_DIR = BASE_DIR / "accounts"
 DEFAULT_PROJECT_DIR = BASE_DIR / "shafa"
-
-
-@dataclass
-class Account:
-    id: str
-    name: str
-    path: str
-    phone_number: str = ""
-    branch: str = "main"
-    open_browser: bool = False
-    timer_minutes: int = 5
-    channel_links: list[str] = field(default_factory=list)
-    status: str = "stopped"
-    last_run: str = "—"
-    errors: int = 0
-    process: Optional[subprocess.Popen] = None
-
-    def to_json(self) -> dict:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "path": self.path,
-            "phone_number": self.phone_number,
-            "branch": self.branch,
-            "open_browser": self.open_browser,
-            "timer_minutes": self.timer_minutes,
-            "channel_links": self.channel_links,
-            "status": self.status,
-            "last_run": self.last_run,
-            "errors": self.errors,
-        }
-
-    @staticmethod
-    def from_json(data: dict) -> "Account":
-        return Account(
-            id=str(data.get("id") or uuid.uuid4().hex),
-            name=data.get("name", "unknown"),
-            path=data.get("path", ""),
-            phone_number=str(data.get("phone_number") or ""),
-            branch=data.get("branch", "main"),
-            open_browser=bool(data.get("open_browser", False)),
-            timer_minutes=int(data.get("timer_minutes", 5)),
-            channel_links=sanitize_channel_links(data.get("channel_links", [])),
-            status=data.get("status", "stopped"),
-            last_run=data.get("last_run", "—"),
-            errors=int(data.get("errors", 0)),
-        )
 
 
 class Worker(QObject):
@@ -373,8 +334,13 @@ class AccountsPage(QWidget):
     delete_requested = Signal(list)
     accounts_changed = Signal()
     shafa_auth_requested = Signal(int)
-    telegram_auth_requested = Signal(int)
+    shafa_session_delete_requested = Signal(int)
+    telegram_code_requested = Signal(int)
+    telegram_login_requested = Signal(int, str)
     telegram_session_clone_requested = Signal(int)
+    telegram_session_export_requested = Signal(int)
+    telegram_session_import_requested = Signal(int)
+    telegram_session_delete_requested = Signal(int)
 
     def __init__(self, accounts: List[Account]) -> None:
         super().__init__()
@@ -457,6 +423,8 @@ class AccountsPage(QWidget):
         self.project_browse_btn = QPushButton("Выбрать проект")
         self.phone_input = QLineEdit()
         self.phone_input.setPlaceholderText("+380...")
+        self.telegram_code_input = QLineEdit()
+        self.telegram_code_input.setPlaceholderText("Код подтверждения")
 
         self.browser_toggle = QCheckBox("Открывать с браузером")
         self.browser_toggle.setCursor(Qt.PointingHandCursor)
@@ -501,8 +469,13 @@ class AccountsPage(QWidget):
         self.apply_btn.setObjectName("PrimaryButton")
         self.apply_btn.setCursor(Qt.PointingHandCursor)
         self.shafa_auth_btn = QPushButton("Войти в Shafa")
-        self.telegram_auth_btn = QPushButton("Войти в Telegram")
+        self.telegram_auth_btn = QPushButton("Запросить код Telegram")
+        self.telegram_login_btn = QPushButton("Подтвердить TG сессию")
         self.clone_session_btn = QPushButton("Копировать TG сессию")
+        self.export_tg_session_btn = QPushButton("Экспортировать TG сессию")
+        self.import_tg_session_btn = QPushButton("Импортировать TG сессию")
+        self.delete_tg_session_btn = QPushButton("Удалить TG сессию")
+        self.delete_shafa_session_btn = QPushButton("Удалить Shafa сессию")
         self.shafa_auth_status = QLabel("Shafa auth: отсутствует")
         self.shafa_auth_status.setObjectName("MutedLabel")
         self.telegram_auth_status = QLabel("Telegram session: отсутствует")
@@ -510,15 +483,27 @@ class AccountsPage(QWidget):
         config_layout.addWidget(self.apply_btn)
         config_layout.addWidget(QLabel("Телефон Telegram"))
         config_layout.addWidget(self.phone_input)
+        config_layout.addWidget(QLabel("Код Telegram"))
+        config_layout.addWidget(self.telegram_code_input)
         config_layout.addWidget(self.shafa_auth_btn)
+        config_layout.addWidget(self.delete_shafa_session_btn)
         config_layout.addWidget(self.telegram_auth_btn)
+        config_layout.addWidget(self.telegram_login_btn)
         config_layout.addWidget(self.clone_session_btn)
+        config_layout.addWidget(self.export_tg_session_btn)
+        config_layout.addWidget(self.import_tg_session_btn)
+        config_layout.addWidget(self.delete_tg_session_btn)
         config_layout.addWidget(self.shafa_auth_status)
         config_layout.addWidget(self.telegram_auth_status)
         config_layout.addStretch()
 
         content.addWidget(table_panel, 1)
-        content.addWidget(config_panel)
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setFrameShape(QFrame.NoFrame)
+        config_scroll.setMinimumWidth(420)
+        config_scroll.setWidget(config_panel)
+        content.addWidget(config_scroll)
         root.addLayout(content)
 
         self.add_btn.clicked.connect(self.add_account)
@@ -530,9 +515,15 @@ class AccountsPage(QWidget):
         self.remove_channel_btn.clicked.connect(self.remove_selected_channel_link)
         self.project_browse_btn.clicked.connect(self.select_project_directory)
         self.phone_input.textChanged.connect(self._sync_telegram_button_state)
+        self.telegram_code_input.textChanged.connect(self._sync_telegram_button_state)
         self.shafa_auth_btn.clicked.connect(self._request_shafa_auth)
-        self.telegram_auth_btn.clicked.connect(self._request_telegram_auth)
+        self.delete_shafa_session_btn.clicked.connect(self._request_delete_shafa_session)
+        self.telegram_auth_btn.clicked.connect(self._request_telegram_code)
+        self.telegram_login_btn.clicked.connect(self._request_telegram_login)
         self.clone_session_btn.clicked.connect(self._request_clone_session)
+        self.export_tg_session_btn.clicked.connect(self._request_export_session)
+        self.import_tg_session_btn.clicked.connect(self._request_import_session)
+        self.delete_tg_session_btn.clicked.connect(self._request_delete_tg_session)
         self.select_all.stateChanged.connect(self._toggle_all)
 
         self.refresh()
@@ -631,13 +622,15 @@ class AccountsPage(QWidget):
             self.selected_account_label.setText("Выберите аккаунт")
             self.project_path_edit.clear()
             self.phone_input.clear()
+            self.telegram_code_input.clear()
             self.channel_links.clear()
-            self.update_auth_status(False, False)
+            self.update_auth_status(False, False, False)
             self._sync_telegram_button_state()
             return
         self.selected_account_label.setText(acc.name)
         self.project_path_edit.setText(acc.path)
         self.phone_input.setText(acc.phone_number)
+        self.telegram_code_input.clear()
         self.branch_combo.setCurrentText(acc.branch)
         self.browser_toggle.setChecked(acc.open_browser)
         self.timer_spin.setValue(acc.timer_minutes)
@@ -772,17 +765,22 @@ class AccountsPage(QWidget):
             return
         self.table.selectRow(row)
 
-    def update_auth_status(self, shafa_ready: bool, telegram_ready: bool) -> None:
+    def update_auth_status(self, shafa_ready: bool, telegram_ready: bool, telegram_pending: bool) -> None:
         self.shafa_auth_status.setText(
             "Shafa auth: готово" if shafa_ready else "Shafa auth: отсутствует"
         )
-        self.telegram_auth_status.setText(
-            "Telegram session: готово" if telegram_ready else "Telegram session: отсутствует"
-        )
+        if telegram_ready:
+            telegram_text = "Telegram session: готово"
+        elif telegram_pending:
+            telegram_text = "Telegram session: ожидает код"
+        else:
+            telegram_text = "Telegram session: отсутствует"
+        self.telegram_auth_status.setText(telegram_text)
 
     def _sync_telegram_button_state(self) -> None:
         has_phone = bool(self.phone_input.text().strip())
         self.telegram_auth_btn.setEnabled(has_phone)
+        self.telegram_login_btn.setEnabled(has_phone and bool(self.telegram_code_input.text().strip()))
 
     def _request_shafa_auth(self) -> None:
         row = self.selected_row()
@@ -792,7 +790,14 @@ class AccountsPage(QWidget):
         self.apply_settings()
         self.shafa_auth_requested.emit(row)
 
-    def _request_telegram_auth(self) -> None:
+    def _request_delete_shafa_session(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Shafa session", "Сначала выберите аккаунт.")
+            return
+        self.shafa_session_delete_requested.emit(row)
+
+    def _request_telegram_code(self) -> None:
         row = self.selected_row()
         if row < 0:
             QMessageBox.information(self, "Telegram auth", "Сначала выберите аккаунт.")
@@ -801,7 +806,19 @@ class AccountsPage(QWidget):
             QMessageBox.information(self, "Telegram auth", "Заполните номер телефона.")
             return
         self.apply_settings()
-        self.telegram_auth_requested.emit(row)
+        self.telegram_code_requested.emit(row)
+
+    def _request_telegram_login(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Telegram auth", "Сначала выберите аккаунт.")
+            return
+        code = self.telegram_code_input.text().strip()
+        if not code:
+            QMessageBox.information(self, "Telegram auth", "Введите код подтверждения.")
+            return
+        self.apply_settings()
+        self.telegram_login_requested.emit(row, code)
 
     def _request_clone_session(self) -> None:
         row = self.selected_row()
@@ -809,6 +826,27 @@ class AccountsPage(QWidget):
             QMessageBox.information(self, "Telegram session", "Сначала выберите аккаунт.")
             return
         self.telegram_session_clone_requested.emit(row)
+
+    def _request_delete_tg_session(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Telegram session", "Сначала выберите аккаунт.")
+            return
+        self.telegram_session_delete_requested.emit(row)
+
+    def _request_import_session(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Telegram session", "Сначала выберите аккаунт.")
+            return
+        self.telegram_session_import_requested.emit(row)
+
+    def _request_export_session(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Telegram session", "Сначала выберите аккаунт.")
+            return
+        self.telegram_session_export_requested.emit(row)
 
 
 class ParsingPage(QWidget):
@@ -1147,18 +1185,42 @@ class LogsPage(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
 
+        filters = QHBoxLayout()
+        self.account_filter = QComboBox()
+        self.account_filter.addItem("Все аккаунты", None)
         self.level = QComboBox()
-        self.level.addItems(["Все", "Ошибки", "Успех", "Инфо"])
-        root.addWidget(self.level)
+        self.level.addItem("Все", "ALL")
+        self.level.addItem("Ошибки", "ERROR")
+        self.level.addItem("Успех", "SUCCESS")
+        self.level.addItem("Инфо", "INFO")
+        filters.addWidget(self.account_filter)
+        filters.addWidget(self.level)
+        root.addLayout(filters)
 
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setMinimumHeight(500)
         root.addWidget(self.output)
 
-    def append(self, text: str) -> None:
-        ts = datetime.now().strftime("%H:%M:%S")
-        self.output.append(f"[{ts}] {text}")
+    def set_accounts(self, accounts: list[Account]) -> None:
+        current_id = self.account_filter.currentData()
+        self.account_filter.blockSignals(True)
+        self.account_filter.clear()
+        self.account_filter.addItem("Все аккаунты", None)
+        for account in accounts:
+            self.account_filter.addItem(account.name, account.id)
+        index = self.account_filter.findData(current_id)
+        self.account_filter.setCurrentIndex(max(index, 0))
+        self.account_filter.blockSignals(False)
+
+    def render_records(self, records: list[LogRecord]) -> None:
+        self.output.setPlainText("\n".join(record.render() for record in records))
+
+    def selected_account_id(self) -> str | None:
+        return self.account_filter.currentData()
+
+    def selected_level(self) -> str:
+        return self.level.currentData() or "ALL"
 
 
 class SettingsPage(QWidget):
@@ -1218,6 +1280,8 @@ def _make_shadow() -> QGraphicsDropShadowEffect:
 
 class MainWindow(QMainWindow):
     DEBUG_PROCESS = False  # Toggle console logging here
+    background_log_signal = Signal(str, object)
+    telegram_auth_finalize_signal = Signal(int, object)
 
     def __init__(self) -> None:
         try:
@@ -1226,12 +1290,16 @@ class MainWindow(QMainWindow):
             self.resize(1440, 900)
 
             self.account_store = AccountStore(STATE_FILE, Account.from_json)
+            self.session_store = AccountSessionStore(BASE_DIR, ACCOUNTS_DIR, STATE_FILE)
             self.accounts: List[Account] = self._load_accounts()
-            # Останавливаем все аккаунты при запуске на всякий случай
-            self.stop_all_accounts()
+            self.log_store = LogStore(RUNTIME_DIR / "logs")
+            self.shafa_auth_service = ShafaAuthService(self.session_store)
+            self.telegram_auth_service = TelegramAuthService(self.session_store, self._run_account_command)
             self.workers: dict[int, Worker] = {}
             self.threads: dict[int, QThread] = {}
             self.process_log_threads: dict[int, threading.Thread] = {}
+            self.telegram_auth_processes: dict[int, subprocess.Popen] = {}
+            self.telegram_auth_states: dict[int, str] = {}
             self.session_started = datetime.now()
             self.success_count = 0
             self.product_count = 0
@@ -1241,7 +1309,10 @@ class MainWindow(QMainWindow):
             self.prev_error_count = 0
 
             self._setup_palette()
+            self.background_log_signal.connect(self.log)
+            self.telegram_auth_finalize_signal.connect(self._finalize_telegram_auth_process)
             self._build_ui()
+            self.stop_all_accounts()
             self._apply_styles()
             self._setup_timer()
             self._refresh_all()
@@ -1260,6 +1331,7 @@ class MainWindow(QMainWindow):
     def _save_accounts(self) -> None:
         try:
             self.account_store.save(self.accounts)
+            self.logs_page.set_accounts(self.accounts)
         except Exception as exc:
             self.log(f"[ERROR] Failed to save accounts state: {exc}")
 
@@ -1377,12 +1449,20 @@ class MainWindow(QMainWindow):
         self.accounts_page.stop_requested.connect(self.stop_accounts)
         self.accounts_page.accounts_changed.connect(self._save_accounts)
         self.accounts_page.shafa_auth_requested.connect(self.authenticate_shafa_account)
-        self.accounts_page.telegram_auth_requested.connect(self.authenticate_telegram_account)
+        self.accounts_page.shafa_session_delete_requested.connect(self.delete_shafa_session)
+        self.accounts_page.telegram_code_requested.connect(self.request_telegram_code)
+        self.accounts_page.telegram_login_requested.connect(self.complete_telegram_login)
         self.accounts_page.telegram_session_clone_requested.connect(self.clone_telegram_session)
+        self.accounts_page.telegram_session_export_requested.connect(self.export_telegram_session)
+        self.accounts_page.telegram_session_import_requested.connect(self.import_telegram_session)
+        self.accounts_page.telegram_session_delete_requested.connect(self.delete_telegram_session)
+        self.logs_page.account_filter.currentIndexChanged.connect(self._refresh_logs)
+        self.logs_page.level.currentIndexChanged.connect(self._refresh_logs)
 
         root.addWidget(self.sidebar)
         root.addWidget(self.pages, 1)
 
+        self.logs_page.set_accounts(self.accounts)
         self._set_page(0)
 
     def _apply_styles(self) -> None:
@@ -1473,8 +1553,17 @@ class MainWindow(QMainWindow):
         runs = [a.last_run for a in self.accounts if a.last_run != "—"]
         return max(runs) if runs else "—"
 
-    def log(self, text: str) -> None:
-        self.logs_page.append(text)
+    def log(self, text: str, account: Optional[Account] = None) -> None:
+        record = LogRecord(
+            timestamp=datetime.now(),
+            message=text,
+            level=LogStore.detect_level(text),
+            account_id=account.id if account else None,
+            account_name=account.name if account else None,
+        )
+        account_log = self.session_store.account_log_file(account) if account else None
+        self.log_store.append(record, account_log_file=account_log)
+        self._refresh_logs()
         self.last_log_ts = datetime.now()
         lower = text.lower()
         is_error = any(token in lower for token in ["[error]", "error", "не удалось", "ошибка"])
@@ -1494,6 +1583,14 @@ class MainWindow(QMainWindow):
         if is_product or is_error:
             self._refresh_stats()
 
+    def _refresh_logs(self) -> None:
+        self.logs_page.render_records(
+            self.log_store.filtered(
+                account_id=self.logs_page.selected_account_id(),
+                level=self.logs_page.selected_level(),
+            )
+        )
+
     def _set_page(self, index: int) -> None:
         for i, btn in enumerate(self.nav_buttons):
             btn.setChecked(i == index)
@@ -1506,12 +1603,13 @@ class MainWindow(QMainWindow):
 
     def _sync_account_auth_status(self, row: int) -> None:
         if row < 0 or row >= len(self.accounts):
-            self.accounts_page.update_auth_status(False, False)
+            self.accounts_page.update_auth_status(False, False, False)
             return
         account = self.accounts[row]
         self.accounts_page.update_auth_status(
-            shafa_ready=self._account_auth_file(account).exists(),
-            telegram_ready=self._account_telegram_session_file(account).exists(),
+            shafa_ready=self.session_store.is_valid_shafa_session(account),
+            telegram_ready=self.session_store.is_valid_telegram_session(account),
+            telegram_pending=self.session_store.has_pending_telegram_code(account),
         )
 
     def delete_accounts(self, rows: List[int]) -> None:
@@ -1531,6 +1629,7 @@ class MainWindow(QMainWindow):
                             proc.kill()
                         except Exception:
                             pass
+                self.session_store.delete_account_data(acc)
                 del self.accounts[row]
         self.accounts_page.refresh()
         self._refresh_stats()
@@ -1544,6 +1643,7 @@ class MainWindow(QMainWindow):
 
     def _read_process_output(self, row: int, proc: subprocess.Popen, account_name: str) -> None:
         try:
+            account = self._account_by_row(row)
             if proc.stdout is None:
                 if self.DEBUG_PROCESS:
                     print(f"[DEBUG] proc.stdout is None for {account_name}")
@@ -1560,7 +1660,7 @@ class MainWindow(QMainWindow):
                 line_count += 1
                 if self.DEBUG_PROCESS and line_count <= 5:  # Показываем первые 5 строк
                     print(f"[PROC:{account_name}] {line}")
-                self.log(f"[{account_name}] {line}")
+                self.background_log_signal.emit(line, account)
             
             if self.DEBUG_PROCESS:
                 print(f"[DEBUG] Finished reading output from {account_name}, total lines: {line_count}")
@@ -1570,7 +1670,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             if self.DEBUG_PROCESS:
                 print(f"[PROC:ERROR] log reader failed for {account_name}: {exc}")
-            self.log(f"[ERROR] log reader failed for {account_name}: {exc}")
+            self.background_log_signal.emit(f"[ERROR] log reader failed for {account_name}: {exc}", account)
 
     # def _run_bootstrap(self, py_bin: str, account_path: Path, account_name: str) -> None:
     #     self.log(f"[BOOTSTRAP] {account_name}: bootstrap.py")
@@ -1595,12 +1695,18 @@ class MainWindow(QMainWindow):
         if acc.process is not None and acc.process.poll() is None:
             if self.DEBUG_PROCESS:
                 print(f"[DEBUG] {acc.name} already running")
-            self.log(f"[RUN] {acc.name} already running")
+            self.log("[RUN] already running", account=acc)
+            return
+        if self._account_auth_file(acc).exists() and not self.session_store.is_valid_shafa_session(acc):
+            self.log("[ERROR] Shafa session is corrupted. Re-login is required.", account=acc)
+            return
+        if self._account_telegram_session_file(acc).exists() and not self.session_store.is_valid_telegram_session(acc):
+            self.log("[ERROR] Telegram session is corrupted. Re-authentication is required.", account=acc)
             return
 
         if self.DEBUG_PROCESS:
             print(f"[DEBUG] Starting {acc.name} on branch {acc.branch}")
-        self.log(f"[RUN] Starting {acc.name} on branch {acc.branch}")
+        self.log(f"[RUN] Starting on branch {acc.branch}", account=acc)
         worker = Worker(row, acc.path, acc.branch)
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -1704,22 +1810,24 @@ class MainWindow(QMainWindow):
                             proc.stdin.flush()
                             proc.stdin.close()
                             self.log(
-                                f"[OK] {account.name} started on {account.branch} with browser={browser_answer}, timer={timer_answer}m (pid={proc.pid})"
+                                f"[OK] started on {account.branch} with browser={browser_answer}, timer={timer_answer}m (pid={proc.pid})",
+                                account=account,
                             )
                             if account.channel_links:
                                 self.log(
-                                    f"[CHANNELS] {account.name}: exported {len(account.channel_links)} link(s) to {channels_file.name}"
+                                    f"[CHANNELS] exported {len(account.channel_links)} link(s) to {channels_file.name}",
+                                    account=account,
                                 )
                         else:
-                            self.log(f"[OK] {account.name} started on {account.branch} (pid={proc.pid})")
+                            self.log(f"[OK] started on {account.branch} (pid={proc.pid})", account=account)
                     except Exception as exc:
                         account.status = "error"
                         account.errors += 1
-                        self.log(f"[ERROR] Failed to start {account.name}: {exc}")
+                        self.log(f"[ERROR] Failed to start {account.name}: {exc}", account=account)
                 else:
                     account.status = "error"
                     account.errors += 1
-                    self.log(f"[ERROR] {account.name}: {info}")
+                    self.log(f"[ERROR] {info}", account=account)
                 self.accounts_page.refresh()
                 self._refresh_stats()
                 self._sync_account_auth_status(r)
@@ -1755,7 +1863,7 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.accounts):
             return
         acc = self.accounts[row]
-        self.log(f"[STOP] Stopping {acc.name}")
+        self.log(f"[STOP] Stopping {acc.name}", account=acc)
 
         if row in self.workers:
             self.workers[row].request_stop()
@@ -1765,13 +1873,13 @@ class MainWindow(QMainWindow):
             try:
                 proc.terminate()
                 proc.wait(timeout=5)
-                self.log(f"[STOP] Process terminated for {acc.name}")
+                self.log(f"[STOP] Process terminated", account=acc)
             except Exception:
                 try:
                     proc.kill()
-                    self.log(f"[STOP] Process killed for {acc.name}")
+                    self.log(f"[STOP] Process killed", account=acc)
                 except Exception as exc:
-                    self.log(f"[ERROR] stop failed: {exc}")
+                    self.log(f"[ERROR] stop failed: {exc}", account=acc)
         acc.process = None
         acc.status = "stopped"
         self.accounts_page.refresh()
@@ -1782,49 +1890,99 @@ class MainWindow(QMainWindow):
         account = self._account_by_row(row)
         if account is None:
             return
-        result = self._run_account_command(account, ["main.py", "--login-shafa"])
-        if result.returncode == 0:
-            self.log(f"[AUTH] Shafa auth saved for {account.name}")
+        env, context = self.shafa_auth_service.create_login_context(account, self._account_env(account))
+        proc = subprocess.Popen(
+            [self._account_python(account), "main.py", "--login-shafa"],
+            cwd=account.path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            env=env,
+        )
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Shafa auth")
+        prompt.setText("Выполните вход в открывшемся окне Shafa, затем нажмите OK для сохранения сессии.")
+        prompt.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        choice = prompt.exec()
+        if choice != QMessageBox.Ok:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+            self.shafa_auth_service.cancel_login(context)
+            self.log("[AUTH] Shafa auth cancelled", account=account)
+            self._sync_account_auth_status(row)
+            return
+
+        self.shafa_auth_service.confirm_login(context)
+        try:
+            output, _ = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            output, _ = proc.communicate()
+        self.shafa_auth_service.clear_context(context)
+        if proc.returncode == 0 and self.session_store.is_valid_shafa_session(account):
+            self.log("[AUTH] Shafa auth saved", account=account)
         else:
-            self.log(f"[ERROR] Shafa auth failed for {account.name}: {self._command_error(result)}")
+            message = output.strip() or f"exit code {proc.returncode}"
+            self.log(f"[ERROR] Shafa auth failed: {message}", account=account)
+        self._save_accounts()
         self._sync_account_auth_status(row)
 
-    def authenticate_telegram_account(self, row: int) -> None:
+    def request_telegram_code(self, row: int) -> None:
         account = self._account_by_row(row)
         if account is None:
             return
         phone = account.phone_number.strip()
         if not phone:
-            self.log(f"[ERROR] Telegram auth requires phone number for {account.name}")
+            self.log("[ERROR] Telegram auth requires phone number.", account=account)
             return
-        send_code_result = self._run_account_command(
-            account,
-            ["main.py", "--telegram-send-code", phone],
-        )
-        if send_code_result.returncode != 0:
-            self.log(
-                f"[ERROR] Telegram code request failed for {account.name}: {self._command_error(send_code_result)}"
-            )
+        existing = self.telegram_auth_processes.get(row)
+        if existing and existing.poll() is None:
+            self.log("[AUTH] Telegram auth already in progress", account=account)
             return
-        code, ok = QInputDialog.getText(
-            self,
-            "Telegram code",
-            f"Введите код Telegram для {account.name}",
+        proc = subprocess.Popen(
+            [self._account_python(account), *self.telegram_auth_service.interactive_command()],
+            cwd=account.path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=self._account_env(account),
         )
-        if not ok or not code.strip():
-            self.log(f"[AUTH] Telegram login cancelled for {account.name}")
-            return
-        login_result = self._run_account_command(
-            account,
-            ["main.py", "--telegram-login-phone", phone, "--telegram-login-code", code.strip()],
-        )
-        if login_result.returncode == 0:
-            self.log(f"[AUTH] Telegram session saved for {account.name}")
-        else:
-            self.log(
-                f"[ERROR] Telegram login failed for {account.name}: {self._command_error(login_result)}"
-            )
+        self.telegram_auth_processes[row] = proc
+        self.telegram_auth_states[row] = "starting"
+        threading.Thread(
+            target=self._read_telegram_auth_output,
+            args=(row, proc, account),
+            daemon=True,
+        ).start()
+        self.log("[AUTH] Telegram session start", account=account)
+        self._save_accounts()
         self._sync_account_auth_status(row)
+
+    def complete_telegram_login(self, row: int, code: str) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        proc = self.telegram_auth_processes.get(row)
+        if proc is None or proc.poll() is not None:
+            self.log("[ERROR] Telegram auth process is not running.", account=account)
+            return
+        if self.telegram_auth_states.get(row) != "awaiting_code":
+            self.log("[ERROR] Telegram code cannot be sent before code request.", account=account)
+            return
+        if proc.stdin is None:
+            self.log("[ERROR] Telegram auth input channel is unavailable.", account=account)
+            return
+        proc.stdin.write(f"{code.strip()}\n")
+        proc.stdin.flush()
+        self.telegram_auth_states[row] = "verifying_code"
+        self.accounts_page.telegram_code_input.clear()
+        self.log("[AUTH] Telegram code input received", account=account)
 
     def clone_telegram_session(self, row: int) -> None:
         target_account = self._account_by_row(row)
@@ -1833,7 +1991,7 @@ class MainWindow(QMainWindow):
         sources = [
             account
             for index, account in enumerate(self.accounts)
-            if index != row and self._account_telegram_session_file(account).exists()
+            if index != row and self.session_store.is_valid_telegram_session(account)
         ]
         if not sources:
             QMessageBox.information(self, "Telegram session", "Нет доступных аккаунтов с Telegram сессией.")
@@ -1850,8 +2008,79 @@ class MainWindow(QMainWindow):
         if not ok or not source_name:
             return
         source_account = next(account for account in sources if account.name == source_name)
-        self._copy_telegram_session(source_account, target_account)
-        self.log(f"[AUTH] Telegram session copied from {source_account.name} to {target_account.name}")
+        self.telegram_auth_service.copy_session(source_account, target_account)
+        self._save_accounts()
+        self.log(f"[AUTH] Telegram session copied from {source_account.name}", account=target_account)
+        self._sync_account_auth_status(row)
+
+    def import_telegram_session(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импортировать TG сессию",
+            str(BASE_DIR),
+            "Telegram Session (*.session);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            self.telegram_auth_service.import_session(account, Path(path))
+        except Exception as exc:
+            self.log(f"[ERROR] Telegram session import failed: {exc}", account=account)
+            return
+        self._save_accounts()
+        self.log("[AUTH] Telegram session imported", account=account)
+        self._sync_account_auth_status(row)
+
+    def export_telegram_session(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспортировать TG сессию",
+            str(BASE_DIR / f"{account.name}.session"),
+            "Telegram Session (*.session)",
+        )
+        if not path:
+            return
+        try:
+            self.telegram_auth_service.export_session(account, Path(path))
+        except Exception as exc:
+            self.log(f"[ERROR] Telegram session export failed: {exc}", account=account)
+            return
+        self.log(f"[AUTH] Telegram session exported to {Path(path).name}", account=account)
+
+    def delete_telegram_session(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        if QMessageBox.question(
+            self,
+            "Удалить TG сессию",
+            f"Удалить Telegram сессию для {account.name}?",
+        ) != QMessageBox.Yes:
+            return
+        self.session_store.delete_telegram_session(account)
+        self._save_accounts()
+        self.log("[AUTH] Telegram session deleted", account=account)
+        self._sync_account_auth_status(row)
+
+    def delete_shafa_session(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        if QMessageBox.question(
+            self,
+            "Удалить Shafa сессию",
+            f"Удалить Shafa сессию для {account.name}?",
+        ) != QMessageBox.Yes:
+            return
+        self.session_store.delete_shafa_session(account)
+        self._save_accounts()
+        self.log("[AUTH] Shafa session deleted", account=account)
         self._sync_account_auth_status(row)
 
     def _account_by_row(self, row: int) -> Optional[Account]:
@@ -1860,24 +2089,22 @@ class MainWindow(QMainWindow):
         return self.accounts[row]
 
     def _account_state_dir(self, account: Account) -> Path:
-        state_dir = ACCOUNTS_DIR / account.id
-        state_dir.mkdir(parents=True, exist_ok=True)
-        return state_dir
+        return self.session_store.account_dir(account)
 
     def _account_auth_file(self, account: Account) -> Path:
-        return self._account_state_dir(account) / "auth.json"
+        return self.session_store.auth_file(account)
 
     def _account_db_file(self, account: Account) -> Path:
-        return self._account_state_dir(account) / "shafa.sqlite3"
+        return self.session_store.db_file(account)
 
     def _account_telegram_session_file(self, account: Account) -> Path:
-        return self._account_state_dir(account) / "telegram.session"
+        return self.session_store.telegram_session_file(account)
 
     def _account_telegram_login_state_file(self, account: Account) -> Path:
-        return self._account_state_dir(account) / "telegram_login_state.json"
+        return self.session_store.telegram_login_state_file(account)
 
     def _account_channels_file(self, account: Account) -> Path:
-        return self._account_state_dir(account) / "shafa_telegram_channels.json"
+        return self.session_store.channels_file(account)
 
     def _account_env(self, account: Account) -> dict[str, str]:
         env = os.environ.copy()
@@ -1918,6 +2145,67 @@ class MainWindow(QMainWindow):
         source_journal = Path(f"{source_file}-journal")
         if source_journal.exists():
             shutil.copy2(source_journal, Path(f"{target_file}-journal"))
+
+    def _read_telegram_auth_output(self, row: int, proc: subprocess.Popen, account: Account) -> None:
+        if proc.stdout is None:
+            self.background_log_signal.emit("[ERROR] Telegram auth output channel is unavailable.", account)
+            return
+        try:
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip("\n")
+                if not line:
+                    continue
+                if line == "TG_AUTH:PHONE_REQUEST":
+                    self.telegram_auth_states[row] = "awaiting_phone"
+                    if proc.stdin is not None:
+                        proc.stdin.write(f"{account.phone_number.strip()}\n")
+                        proc.stdin.flush()
+                        self.background_log_signal.emit("[AUTH] Phone submission sent", account)
+                    continue
+                if line == "TG_AUTH:PHONE_RECEIVED":
+                    self.telegram_auth_states[row] = "phone_submitted"
+                    self.background_log_signal.emit("[AUTH] Phone submission acknowledged", account)
+                    continue
+                if line == "TG_AUTH:CODE_REQUESTED":
+                    self.telegram_auth_states[row] = "awaiting_code"
+                    self.background_log_signal.emit("[AUTH] Code request sent", account)
+                    continue
+                if line == "TG_AUTH:CODE_RECEIVED":
+                    self.background_log_signal.emit("[AUTH] Code received by terminal session", account)
+                    continue
+                if line == "TG_AUTH:SUCCESS":
+                    self.telegram_auth_states[row] = "completed"
+                    self.background_log_signal.emit("[AUTH] Telegram session saved", account)
+                    self.telegram_auth_finalize_signal.emit(row, account)
+                    continue
+                if line.startswith("TG_AUTH:ERROR:"):
+                    self.telegram_auth_states[row] = "error"
+                    details = line.split("TG_AUTH:ERROR:", 1)[1]
+                    self.background_log_signal.emit(f"[ERROR] Telegram auth failed: {details}", account)
+                    self.telegram_auth_finalize_signal.emit(row, account)
+                    continue
+                self.background_log_signal.emit(line, account)
+        except Exception as exc:
+            self.background_log_signal.emit(f"[ERROR] Telegram auth crashed: {exc}", account)
+        finally:
+            if proc.poll() is not None:
+                if self.telegram_auth_states.get(row) not in {"completed", "error"}:
+                    self.background_log_signal.emit(
+                        f"[ERROR] Telegram auth process exited unexpectedly with code {proc.returncode}",
+                        account,
+                    )
+                self.telegram_auth_finalize_signal.emit(row, account)
+
+    def _finalize_telegram_auth_process(self, row: int, account: Account) -> None:
+        proc = self.telegram_auth_processes.pop(row, None)
+        self.telegram_auth_states.pop(row, None)
+        if proc and proc.stdin:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+        self._save_accounts()
+        self._sync_account_auth_status(row)
 
     def _refresh_all(self) -> None:
         self.accounts_page.refresh()

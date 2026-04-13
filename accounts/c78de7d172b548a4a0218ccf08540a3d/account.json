@@ -1,0 +1,15 @@
+{
+  "id": "c78de7d172b548a4a0218ccf08540a3d",
+  "name": "shafa",
+  "phone_number": "",
+  "project_path": "/home/slava/shafa_app/shafa",
+  "branch": "main",
+  "browser_session_path": "/home/slava/shafa_app/accounts/c78de7d172b548a4a0218ccf08540a3d/auth.json",
+  "browser_session_valid": true,
+  "telegram_session_path": "/home/slava/shafa_app/accounts/c78de7d172b548a4a0218ccf08540a3d/telegram.session",
+  "telegram_session_valid": true,
+  "telegram_login_state_path": "/home/slava/shafa_app/accounts/c78de7d172b548a4a0218ccf08540a3d/telegram_login_state.json",
+  "telegram_login_pending": false,
+  "telegram_channels_path": "/home/slava/shafa_app/accounts/c78de7d172b548a4a0218ccf08540a3d/shafa_telegram_channels.json",
+  "logs_path": "/home/slava/shafa_app/accounts/c78de7d172b548a4a0218ccf08540a3d/logs/app.log"
+}
