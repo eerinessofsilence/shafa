@@ -7,6 +7,31 @@ from typing import Iterable
 
 from .models import Account
 
+PENDING_TELEGRAM_AUTH_STEPS = {
+    "WAIT_PHONE",
+    "WAIT_CODE",
+}
+
+TELEGRAM_AUTH_STEP_ALIASES = {
+    "": "INIT",
+    "IDLE": "INIT",
+    "INIT": "INIT",
+    "WAIT_PHONE": "WAIT_PHONE",
+    "WAIT_PHONE_INPUT": "WAIT_PHONE",
+    "PHONE_RECEIVED": "WAIT_PHONE",
+    "PHONE_SUBMITTED": "WAIT_PHONE",
+    "SENDING_CODE": "WAIT_PHONE",
+    "WAIT_CODE": "WAIT_CODE",
+    "WAIT_CODE_INPUT": "WAIT_CODE",
+    "WAITING_FOR_CODE": "WAIT_CODE",
+    "AWAITING_CODE_INPUT": "WAIT_CODE",
+    "CODE_RECEIVED": "WAIT_CODE",
+    "VERIFYING": "WAIT_CODE",
+    "VERIFYING_CODE": "WAIT_CODE",
+    "SUCCESS": "SUCCESS",
+    "FAILED": "FAILED",
+}
+
 
 class AccountSessionStore:
     def __init__(
@@ -53,6 +78,7 @@ class AccountSessionStore:
             "project_path": account.path,
             "branch": account.branch,
             "browser_session_path": str(self.auth_file(account)),
+            "shafa_session_path": str(self.auth_file(account)),
             "browser_session_valid": self.is_valid_shafa_session(account),
             "telegram_session_path": str(self.telegram_session_file(account)),
             "telegram_session_valid": self.is_valid_telegram_session(account),
@@ -96,7 +122,20 @@ class AccountSessionStore:
         return self.logs_dir(account) / "app.log"
 
     def has_pending_telegram_code(self, account: Account) -> bool:
-        return self.telegram_login_state_file(account).exists()
+        path = self.telegram_login_state_file(account)
+        if not path.exists():
+            return False
+        if self.is_valid_telegram_session(account):
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        step = TELEGRAM_AUTH_STEP_ALIASES.get(
+            str(payload.get("current_auth_step") or "").strip().upper(),
+            "INIT",
+        )
+        return step in PENDING_TELEGRAM_AUTH_STEPS
 
     def is_valid_shafa_session(self, account: Account) -> bool:
         path = self.auth_file(account)
@@ -156,6 +195,14 @@ class AccountSessionStore:
         source_journal = Path(f"{source_file}-journal")
         if source_journal.exists():
             shutil.copy2(source_journal, Path(f"{target_file}-journal"))
+        self.write_account_manifest(target)
+
+    def copy_shafa_session(self, source: Account, target: Account) -> None:
+        if not self.is_valid_shafa_session(source):
+            raise RuntimeError("Source Shafa session is invalid.")
+        target_file = self.auth_file(target)
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.auth_file(source), target_file)
         self.write_account_manifest(target)
 
     def import_telegram_session(self, account: Account, source_path: Path) -> None:

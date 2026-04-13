@@ -14,6 +14,7 @@ class Account:
     name: str
     path: str
     phone_number: str = ""
+    telegram_password: str = ""
     branch: str = "main"
     open_browser: bool = False
     timer_minutes: int = 5
@@ -29,6 +30,7 @@ class Account:
             "name": self.name,
             "path": self.path,
             "phone_number": self.phone_number,
+            "telegram_password": self.telegram_password,
             "branch": self.branch,
             "open_browser": self.open_browser,
             "timer_minutes": self.timer_minutes,
@@ -45,6 +47,7 @@ class Account:
             name=data.get("name", "unknown"),
             path=data.get("path", ""),
             phone_number=str(data.get("phone_number") or ""),
+            telegram_password=str(data.get("telegram_password") or ""),
             branch=data.get("branch", "main"),
             open_browser=bool(data.get("open_browser", False)),
             timer_minutes=int(data.get("timer_minutes", 5)),

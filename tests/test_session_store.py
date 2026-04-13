@@ -72,7 +72,7 @@ def test_session_store_validates_and_deletes_sessions(tmp_path: Path) -> None:
 
     assert store.is_valid_shafa_session(account) is True
     assert store.is_valid_telegram_session(account) is True
-    assert store.has_pending_telegram_code(account) is True
+    assert store.has_pending_telegram_code(account) is False
 
     store.delete_shafa_session(account)
     store.delete_telegram_session(account)
@@ -103,3 +103,37 @@ def test_session_store_copies_imports_and_exports_telegram_sessions(tmp_path: Pa
     imported_target = Account(id="imp", name="Imported", path="/tmp/project")
     store.import_telegram_session(imported_target, exported)
     assert store.is_valid_telegram_session(imported_target) is True
+
+
+def test_has_pending_telegram_code_only_for_active_auth_steps(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    account = Account(id="acc", name="Test", path="/tmp/project")
+    state_file = store.telegram_login_state_file(account)
+
+    state_file.write_text('{"current_auth_step":"IDLE"}', encoding="utf-8")
+    assert store.has_pending_telegram_code(account) is False
+
+    state_file.write_text('{"current_auth_step":"WAIT_CODE_INPUT"}', encoding="utf-8")
+    assert store.has_pending_telegram_code(account) is True
+
+    state_file.write_text('{"current_auth_step":"FAILED"}', encoding="utf-8")
+    assert store.has_pending_telegram_code(account) is False
+
+
+def test_session_store_copies_shafa_session(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    source = Account(id="src", name="Source", path="/tmp/project")
+    target = Account(id="dst", name="Target", path="/tmp/project")
+    store.auth_file(source).write_text('{"cookies":[{"name":"csrftoken"}]}', encoding="utf-8")
+
+    store.copy_shafa_session(source, target)
+
+    assert store.is_valid_shafa_session(target) is True

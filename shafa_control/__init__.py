@@ -4,7 +4,7 @@ from .log_store import LogRecord, LogStore
 from .models import Account
 from .shafa_auth import ShafaAuthService, ShafaLoginContext
 from .session_store import AccountSessionStore
-from .telegram_auth import CommandRunner, TelegramAuthService, TelegramAuthStatus
+from .telegram_auth import CommandRunner, TelegramAuthRuntime, TelegramAuthService, TelegramAuthStatus
 
 __all__ = [
     "APP_MODES",
@@ -19,6 +19,7 @@ __all__ = [
     "LogStore",
     "ShafaAuthService",
     "ShafaLoginContext",
+    "TelegramAuthRuntime",
     "TelegramAuthService",
     "TelegramAuthStatus",
     "validate_mode",

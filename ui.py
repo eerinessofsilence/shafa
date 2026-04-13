@@ -52,6 +52,7 @@ from shafa_control import (
     LogRecord,
     LogStore,
     ShafaAuthService,
+    TelegramAuthRuntime,
     TelegramAuthService,
 )
 from telegram_channels import export_runtime_config, sanitize_channel_links
@@ -338,6 +339,7 @@ class AccountsPage(QWidget):
     run_requested = Signal(list)
     stop_requested = Signal(list)
     delete_requested = Signal(list)
+    account_added = Signal(int)
     accounts_changed = Signal()
     shafa_auth_requested = Signal(int)
     shafa_session_delete_requested = Signal(int)
@@ -433,6 +435,9 @@ class AccountsPage(QWidget):
         self.phone_input.setPlaceholderText("+380...")
         self.telegram_code_input = QLineEdit()
         self.telegram_code_input.setPlaceholderText("Код подтверждения")
+        self.telegram_password_input = QLineEdit()
+        self.telegram_password_input.setPlaceholderText("Telegram password")
+        self.telegram_password_input.setEchoMode(QLineEdit.Password)
 
         self.browser_toggle = QCheckBox("Открывать с браузером")
         self.browser_toggle.setCursor(Qt.PointingHandCursor)
@@ -493,7 +498,7 @@ class AccountsPage(QWidget):
         self.apply_btn.setCursor(Qt.PointingHandCursor)
         self.shafa_auth_btn = QPushButton("Войти в Shafa")
         self.telegram_auth_btn = QPushButton("Запросить код Telegram")
-        self.telegram_login_btn = QPushButton("Подтвердить TG сессию")
+        self.telegram_login_btn = QPushButton("OK")
         self.clone_session_btn = QPushButton("Копировать TG сессию")
         self.export_tg_session_btn = QPushButton("Экспортировать TG сессию")
         self.import_tg_session_btn = QPushButton("Импортировать TG сессию")
@@ -508,6 +513,8 @@ class AccountsPage(QWidget):
         config_layout.addWidget(self.phone_input)
         config_layout.addWidget(QLabel("Код Telegram"))
         config_layout.addWidget(self.telegram_code_input)
+        config_layout.addWidget(QLabel("Пароль Telegram"))
+        config_layout.addWidget(self.telegram_password_input)
         config_layout.addWidget(self.shafa_auth_btn)
         config_layout.addWidget(self.delete_shafa_session_btn)
         config_layout.addWidget(self.telegram_auth_btn)
@@ -541,6 +548,7 @@ class AccountsPage(QWidget):
         self.project_browse_btn.clicked.connect(self.select_project_directory)
         self.phone_input.textChanged.connect(self._sync_telegram_button_state)
         self.telegram_code_input.textChanged.connect(self._sync_telegram_button_state)
+        self.telegram_password_input.textChanged.connect(self._sync_telegram_button_state)
         self.shafa_auth_btn.clicked.connect(self._request_shafa_auth)
         self.delete_shafa_session_btn.clicked.connect(self._request_delete_shafa_session)
         self.telegram_auth_btn.clicked.connect(self._request_telegram_code)
@@ -648,6 +656,7 @@ class AccountsPage(QWidget):
             self.project_path_edit.clear()
             self.phone_input.clear()
             self.telegram_code_input.clear()
+            self.telegram_password_input.clear()
             self.channel_links.clear()
             self.update_auth_status(False, False, False)
             self._sync_telegram_button_state()
@@ -656,6 +665,7 @@ class AccountsPage(QWidget):
         self.project_path_edit.setText(acc.path)
         self.phone_input.setText(acc.phone_number)
         self.telegram_code_input.clear()
+        self.telegram_password_input.setText(acc.telegram_password)
         self.branch_combo.setCurrentText(acc.branch)
         self.browser_toggle.setChecked(acc.open_browser)
         self.timer_spin.setValue(acc.timer_minutes)
@@ -674,6 +684,7 @@ class AccountsPage(QWidget):
         acc.branch = self.branch_combo.currentText()
         acc.path = self.project_path_edit.text().strip() or acc.path
         acc.phone_number = self.phone_input.text().strip()
+        acc.telegram_password = self.telegram_password_input.text().strip()
         acc.open_browser = self.browser_toggle.isChecked()
         acc.timer_minutes = int(self.timer_spin.value())
         acc.channel_links = sanitize_channel_links(
@@ -698,6 +709,7 @@ class AccountsPage(QWidget):
         self.refresh()
         self._select_row(len(self.accounts) - 1)
         self.log.emit(f"[ADD] Added account: {clean_name}")
+        self.account_added.emit(len(self.accounts) - 1)
         self.accounts_changed.emit()
 
     def delete_selected_accounts(self) -> None:
@@ -819,9 +831,10 @@ class AccountsPage(QWidget):
         self.telegram_auth_status.setText(telegram_text)
 
     def _sync_telegram_button_state(self) -> None:
-        has_phone = bool(self.phone_input.text().strip())
-        self.telegram_auth_btn.setEnabled(has_phone)
-        self.telegram_login_btn.setEnabled(has_phone and bool(self.telegram_code_input.text().strip()))
+        phone_status = TelegramAuthService.validate_phone(self.phone_input.text())
+        code_status = TelegramAuthService.validate_code(self.telegram_code_input.text())
+        self.telegram_auth_btn.setEnabled(phone_status.ok)
+        self.telegram_login_btn.setEnabled(phone_status.ok and code_status.ok)
 
     def _request_shafa_auth(self) -> None:
         row = self.selected_row()
@@ -855,8 +868,8 @@ class AccountsPage(QWidget):
             QMessageBox.information(self, "Telegram auth", "Сначала выберите аккаунт.")
             return
         code = self.telegram_code_input.text().strip()
-        if not code:
-            QMessageBox.information(self, "Telegram auth", "Введите код подтверждения.")
+        if not TelegramAuthService.validate_code(code).ok:
+            QMessageBox.information(self, "Telegram auth", "Введите корректный 5- или 6-значный код.")
             return
         self.apply_settings()
         self.telegram_login_requested.emit(row, code)
@@ -1361,6 +1374,7 @@ class MainWindow(QMainWindow):
     DEBUG_PROCESS = False  # Toggle console logging here
     background_log_signal = Signal(str, object)
     telegram_auth_finalize_signal = Signal(int, object)
+    telegram_auth_retry_signal = Signal(int, int)
 
     def __init__(self) -> None:
         try:
@@ -1382,6 +1396,7 @@ class MainWindow(QMainWindow):
             self.process_log_threads: dict[int, threading.Thread] = {}
             self.telegram_auth_processes: dict[int, subprocess.Popen] = {}
             self.telegram_auth_states: dict[int, str] = {}
+            self.telegram_auth_runtimes: dict[int, TelegramAuthRuntime] = {}
             self.session_started = datetime.now()
             self.success_count = 0
             self.product_count = 0
@@ -1393,7 +1408,12 @@ class MainWindow(QMainWindow):
             self._setup_palette()
             self.background_log_signal.connect(self.log)
             self.telegram_auth_finalize_signal.connect(self._finalize_telegram_auth_process)
+            self.telegram_auth_retry_signal.connect(self._restart_telegram_auth_attempt)
             self._build_ui()
+            self.accounts_page.selection_changed.connect(self._restore_account_auth_form_state)
+            self.accounts_page.phone_input.textChanged.connect(self._persist_selected_phone_input)
+            self.accounts_page.telegram_code_input.textChanged.connect(self._persist_selected_code_input)
+            self.accounts_page.telegram_password_input.textChanged.connect(self._persist_selected_password_input)
             self.stop_all_accounts()
             self._apply_styles()
             self._setup_timer()
@@ -1539,6 +1559,7 @@ class MainWindow(QMainWindow):
         self.accounts_page.run_requested.connect(self.run_accounts)
         self.accounts_page.stop_requested.connect(self.stop_accounts)
         self.accounts_page.accounts_changed.connect(self._save_accounts)
+        self.accounts_page.account_added.connect(self._offer_session_reuse_for_new_account)
         self.accounts_page.shafa_auth_requested.connect(self.authenticate_shafa_account)
         self.accounts_page.shafa_session_delete_requested.connect(self.delete_shafa_session)
         self.accounts_page.telegram_code_requested.connect(self.request_telegram_code)
@@ -1687,6 +1708,70 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _log_telegram_state(self, account: Account, state: str, attempt: int, detail: str = "") -> None:
+        payload = {
+            "state": state,
+            "attempt": attempt,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "session_id": account.id,
+        }
+        if detail:
+            payload["detail"] = detail
+        self.background_log_signal.emit(f"[TG_STATE] {json.dumps(payload, ensure_ascii=False)}", account)
+
+    def _restore_account_auth_form_state(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        state = self.telegram_auth_service.load_auth_state(account)
+        phone_value = state.get("phone_number", "").strip() or account.phone_number.strip()
+        code_value = state.get("verification_code", "").strip()
+        password_value = state.get("telegram_password", "").strip() or account.telegram_password.strip()
+        self.accounts_page.phone_input.blockSignals(True)
+        self.accounts_page.telegram_code_input.blockSignals(True)
+        self.accounts_page.telegram_password_input.blockSignals(True)
+        self.accounts_page.phone_input.setText(phone_value)
+        self.accounts_page.telegram_code_input.setText(code_value)
+        self.accounts_page.telegram_password_input.setText(password_value)
+        self.accounts_page.phone_input.blockSignals(False)
+        self.accounts_page.telegram_code_input.blockSignals(False)
+        self.accounts_page.telegram_password_input.blockSignals(False)
+        self.accounts_page._sync_telegram_button_state()
+
+    def _persist_selected_phone_input(self, value: str) -> None:
+        account = self.accounts_page.selected_account()
+        if account is None:
+            return
+        normalized_phone = TelegramAuthService.normalize_phone(value)
+        account.phone_number = normalized_phone or value.strip()
+        self.telegram_auth_service.persist_auth_state(
+            account,
+            phone_number=normalized_phone or value,
+            current_auth_step=self.telegram_auth_service.load_auth_state(account).get("current_auth_step", "INIT"),
+        )
+
+    def _persist_selected_code_input(self, value: str) -> None:
+        account = self.accounts_page.selected_account()
+        if account is None:
+            return
+        self.telegram_auth_service.persist_auth_state(
+            account,
+            verification_code=value,
+            current_auth_step=self.telegram_auth_service.load_auth_state(account).get("current_auth_step", "INIT"),
+            code_confirmed=False,
+        )
+
+    def _persist_selected_password_input(self, value: str) -> None:
+        account = self.accounts_page.selected_account()
+        if account is None:
+            return
+        account.telegram_password = value.strip()
+        self.telegram_auth_service.persist_auth_state(
+            account,
+            telegram_password=value,
+            current_auth_step=self.telegram_auth_service.load_auth_state(account).get("current_auth_step", "INIT"),
+        )
+
     def set_app_mode(self, mode: str) -> None:
         try:
             self.app_config = AppConfig(mode=mode)
@@ -1696,6 +1781,50 @@ class MainWindow(QMainWindow):
             return
         self._save_app_config()
         self.log(f"[CONFIG] Application mode set to {self.app_config.mode}")
+
+    def _offer_session_reuse_for_new_account(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        sources = [
+            source
+            for index, source in enumerate(self.accounts)
+            if index != row and (
+                self.session_store.is_valid_telegram_session(source)
+                or self.session_store.is_valid_shafa_session(source)
+            )
+        ]
+        if not sources:
+            return
+        if QMessageBox.question(
+            self,
+            "Переиспользовать сессии",
+            f"Скопировать существующие сессии в новый аккаунт {account.name}?",
+        ) != QMessageBox.Yes:
+            return
+        labels = [source.name for source in sources]
+        source_name, ok = QInputDialog.getItem(
+            self,
+            "Источник сессий",
+            "Выберите аккаунт-источник",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not source_name:
+            return
+        source_account = next(item for item in sources if item.name == source_name)
+        reused = []
+        if self.session_store.is_valid_telegram_session(source_account):
+            self.telegram_auth_service.copy_session(source_account, account)
+            reused.append("Telegram")
+        if self.session_store.is_valid_shafa_session(source_account):
+            self.session_store.copy_shafa_session(source_account, account)
+            reused.append("Shafa")
+        if reused:
+            self._save_accounts()
+            self.log(f"[AUTH] Reused sessions from {source_account.name}: {', '.join(reused)}", account=account)
+            self._sync_account_auth_status(row)
 
     def save_channel_template(self, row: int, name: str) -> None:
         account = self._account_by_row(row)
@@ -2021,6 +2150,10 @@ class MainWindow(QMainWindow):
         account = self._account_by_row(row)
         if account is None:
             return
+        if self.session_store.is_valid_shafa_session(account):
+            self.log("[AUTH] Reusing existing Shafa session", account=account)
+            self._sync_account_auth_status(row)
+            return
         env, context = self.shafa_auth_service.create_login_context(account, self._account_env(account))
         proc = subprocess.Popen(
             [self._account_python(account), "main.py", "--login-shafa"],
@@ -2066,54 +2199,53 @@ class MainWindow(QMainWindow):
         account = self._account_by_row(row)
         if account is None:
             return
-        phone = account.phone_number.strip()
-        if not phone:
-            self.log("[ERROR] Telegram auth requires phone number.", account=account)
+        reuse_status = self.telegram_auth_service.reuse_status(account)
+        if reuse_status is not None:
+            self.log(f"[AUTH] {reuse_status.message}", account=account)
+            self._sync_account_auth_status(row)
             return
+        phone_status = self.telegram_auth_service.validate_phone(self.accounts_page.phone_input.text())
+        if not phone_status.ok:
+            self.log(f"[ERROR] {phone_status.message}", account=account)
+            return
+        state = self.telegram_auth_service.persist_auth_state(
+            account,
+            phone_number=phone_status.message,
+            verification_code="",
+            telegram_password=self.accounts_page.telegram_password_input.text(),
+            current_auth_step="WAIT_PHONE",
+            code_confirmed=False,
+        )
         existing = self.telegram_auth_processes.get(row)
         if existing and existing.poll() is None:
             self.log("[AUTH] Telegram auth already in progress", account=account)
             return
-        proc = subprocess.Popen(
-            [self._account_python(account), *self.telegram_auth_service.interactive_command()],
-            cwd=account.path,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=self._account_env(account),
-        )
-        self.telegram_auth_processes[row] = proc
-        self.telegram_auth_states[row] = "starting"
-        threading.Thread(
-            target=self._read_telegram_auth_output,
-            args=(row, proc, account),
-            daemon=True,
-        ).start()
         self.log("[AUTH] Telegram session start", account=account)
-        self._save_accounts()
-        self._sync_account_auth_status(row)
+        self._start_telegram_auth_attempt(row, account, attempt=1)
 
     def complete_telegram_login(self, row: int, code: str) -> None:
         account = self._account_by_row(row)
         if account is None:
             return
+        code_status = self.telegram_auth_service.validate_code(code)
+        if not code_status.ok:
+            self.log(f"[ERROR] {code_status.message}", account=account)
+            return
         proc = self.telegram_auth_processes.get(row)
         if proc is None or proc.poll() is not None:
             self.log("[ERROR] Telegram auth process is not running.", account=account)
             return
-        if self.telegram_auth_states.get(row) != "awaiting_code":
-            self.log("[ERROR] Telegram code cannot be sent before code request.", account=account)
-            return
-        if proc.stdin is None:
-            self.log("[ERROR] Telegram auth input channel is unavailable.", account=account)
-            return
-        proc.stdin.write(f"{code.strip()}\n")
-        proc.stdin.flush()
-        self.telegram_auth_states[row] = "verifying_code"
-        self.accounts_page.telegram_code_input.clear()
-        self.log("[AUTH] Telegram code input received", account=account)
+        self.telegram_auth_service.persist_auth_state(
+            account,
+            verification_code=code_status.message,
+            current_auth_step=self.telegram_auth_service.load_auth_state(account).get("current_auth_step", "WAIT_CODE"),
+            code_confirmed=True,
+        )
+        if self.telegram_auth_states.get(row) == "AWAITING_CODE_INPUT":
+            self._write_telegram_auth_input(proc, code_status.message, "verification code", account)
+            self.log("[AUTH] Telegram code confirmed and queued for verification", account=account)
+        else:
+            self.log("[AUTH] Telegram code saved and waiting for Telegram code step", account=account)
 
     def clone_telegram_session(self, row: int) -> None:
         target_account = self._account_by_row(row)
@@ -2195,6 +2327,7 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.Yes:
             return
         self.session_store.delete_telegram_session(account)
+        self.telegram_auth_service.clear_auth_state(account)
         self._save_accounts()
         self.log("[AUTH] Telegram session deleted", account=account)
         self._sync_account_auth_status(row)
@@ -2287,32 +2420,131 @@ class MainWindow(QMainWindow):
                 line = raw_line.rstrip("\n")
                 if not line:
                     continue
-                if line == "TG_AUTH:PHONE_REQUEST":
-                    self.telegram_auth_states[row] = "awaiting_phone"
-                    if proc.stdin is not None:
-                        proc.stdin.write(f"{account.phone_number.strip()}\n")
-                        proc.stdin.flush()
-                        self.background_log_signal.emit("[AUTH] Phone submission sent", account)
+                runtime = self.telegram_auth_runtimes.get(row)
+                if self._is_phone_prompt(line):
+                    if runtime is not None:
+                        status = runtime.transition("PHONE_PROMPT")
+                        self.telegram_auth_states[row] = runtime.state
+                        if status and not status.ok:
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
+                            self._terminate_telegram_auth_process(row)
+                            continue
+                        self.background_log_signal.emit("[AUTH] Phone prompt detected", account)
+                        self._log_telegram_state(account, runtime.state, runtime.attempt, "Phone prompt detected")
+                    state = self.telegram_auth_service.load_auth_state(account)
+                    phone_value = state.get("phone_number", "").strip() or account.phone_number.strip()
+                    phone_status = self.telegram_auth_service.validate_phone(phone_value)
+                    if not phone_status.ok:
+                        self.background_log_signal.emit(f"[ERROR] {phone_status.message}", account)
+                        self.telegram_auth_service.persist_auth_state(
+                            account,
+                            phone_number=phone_value,
+                            current_auth_step="FAILED",
+                            code_confirmed=False,
+                        )
+                        self._terminate_telegram_auth_process(row)
+                        continue
+                    self.telegram_auth_service.persist_auth_state(
+                        account,
+                        phone_number=phone_status.message,
+                        current_auth_step="WAIT_PHONE",
+                        code_confirmed=False,
+                    )
+                    self.background_log_signal.emit(f"[AUTH] Phone ready for Telegram: {phone_status.message}", account)
+                    self._write_telegram_auth_input(proc, phone_status.message, "phone", account)
                     continue
                 if line == "TG_AUTH:PHONE_RECEIVED":
-                    self.telegram_auth_states[row] = "phone_submitted"
                     self.background_log_signal.emit("[AUTH] Phone submission acknowledged", account)
                     continue
-                if line == "TG_AUTH:CODE_REQUESTED":
-                    self.telegram_auth_states[row] = "awaiting_code"
+                if self._is_code_prompt(line):
+                    if runtime is not None:
+                        status = runtime.transition("CODE_PROMPT")
+                        self.telegram_auth_states[row] = runtime.state
+                        if status and not status.ok:
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
+                            self._terminate_telegram_auth_process(row)
+                            continue
+                        state = self.telegram_auth_service.load_auth_state(account)
+                        self.telegram_auth_service.persist_auth_state(
+                            account,
+                            verification_code=state.get("verification_code", ""),
+                            current_auth_step="WAIT_CODE",
+                            code_confirmed=state.get("code_confirmed", False),
+                        )
+                        self._log_telegram_state(account, runtime.state, runtime.attempt, "Code prompt detected")
+                        code_status = self.telegram_auth_service.validate_code(state.get("verification_code", ""))
+                        if state.get("code_confirmed", False) and code_status.ok:
+                            self._write_telegram_auth_input(proc, code_status.message, "verification code", account)
                     self.background_log_signal.emit("[AUTH] Code request sent", account)
                     continue
+                if self._is_password_prompt(line):
+                    state = self.telegram_auth_service.load_auth_state(account)
+                    password_status = self.telegram_auth_service.validate_password(
+                        state.get("telegram_password", "") or account.telegram_password
+                    )
+                    if not password_status.ok:
+                        self.background_log_signal.emit(f"[ERROR] {password_status.message}", account)
+                        self.telegram_auth_service.persist_auth_state(
+                            account,
+                            current_auth_step="FAILED",
+                            telegram_password="",
+                            code_confirmed=False,
+                        )
+                        self._terminate_telegram_auth_process(row)
+                        continue
+                    self.telegram_auth_service.persist_auth_state(
+                        account,
+                        telegram_password=password_status.message,
+                        current_auth_step="WAIT_CODE",
+                        code_confirmed=True,
+                    )
+                    self._write_telegram_auth_input(proc, password_status.message, "password", account)
+                    self.background_log_signal.emit("[AUTH] Password prompt handled", account)
+                    continue
                 if line == "TG_AUTH:CODE_RECEIVED":
+                    if runtime is not None:
+                        status = runtime.transition("CODE_SENT")
+                        self.telegram_auth_states[row] = runtime.state
+                        self.telegram_auth_service.persist_auth_state(
+                            account,
+                            current_auth_step="WAIT_CODE",
+                            code_confirmed=True,
+                        )
+                        self._log_telegram_state(account, runtime.state, runtime.attempt, "Verification code accepted")
+                        if status and not status.ok:
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
+                            self.telegram_auth_finalize_signal.emit(row, account)
+                            continue
                     self.background_log_signal.emit("[AUTH] Code received by terminal session", account)
                     continue
                 if line == "TG_AUTH:SUCCESS":
-                    self.telegram_auth_states[row] = "completed"
+                    if runtime is not None:
+                        status = runtime.transition("SUCCESS")
+                        self.telegram_auth_states[row] = runtime.state
+                        state = self.telegram_auth_service.load_auth_state(account)
+                        self.telegram_auth_service.persist_auth_state(
+                            account,
+                            phone_number=state.get("phone_number", account.phone_number),
+                            verification_code=state.get("verification_code", ""),
+                            current_auth_step="SUCCESS",
+                            code_confirmed=False,
+                            extra={"phone_code_hash": state.get("phone_code_hash", "")},
+                        )
+                        self._log_telegram_state(account, runtime.state, runtime.attempt, "Authentication completed")
+                        if status and not status.ok:
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
+                            self.telegram_auth_finalize_signal.emit(row, account)
+                            continue
                     self.background_log_signal.emit("[AUTH] Telegram session saved", account)
                     self.telegram_auth_finalize_signal.emit(row, account)
                     continue
                 if line.startswith("TG_AUTH:ERROR:"):
-                    self.telegram_auth_states[row] = "error"
                     details = line.split("TG_AUTH:ERROR:", 1)[1]
+                    if runtime is not None:
+                        runtime.transition("ERROR")
+                        self.telegram_auth_states[row] = runtime.state
+                        self.telegram_auth_service.persist_auth_state(account, current_auth_step="FAILED", code_confirmed=False)
+                        self._log_telegram_state(account, runtime.state, runtime.attempt, details)
                     self.background_log_signal.emit(f"[ERROR] Telegram auth failed: {details}", account)
                     self.telegram_auth_finalize_signal.emit(row, account)
                     continue
@@ -2321,7 +2553,7 @@ class MainWindow(QMainWindow):
             self.background_log_signal.emit(f"[ERROR] Telegram auth crashed: {exc}", account)
         finally:
             if proc.poll() is not None:
-                if self.telegram_auth_states.get(row) not in {"completed", "error"}:
+                if self.telegram_auth_states.get(row) not in {"SUCCESS", "FAILED"}:
                     self.background_log_signal.emit(
                         f"[ERROR] Telegram auth process exited unexpectedly with code {proc.returncode}",
                         account,
@@ -2331,6 +2563,7 @@ class MainWindow(QMainWindow):
     def _finalize_telegram_auth_process(self, row: int, account: Account) -> None:
         proc = self.telegram_auth_processes.pop(row, None)
         self.telegram_auth_states.pop(row, None)
+        self.telegram_auth_runtimes.pop(row, None)
         if proc and proc.stdin:
             try:
                 proc.stdin.close()
@@ -2338,6 +2571,132 @@ class MainWindow(QMainWindow):
                 pass
         self._save_accounts()
         self._sync_account_auth_status(row)
+
+    def _terminate_telegram_auth_process(self, row: int) -> None:
+        proc = self.telegram_auth_processes.get(row)
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def _telegram_auth_watchdog(self, row: int, account: Account) -> None:
+        while True:
+            time.sleep(0.2)
+            proc = self.telegram_auth_processes.get(row)
+            runtime = self.telegram_auth_runtimes.get(row)
+            if proc is None or runtime is None:
+                return
+            timeout_status = runtime.timeout_status()
+            if timeout_status is None:
+                if proc.poll() is not None:
+                    return
+                continue
+            self.background_log_signal.emit(f"[ERROR] {timeout_status.message}", account)
+            self.telegram_auth_service.persist_auth_state(account, current_auth_step="FAILED", code_confirmed=False)
+            self._log_telegram_state(account, runtime.state, runtime.attempt, timeout_status.message)
+            self._terminate_telegram_auth_process(row)
+            if runtime.can_retry():
+                next_attempt = runtime.attempt + 1
+                self.background_log_signal.emit(
+                    f"[AUTH] Retrying Telegram authentication (attempt {next_attempt})",
+                    account,
+                )
+                self.telegram_auth_finalize_signal.emit(row, account)
+                self.telegram_auth_retry_signal.emit(row, next_attempt)
+            else:
+                self.telegram_auth_finalize_signal.emit(row, account)
+            return
+
+    def _start_telegram_auth_attempt(self, row: int, account: Account, attempt: int = 1) -> None:
+        runtime = self.telegram_auth_service.create_runtime(account, attempt=attempt)
+        existing_state = self.telegram_auth_service.load_auth_state(account)
+        self.telegram_auth_service.persist_auth_state(
+            account,
+            phone_number=existing_state.get("phone_number", "") or account.phone_number,
+            verification_code=existing_state.get("verification_code", ""),
+            telegram_password=existing_state.get("telegram_password", "") or account.telegram_password,
+            current_auth_step="WAIT_PHONE",
+            code_confirmed=existing_state.get("code_confirmed", False),
+        )
+        proc = subprocess.Popen(
+            [self._account_python(account), *self.telegram_auth_service.interactive_command()],
+            cwd=account.path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=self._account_env(account),
+        )
+        self.telegram_auth_processes[row] = proc
+        self.telegram_auth_states[row] = runtime.state
+        self.telegram_auth_runtimes[row] = runtime
+        threading.Thread(
+            target=self._read_telegram_auth_output,
+            args=(row, proc, account),
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._telegram_auth_watchdog,
+            args=(row, account),
+            daemon=True,
+        ).start()
+        self._log_telegram_state(account, runtime.state, runtime.attempt, "Process started")
+        self._save_accounts()
+        self._sync_account_auth_status(row)
+
+    def _restart_telegram_auth_attempt(self, row: int, attempt: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        self.log("[AUTH] Telegram session start", account=account)
+        self._start_telegram_auth_attempt(row, account, attempt=attempt)
+
+    @staticmethod
+    def _is_phone_prompt(line: str) -> bool:
+        normalized = line.casefold()
+        return line == "TG_AUTH:PHONE_REQUEST" or "please enter your phone" in normalized
+
+    @staticmethod
+    def _is_code_prompt(line: str) -> bool:
+        normalized = line.casefold()
+        return line == "TG_AUTH:CODE_REQUESTED" or "please enter the code" in normalized
+
+    @staticmethod
+    def _is_password_prompt(line: str) -> bool:
+        normalized = line.casefold()
+        return "please enter your password" in normalized or line == "TG_AUTH:PASSWORD_REQUEST"
+
+    def _write_telegram_auth_input(
+        self,
+        proc: subprocess.Popen,
+        value: str,
+        label: str,
+        account: Account,
+    ) -> bool:
+        clean_value = str(value or "").strip()
+        if not clean_value:
+            self.background_log_signal.emit(
+                f"[ERROR] Refusing to send empty {label} to Telegram auth process.",
+                account,
+            )
+            return False
+        if proc.stdin is None:
+            self.background_log_signal.emit(
+                f"[ERROR] Telegram auth input channel is unavailable for {label}.",
+                account,
+            )
+            return False
+        self.background_log_signal.emit(f"[AUTH] Writing {label} to subprocess stdin", account)
+        proc.stdin.write(f"{clean_value}\n")
+        self.background_log_signal.emit(f"[AUTH] Flushing subprocess stdin after {label} write", account)
+        proc.stdin.flush()
+        return True
 
     def _refresh_all(self) -> None:
         self.accounts_page.refresh()
