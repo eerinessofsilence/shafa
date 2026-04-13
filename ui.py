@@ -43,8 +43,12 @@ from PySide6.QtWidgets import (
 
 from account_store import AccountStore
 from shafa_control import (
+    APP_MODES,
+    AppConfig,
+    AppConfigStore,
     Account,
     AccountSessionStore,
+    ChannelTemplateStore,
     LogRecord,
     LogStore,
     ShafaAuthService,
@@ -59,6 +63,8 @@ STATE_FILE = BASE_DIR / "accounts_state.json"
 RUNTIME_DIR = BASE_DIR / "runtime"
 ACCOUNTS_DIR = BASE_DIR / "accounts"
 DEFAULT_PROJECT_DIR = BASE_DIR / "shafa"
+APP_CONFIG_FILE = BASE_DIR / "app_config.json"
+CHANNEL_TEMPLATES_FILE = BASE_DIR / "channel_templates.json"
 
 
 class Worker(QObject):
@@ -341,6 +347,8 @@ class AccountsPage(QWidget):
     telegram_session_export_requested = Signal(int)
     telegram_session_import_requested = Signal(int)
     telegram_session_delete_requested = Signal(int)
+    channel_template_save_requested = Signal(int, str)
+    channel_template_load_requested = Signal(int, str)
 
     def __init__(self, accounts: List[Account]) -> None:
         super().__init__()
@@ -458,12 +466,27 @@ class AccountsPage(QWidget):
         self.channel_input.setPlaceholderText("https://t.me/example_channel")
         config_layout.addWidget(self.channel_input)
 
+        self.template_name_input = QLineEdit()
+        self.template_name_input.setPlaceholderText("Название шаблона")
+        self.template_combo = QComboBox()
+        self.template_combo.setMinimumWidth(180)
+        config_layout.addWidget(QLabel("Шаблон каналов"))
+        config_layout.addWidget(self.template_combo)
+        config_layout.addWidget(self.template_name_input)
+
         channel_actions = QHBoxLayout()
         self.add_channel_btn = QPushButton("Добавить ссылку")
         self.remove_channel_btn = QPushButton("Удалить ссылку")
         channel_actions.addWidget(self.add_channel_btn)
         channel_actions.addWidget(self.remove_channel_btn)
         config_layout.addLayout(channel_actions)
+
+        template_actions = QHBoxLayout()
+        self.save_template_btn = QPushButton("Сохранить шаблон")
+        self.load_template_btn = QPushButton("Загрузить шаблон")
+        template_actions.addWidget(self.save_template_btn)
+        template_actions.addWidget(self.load_template_btn)
+        config_layout.addLayout(template_actions)
 
         self.apply_btn = QPushButton("Сохранить аккаунт")
         self.apply_btn.setObjectName("PrimaryButton")
@@ -513,6 +536,8 @@ class AccountsPage(QWidget):
         self.apply_btn.clicked.connect(self.apply_settings)
         self.add_channel_btn.clicked.connect(self.add_channel_link)
         self.remove_channel_btn.clicked.connect(self.remove_selected_channel_link)
+        self.save_template_btn.clicked.connect(self._request_save_template)
+        self.load_template_btn.clicked.connect(self._request_load_template)
         self.project_browse_btn.clicked.connect(self.select_project_directory)
         self.phone_input.textChanged.connect(self._sync_telegram_button_state)
         self.telegram_code_input.textChanged.connect(self._sync_telegram_button_state)
@@ -754,6 +779,22 @@ class AccountsPage(QWidget):
         self.channel_links.takeItem(current_row)
         self.apply_settings()
 
+    def set_templates(self, names: list[str]) -> None:
+        current = self.template_combo.currentText()
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        self.template_combo.addItems(names)
+        if current:
+            index = self.template_combo.findText(current)
+            if index >= 0:
+                self.template_combo.setCurrentIndex(index)
+        self.template_combo.blockSignals(False)
+
+    def replace_channel_links(self, links: list[str]) -> None:
+        self.channel_links.clear()
+        self.channel_links.addItems(links)
+        self.apply_settings()
+
     def _select_account(self, account: Account) -> None:
         for row, current in enumerate(self.accounts):
             if current is account:
@@ -847,6 +888,28 @@ class AccountsPage(QWidget):
             QMessageBox.information(self, "Telegram session", "Сначала выберите аккаунт.")
             return
         self.telegram_session_export_requested.emit(row)
+
+    def _request_save_template(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Шаблон каналов", "Сначала выберите аккаунт.")
+            return
+        name = self.template_name_input.text().strip()
+        if not name:
+            QMessageBox.information(self, "Шаблон каналов", "Введите имя шаблона.")
+            return
+        self.channel_template_save_requested.emit(row, name)
+
+    def _request_load_template(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Шаблон каналов", "Сначала выберите аккаунт.")
+            return
+        name = self.template_combo.currentText().strip()
+        if not name:
+            QMessageBox.information(self, "Шаблон каналов", "Выберите шаблон.")
+            return
+        self.channel_template_load_requested.emit(row, name)
 
 
 class ParsingPage(QWidget):
@@ -1224,6 +1287,8 @@ class LogsPage(QWidget):
 
 
 class SettingsPage(QWidget):
+    mode_changed = Signal(str)
+
     def __init__(self) -> None:
         super().__init__()
         root = QVBoxLayout(self)
@@ -1265,12 +1330,26 @@ class SettingsPage(QWidget):
         theme_row.addStretch()
         layout.addLayout(theme_row)
 
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Режим"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(list(APP_MODES))
+        self.mode_combo.currentTextChanged.connect(self.mode_changed.emit)
+        mode_row.addWidget(self.mode_combo)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
         save = QPushButton("Сохранить настройки")
         save.setObjectName("PrimaryButton")
         layout.addWidget(save, alignment=Qt.AlignLeft)
 
         root.addWidget(panel)
         root.addStretch()
+
+    def set_mode(self, mode: str) -> None:
+        index = self.mode_combo.findText(mode)
+        if index >= 0:
+            self.mode_combo.setCurrentIndex(index)
 
 
 def _make_shadow() -> QGraphicsDropShadowEffect:
@@ -1291,6 +1370,9 @@ class MainWindow(QMainWindow):
 
             self.account_store = AccountStore(STATE_FILE, Account.from_json)
             self.session_store = AccountSessionStore(BASE_DIR, ACCOUNTS_DIR, STATE_FILE)
+            self.app_config_store = AppConfigStore(APP_CONFIG_FILE)
+            self.channel_template_store = ChannelTemplateStore(CHANNEL_TEMPLATES_FILE)
+            self.app_config = self.app_config_store.load()
             self.accounts: List[Account] = self._load_accounts()
             self.log_store = LogStore(RUNTIME_DIR / "logs")
             self.shafa_auth_service = ShafaAuthService(self.session_store)
@@ -1334,6 +1416,15 @@ class MainWindow(QMainWindow):
             self.logs_page.set_accounts(self.accounts)
         except Exception as exc:
             self.log(f"[ERROR] Failed to save accounts state: {exc}")
+
+    def _save_app_config(self) -> None:
+        try:
+            self.app_config_store.save(self.app_config)
+        except Exception as exc:
+            self.log(f"[ERROR] Failed to save app config: {exc}")
+
+    def _template_names(self) -> list[str]:
+        return [template.name for template in self.channel_template_store.list_templates()]
 
     def closeEvent(self, event) -> None:
         # Останавливаем все аккаунты перед закрытием
@@ -1456,13 +1547,18 @@ class MainWindow(QMainWindow):
         self.accounts_page.telegram_session_export_requested.connect(self.export_telegram_session)
         self.accounts_page.telegram_session_import_requested.connect(self.import_telegram_session)
         self.accounts_page.telegram_session_delete_requested.connect(self.delete_telegram_session)
+        self.accounts_page.channel_template_save_requested.connect(self.save_channel_template)
+        self.accounts_page.channel_template_load_requested.connect(self.load_channel_template)
         self.logs_page.account_filter.currentIndexChanged.connect(self._refresh_logs)
         self.logs_page.level.currentIndexChanged.connect(self._refresh_logs)
+        self.settings_page.mode_changed.connect(self.set_app_mode)
 
         root.addWidget(self.sidebar)
         root.addWidget(self.pages, 1)
 
         self.logs_page.set_accounts(self.accounts)
+        self.settings_page.set_mode(self.app_config.mode)
+        self.accounts_page.set_templates(self._template_names())
         self._set_page(0)
 
     def _apply_styles(self) -> None:
@@ -1590,6 +1686,41 @@ class MainWindow(QMainWindow):
                 level=self.logs_page.selected_level(),
             )
         )
+
+    def set_app_mode(self, mode: str) -> None:
+        try:
+            self.app_config = AppConfig(mode=mode)
+        except ValueError as exc:
+            self.log(f"[ERROR] Invalid application mode: {exc}")
+            self.settings_page.set_mode(self.app_config.mode)
+            return
+        self._save_app_config()
+        self.log(f"[CONFIG] Application mode set to {self.app_config.mode}")
+
+    def save_channel_template(self, row: int, name: str) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        links = [self.accounts_page.channel_links.item(i).text() for i in range(self.accounts_page.channel_links.count())]
+        try:
+            template = self.channel_template_store.save_template(name, links)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Шаблон каналов", str(exc))
+            return
+        self.accounts_page.set_templates(self._template_names())
+        self.log(f"[TEMPLATE] Saved channel template {template.name}", account=account)
+
+    def load_channel_template(self, row: int, name: str) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        try:
+            template = self.channel_template_store.get_template(name)
+        except KeyError:
+            QMessageBox.warning(self, "Шаблон каналов", "Шаблон не найден.")
+            return
+        self.accounts_page.replace_channel_links(template.links)
+        self.log(f"[TEMPLATE] Loaded channel template {template.name}", account=account)
 
     def _set_page(self, index: int) -> None:
         for i, btn in enumerate(self.nav_buttons):
@@ -2116,6 +2247,7 @@ class MainWindow(QMainWindow):
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self._account_telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self._account_telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self._account_channels_file(account))
+        env["SHAFA_APP_MODE"] = self.app_config.mode
         return env
 
     def _account_python(self, account: Account) -> str:
