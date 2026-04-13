@@ -8,11 +8,12 @@ import subprocess
 import sys
 import threading
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, Slot
 from PySide6.QtGui import QColor, QFont, QPalette, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -68,16 +69,40 @@ APP_CONFIG_FILE = BASE_DIR / "app_config.json"
 CHANNEL_TEMPLATES_FILE = BASE_DIR / "channel_templates.json"
 
 
+def _project_main_path(project_dir: Path) -> Path:
+    return project_dir / "main.py"
+
+
+def _is_runnable_project_dir(project_dir: Path) -> bool:
+    return project_dir.is_dir() and _project_main_path(project_dir).is_file()
+
+
+def _default_account_project_dir() -> str:
+    for candidate in (DEFAULT_PROJECT_DIR, BASE_DIR):
+        if _is_runnable_project_dir(candidate):
+            return str(candidate)
+    return ""
+
+
 class Worker(QObject):
     log = Signal(str)
     status = Signal(int, str)
     finished = Signal(int, bool, str)
 
-    def __init__(self, row: int, account_path: str, branch: str) -> None:
+    def __init__(
+        self,
+        row: int,
+        account_path: str,
+        branch: str,
+        project_lock: threading.Lock | None = None,
+        skip_project_prep: bool = False,
+    ) -> None:
         super().__init__()
         self.row = row
         self.account_path = Path(account_path)
         self.branch = branch
+        self.project_lock = project_lock
+        self.skip_project_prep = skip_project_prep
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -159,6 +184,76 @@ class Worker(QObject):
                 else:
                     self.log.emit(f"[{self.row}] Stashed changes restored")
 
+    def _venv_bins(self, venv_dir: Path) -> tuple[Path, Path | None]:
+        if os.name == "nt":
+            py_bin = venv_dir / "Scripts" / "python.exe"
+            pip_bin = venv_dir / "Scripts" / "pip.exe"
+        else:
+            py_bin = venv_dir / "bin" / "python"
+            pip_bin = venv_dir / "bin" / "pip"
+        return py_bin, pip_bin
+
+    def _prepare_project_runtime(self) -> Path:
+        local_commit = self._git_current_commit()
+        remote_commit = self._git_remote_commit()
+        repo_changed = local_commit != remote_commit
+        self.log.emit(f"[{self.row}] local={local_commit[:7]} remote={remote_commit[:7]} changed={repo_changed}")
+
+        if repo_changed:
+            self.status.emit(self.row, "updating")
+            pull = self._run_cmd(["git", "pull", "--ff-only"], self.account_path)
+            if pull.returncode != 0:
+                raise RuntimeError(pull.stderr.strip() or pull.stdout.strip() or "git pull failed")
+        else:
+            self.log.emit(f"[{self.row}] No git changes detected, skipping pull and venv rebuild")
+
+        if self._stop_requested:
+            raise RuntimeError("Stopped by user")
+
+        venv_dir = self.account_path / ".venv"
+        need_recreate_venv = repo_changed or not venv_dir.exists()
+
+        if need_recreate_venv:
+            self.status.emit(self.row, "creating venv")
+            if venv_dir.exists():
+                self.log.emit(f"[{self.row}] Removing existing .venv...")
+                shutil.rmtree(venv_dir)
+
+            self.log.emit(f"[{self.row}] Creating .venv...")
+            venv_result = self._run_cmd([sys.executable, "-m", "venv", ".venv"], self.account_path)
+            if venv_result.returncode != 0:
+                raise RuntimeError(venv_result.stderr.strip() or venv_result.stdout.strip() or "venv creation failed")
+
+            py_bin, pip_bin = self._venv_bins(venv_dir)
+            if not py_bin.exists() or pip_bin is None or not pip_bin.exists():
+                raise FileNotFoundError("Python or pip not found inside .venv")
+
+            requirements = self.account_path / "requirements.txt"
+            if requirements.exists():
+                self.status.emit(self.row, "installing deps")
+                self.log.emit(f"[{self.row}] Installing dependencies...")
+                pip_result = self._run_cmd([str(pip_bin), "install", "-r", "requirements.txt"], self.account_path)
+                if pip_result.returncode != 0:
+                    raise RuntimeError(pip_result.stderr.strip() or pip_result.stdout.strip() or "pip install failed")
+            else:
+                self.log.emit(f"[{self.row}] requirements.txt not found, skipping install")
+        else:
+            py_bin, _ = self._venv_bins(venv_dir)
+            if not py_bin.exists():
+                raise FileNotFoundError(f"Missing python in existing venv: {py_bin}")
+
+        return py_bin
+
+    def _reuse_existing_runtime(self) -> Path:
+        venv_dir = self.account_path / ".venv"
+        py_bin, _ = self._venv_bins(venv_dir)
+        if not py_bin.exists():
+            raise FileNotFoundError(
+                f"Shared project runtime is already active, but python is missing in existing venv: {py_bin}"
+            )
+        self.log.emit(f"[{self.row}] Reusing existing runtime for shared project path")
+        return py_bin
+
     def run(self) -> None:
         try:
             if not self.account_path.exists():
@@ -167,76 +262,29 @@ class Worker(QObject):
             self.status.emit(self.row, "checking")
             self.log.emit(f"[{self.row}] Checking branch {self.branch} for updates...")
 
-            # Check current branch
-            current_branch_cmd = self._run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], self.account_path)
-            if current_branch_cmd.returncode == 0:
-                current_branch = current_branch_cmd.stdout.strip()
-                self.log.emit(f"[{self.row}] Current branch: {current_branch}, target branch: {self.branch}")
-                if current_branch == self.branch:
-                    self.log.emit(f"[{self.row}] Already on branch {self.branch}, skipping checkout")
-                else:
-                    # Need to switch branch
-                    self._switch_to_branch()
+            if self.skip_project_prep:
+                py_bin = self._reuse_existing_runtime()
             else:
-                self.log.emit(f"[{self.row}] Failed to get current branch, proceeding with checkout")
-                self._switch_to_branch()
+                lock_context = self.project_lock if self.project_lock is not None else nullcontext()
+                if self.project_lock is not None:
+                    self.log.emit(f"[{self.row}] Waiting for project lock: {self.account_path}")
+                with lock_context:
+                    if self.project_lock is not None:
+                        self.log.emit(f"[{self.row}] Project lock acquired")
 
-            local_commit = self._git_current_commit()
-            remote_commit = self._git_remote_commit()
-            repo_changed = local_commit != remote_commit
-            self.log.emit(f"[{self.row}] local={local_commit[:7]} remote={remote_commit[:7]} changed={repo_changed}")
+                    current_branch_cmd = self._run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], self.account_path)
+                    if current_branch_cmd.returncode == 0:
+                        current_branch = current_branch_cmd.stdout.strip()
+                        self.log.emit(f"[{self.row}] Current branch: {current_branch}, target branch: {self.branch}")
+                        if current_branch == self.branch:
+                            self.log.emit(f"[{self.row}] Already on branch {self.branch}, skipping checkout")
+                        else:
+                            self._switch_to_branch()
+                    else:
+                        self.log.emit(f"[{self.row}] Failed to get current branch, proceeding with checkout")
+                        self._switch_to_branch()
 
-            if repo_changed:
-                self.status.emit(self.row, "updating")
-                pull = self._run_cmd(["git", "pull", "--ff-only"], self.account_path)
-                if pull.returncode != 0:
-                    raise RuntimeError(pull.stderr.strip() or pull.stdout.strip() or "git pull failed")
-            else:
-                self.log.emit(f"[{self.row}] No git changes detected, skipping pull and venv rebuild")
-
-            if self._stop_requested:
-                raise RuntimeError("Stopped by user")
-
-            venv_dir = self.account_path / ".venv"
-            need_recreate_venv = repo_changed or not venv_dir.exists()
-
-            if need_recreate_venv:
-                self.status.emit(self.row, "creating venv")
-                if venv_dir.exists():
-                    self.log.emit(f"[{self.row}] Removing existing .venv...")
-                    shutil.rmtree(venv_dir)
-
-                self.log.emit(f"[{self.row}] Creating .venv...")
-                venv_result = self._run_cmd([sys.executable, "-m", "venv", ".venv"], self.account_path)
-                if venv_result.returncode != 0:
-                    raise RuntimeError(venv_result.stderr.strip() or venv_result.stdout.strip() or "venv creation failed")
-
-                if os.name == "nt":
-                    py_bin = venv_dir / "Scripts" / "python.exe"
-                    pip_bin = venv_dir / "Scripts" / "pip.exe"
-                else:
-                    py_bin = venv_dir / "bin" / "python"
-                    pip_bin = venv_dir / "bin" / "pip"
-
-                if not py_bin.exists() or not pip_bin.exists():
-                    raise FileNotFoundError("Python or pip not found inside .venv")
-
-                requirements = self.account_path / "requirements.txt"
-                if requirements.exists():
-                    self.status.emit(self.row, "installing deps")
-                    self.log.emit(f"[{self.row}] Installing dependencies...")
-                    pip_result = self._run_cmd([str(pip_bin), "install", "-r", "requirements.txt"], self.account_path)
-                    if pip_result.returncode != 0:
-                        raise RuntimeError(pip_result.stderr.strip() or pip_result.stdout.strip() or "pip install failed")
-                else:
-                    self.log.emit(f"[{self.row}] requirements.txt not found, skipping install")
-            else:
-                if os.name == "nt":
-                    py_bin = venv_dir / "Scripts" / "python.exe"
-                else:
-                    py_bin = venv_dir / "bin" / "python"
-                if not py_bin.exists():
-                    raise FileNotFoundError(f"Missing python in existing venv: {py_bin}")
+                    py_bin = self._prepare_project_runtime()
 
             if self._stop_requested:
                 raise RuntimeError("Stopped by user")
@@ -704,11 +752,13 @@ class AccountsPage(QWidget):
         if not ok:
             return
         clean_name = name.strip() or f"Account {len(self.accounts) + 1}"
-        default_path = str(DEFAULT_PROJECT_DIR if DEFAULT_PROJECT_DIR.exists() else BASE_DIR)
+        default_path = _default_account_project_dir()
         self.accounts.append(Account(id=uuid.uuid4().hex, name=clean_name, path=default_path))
         self.refresh()
         self._select_row(len(self.accounts) - 1)
         self.log.emit(f"[ADD] Added account: {clean_name}")
+        if not default_path:
+            self.log.emit("[WARN] Configure a project path with main.py before launching the account.")
         self.account_added.emit(len(self.accounts) - 1)
         self.accounts_changed.emit()
 
@@ -1393,6 +1443,7 @@ class MainWindow(QMainWindow):
             self.telegram_auth_service = TelegramAuthService(self.session_store, self._run_account_command)
             self.workers: dict[int, Worker] = {}
             self.threads: dict[int, QThread] = {}
+            self.project_locks: dict[str, threading.Lock] = {}
             self.process_log_threads: dict[int, threading.Thread] = {}
             self.telegram_auth_processes: dict[int, subprocess.Popen] = {}
             self.telegram_auth_states: dict[int, str] = {}
@@ -1406,9 +1457,15 @@ class MainWindow(QMainWindow):
             self.prev_error_count = 0
 
             self._setup_palette()
-            self.background_log_signal.connect(self.log)
-            self.telegram_auth_finalize_signal.connect(self._finalize_telegram_auth_process)
-            self.telegram_auth_retry_signal.connect(self._restart_telegram_auth_attempt)
+            self.background_log_signal.connect(self._handle_background_log, Qt.ConnectionType.QueuedConnection)
+            self.telegram_auth_finalize_signal.connect(
+                self._finalize_telegram_auth_process,
+                Qt.ConnectionType.QueuedConnection,
+            )
+            self.telegram_auth_retry_signal.connect(
+                self._restart_telegram_auth_attempt,
+                Qt.ConnectionType.QueuedConnection,
+            )
             self._build_ui()
             self.accounts_page.selection_changed.connect(self._restore_account_auth_form_state)
             self.accounts_page.phone_input.textChanged.connect(self._persist_selected_phone_input)
@@ -1445,6 +1502,77 @@ class MainWindow(QMainWindow):
 
     def _template_names(self) -> list[str]:
         return [template.name for template in self.channel_template_store.list_templates()]
+
+    @staticmethod
+    def _normalize_project_path(path: str) -> Path:
+        return Path(path).expanduser().resolve()
+
+    def _project_key(self, path: str) -> str:
+        return str(self._normalize_project_path(path))
+
+    def _project_lock(self, path: str) -> threading.Lock:
+        key = self._project_key(path)
+        if key not in self.project_locks:
+            self.project_locks[key] = threading.Lock()
+        return self.project_locks[key]
+
+    def _shared_project_conflict(self, row: int, project_key: str, branch: str) -> Optional[Account]:
+        for index, account in enumerate(self.accounts):
+            if index == row or not account.path.strip():
+                continue
+            if self._project_key(account.path) != project_key:
+                continue
+            is_preparing = index in self.workers
+            is_running = account.process is not None and account.process.poll() is None
+            if (is_preparing or is_running) and account.branch != branch:
+                return account
+        return None
+
+    def _project_has_running_peer(self, row: int, project_key: str, branch: str) -> bool:
+        for index, account in enumerate(self.accounts):
+            if index == row or not account.path.strip():
+                continue
+            if self._project_key(account.path) != project_key:
+                continue
+            if account.branch != branch:
+                continue
+            if account.process is not None and account.process.poll() is None:
+                return True
+        return False
+
+    def _validate_account_launch(self, row: int, account: Account) -> tuple[Path, str, bool] | None:
+        raw_path = account.path.strip()
+        if not raw_path:
+            self.log("[ERROR] Project path is empty. Configure a folder with main.py first.", account=account)
+            return None
+
+        project_path = Path(raw_path).expanduser()
+        if not project_path.exists():
+            self.log(f"[ERROR] Project path does not exist: {project_path}", account=account)
+            return None
+
+        main_py_path = _project_main_path(project_path)
+        if not main_py_path.is_file():
+            self.log(
+                f"[ERROR] main.py not found at {main_py_path}. Configure the correct project folder before launch.",
+                account=account,
+            )
+            return None
+
+        project_path = self._normalize_project_path(raw_path)
+        account.path = str(project_path)
+        project_key = str(project_path)
+        conflicting_account = self._shared_project_conflict(row, project_key, account.branch)
+        if conflicting_account is not None:
+            self.log(
+                f"[ERROR] Shared project path is already active on branch {conflicting_account.branch} "
+                f"for account {conflicting_account.name}. Use separate project folders for different branches.",
+                account=account,
+            )
+            return None
+
+        reuse_existing_runtime = self._project_has_running_peer(row, project_key, account.branch)
+        return project_path, project_key, reuse_existing_runtime
 
     def closeEvent(self, event) -> None:
         # Останавливаем все аккаунты перед закрытием
@@ -1700,6 +1828,141 @@ class MainWindow(QMainWindow):
         if is_product or is_error:
             self._refresh_stats()
 
+    @Slot(str, object)
+    def _handle_background_log(self, text: str, account: object) -> None:
+        self.log(text, account=account if isinstance(account, Account) else None)
+
+    @Slot(str)
+    def _handle_worker_log(self, text: str) -> None:
+        self.log(text)
+
+    @Slot(int, str)
+    def _handle_worker_status(self, row: int, status: str) -> None:
+        if 0 <= row < len(self.accounts):
+            self.accounts[row].status = status
+            self.accounts_page.refresh()
+            self._refresh_stats()
+
+    def _cleanup_worker(self, row: int) -> None:
+        thread = self.threads.pop(row, None)
+        self.workers.pop(row, None)
+        if thread is not None:
+            thread.quit()
+
+    def _start_account_process(self, row: int, account: Account, py_bin: str) -> None:
+        project_path = self._normalize_project_path(account.path)
+        env = self._account_env(account)
+        channels_file = export_runtime_config(
+            account_name=account.name,
+            account_path=str(project_path),
+            links=account.channel_links,
+            output_dir=self._account_state_dir(account),
+        )
+        env["SHAFA_TELEGRAM_CHANNEL_LINKS_FILE"] = str(channels_file)
+
+        main_py_path = _project_main_path(project_path)
+        if not main_py_path.is_file():
+            raise FileNotFoundError(f"main.py not found at {main_py_path}")
+
+        if self.DEBUG_PROCESS:
+            print(f"[DEBUG] main.py found at {main_py_path}")
+            print(f"[DEBUG] Creating Popen for {account.name}: {py_bin} main.py")
+        proc = subprocess.Popen(
+            [py_bin, "main.py", "--shafa"],
+            cwd=str(project_path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=0,
+            env=env,
+        )
+        if self.DEBUG_PROCESS:
+            print(f"[DEBUG] Popen created, pid={proc.pid}")
+
+        time.sleep(0.1)
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate()
+            if self.DEBUG_PROCESS:
+                print(f"[DEBUG] Process exited immediately with code {proc.returncode}")
+                if stdout:
+                    print(f"[DEBUG] stdout: {stdout}")
+                if stderr:
+                    print(f"[DEBUG] stderr: {stderr}")
+            raise RuntimeError(f"main.py exited immediately with code {proc.returncode}: {stdout or stderr}")
+
+        if self.DEBUG_PROCESS:
+            print(f"[DEBUG] Process is running, starting log thread")
+
+        def check_process_status() -> None:
+            time.sleep(5)
+            if proc.poll() is not None:
+                if self.DEBUG_PROCESS:
+                    print(f"[DEBUG] Process {account.name} (pid={proc.pid}) exited with code {proc.returncode}")
+                    try:
+                        remaining = proc.stdout.read()
+                        if remaining:
+                            print(f"[DEBUG] Remaining output: {remaining}")
+                    except Exception:
+                        pass
+            else:
+                if self.DEBUG_PROCESS:
+                    print(f"[DEBUG] Process {account.name} (pid={proc.pid}) still running after 5 seconds")
+
+        threading.Thread(target=check_process_status, daemon=True).start()
+        account.process = proc
+        account.status = "running"
+        account.last_run = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        log_thread = threading.Thread(
+            target=self._read_process_output,
+            args=(row, proc, account.name),
+            daemon=True,
+        )
+        log_thread.start()
+        self.process_log_threads[row] = log_thread
+
+        if proc.stdin is not None:
+            browser_answer = "y" if account.open_browser else "n"
+            timer_answer = str(account.timer_minutes)
+            proc.stdin.write(f"{browser_answer}\n{timer_answer}\n")
+            proc.stdin.flush()
+            proc.stdin.close()
+            self.log(
+                f"[OK] started on {account.branch} with browser={browser_answer}, timer={timer_answer}m (pid={proc.pid})",
+                account=account,
+            )
+            if account.channel_links:
+                self.log(
+                    f"[CHANNELS] exported {len(account.channel_links)} link(s) to {channels_file.name}",
+                    account=account,
+                )
+        else:
+            self.log(f"[OK] started on {account.branch} (pid={proc.pid})", account=account)
+
+    @Slot(int, bool, str)
+    def _handle_worker_finished(self, row: int, ok: bool, info: str) -> None:
+        try:
+            if 0 <= row < len(self.accounts):
+                account = self.accounts[row]
+                if ok:
+                    try:
+                        self._start_account_process(row, account, info)
+                    except Exception as exc:
+                        account.status = "error"
+                        account.errors += 1
+                        self.log(f"[ERROR] Failed to start {account.name}: {exc}", account=account)
+                else:
+                    account.status = "error"
+                    account.errors += 1
+                    self.log(f"[ERROR] {info}", account=account)
+                self.accounts_page.refresh()
+                self._refresh_stats()
+                self._sync_account_auth_status(row)
+        finally:
+            self._cleanup_worker(row)
+            self._save_accounts()
+
     def _refresh_logs(self) -> None:
         self.logs_page.render_records(
             self.log_store.filtered(
@@ -1952,6 +2215,9 @@ class MainWindow(QMainWindow):
             return
         acc = self.accounts[row]
 
+        if row in self.workers:
+            self.log("[RUN] project preparation is already in progress", account=acc)
+            return
         if acc.process is not None and acc.process.poll() is None:
             if self.DEBUG_PROCESS:
                 print(f"[DEBUG] {acc.name} already running")
@@ -1964,144 +2230,29 @@ class MainWindow(QMainWindow):
             self.log("[ERROR] Telegram session is corrupted. Re-authentication is required.", account=acc)
             return
 
+        launch_context = self._validate_account_launch(row, acc)
+        if launch_context is None:
+            self._save_accounts()
+            return
+        _, _, reuse_existing_runtime = launch_context
+
         if self.DEBUG_PROCESS:
             print(f"[DEBUG] Starting {acc.name} on branch {acc.branch}")
         self.log(f"[RUN] Starting on branch {acc.branch}", account=acc)
-        worker = Worker(row, acc.path, acc.branch)
+        worker = Worker(
+            row,
+            acc.path,
+            acc.branch,
+            project_lock=self._project_lock(acc.path),
+            skip_project_prep=reuse_existing_runtime,
+        )
         thread = QThread(self)
         worker.moveToThread(thread)
-
-        def on_status(r: int, status: str) -> None:
-            if 0 <= r < len(self.accounts):
-                self.accounts[r].status = status
-                self.accounts_page.refresh()
-                self._refresh_stats()
-
-        def on_finished(r: int, ok: bool, info: str) -> None:
-            if 0 <= r < len(self.accounts):
-                account = self.accounts[r]
-                if ok:
-                    py_bin = info
-                    try:
-                        env = self._account_env(account)
-                        channels_file = export_runtime_config(
-                            account_name=account.name,
-                            account_path=account.path,
-                            links=account.channel_links,
-                            output_dir=self._account_state_dir(account),
-                        )
-                        env["SHAFA_TELEGRAM_CHANNEL_LINKS_FILE"] = str(channels_file)
-
-                        # bootstrap.py first, then main.py
-                        # self._run_bootstrap(py_bin, Path(account.path), account.name)
-
-                        # Проверяем, что main.py существует
-                        main_py_path = Path(account.path) / "main.py"
-                        if not main_py_path.exists():
-                            raise FileNotFoundError(f"main.py not found at {main_py_path}")
-
-                        if self.DEBUG_PROCESS:
-                            print(f"[DEBUG] main.py found at {main_py_path}")
-                            print(f"[DEBUG] Creating Popen for {account.name}: {py_bin} main.py")
-                        proc = subprocess.Popen(
-                            [py_bin, "main.py", "--shafa"],
-                            cwd=account.path,
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            bufsize=0,
-                            env=env,
-                        )
-                        if self.DEBUG_PROCESS:
-                            print(f"[DEBUG] Popen created, pid={proc.pid}")
-                        
-                        # Проверяем, что процесс действительно запустился
-                        time.sleep(0.1)  # Даём процессу время запуститься
-                        if proc.poll() is not None:
-                            # Процесс уже завершился
-                            stdout, stderr = proc.communicate()
-                            if self.DEBUG_PROCESS:
-                                print(f"[DEBUG] Process exited immediately with code {proc.returncode}")
-                                if stdout:
-                                    print(f"[DEBUG] stdout: {stdout}")
-                                if stderr:
-                                    print(f"[DEBUG] stderr: {stderr}")
-                            raise RuntimeError(f"main.py exited immediately with code {proc.returncode}: {stdout or stderr}")
-                        
-                        if self.DEBUG_PROCESS:
-                            print(f"[DEBUG] Process is running, starting log thread")
-                        
-                        # Добавляем проверку статуса процесса через 5 секунд
-                        def check_process_status():
-                            time.sleep(5)
-                            if proc.poll() is not None:
-                                if self.DEBUG_PROCESS:
-                                    print(f"[DEBUG] Process {account.name} (pid={proc.pid}) exited with code {proc.returncode}")
-                                    # Пытаемся прочитать оставшийся вывод
-                                    try:
-                                        remaining = proc.stdout.read()
-                                        if remaining:
-                                            print(f"[DEBUG] Remaining output: {remaining}")
-                                    except:
-                                        pass
-                            else:
-                                if self.DEBUG_PROCESS:
-                                    print(f"[DEBUG] Process {account.name} (pid={proc.pid}) still running after 5 seconds")
-                        
-                        status_thread = threading.Thread(target=check_process_status, daemon=True)
-                        status_thread.start()
-                        account.process = proc
-                        account.status = "running"
-                        account.last_run = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-                        log_thread = threading.Thread(
-                            target=self._read_process_output,
-                            args=(r, proc, account.name),
-                            daemon=True,
-                        )
-                        log_thread.start()
-                        self.process_log_threads[r] = log_thread
-
-                        if proc.stdin is not None:
-                            browser_answer = "y" if account.open_browser else "n"
-                            timer_answer = str(account.timer_minutes)
-                            proc.stdin.write(f"{browser_answer}\n{timer_answer}\n")
-                            proc.stdin.flush()
-                            proc.stdin.close()
-                            self.log(
-                                f"[OK] started on {account.branch} with browser={browser_answer}, timer={timer_answer}m (pid={proc.pid})",
-                                account=account,
-                            )
-                            if account.channel_links:
-                                self.log(
-                                    f"[CHANNELS] exported {len(account.channel_links)} link(s) to {channels_file.name}",
-                                    account=account,
-                                )
-                        else:
-                            self.log(f"[OK] started on {account.branch} (pid={proc.pid})", account=account)
-                    except Exception as exc:
-                        account.status = "error"
-                        account.errors += 1
-                        self.log(f"[ERROR] Failed to start {account.name}: {exc}", account=account)
-                else:
-                    account.status = "error"
-                    account.errors += 1
-                    self.log(f"[ERROR] {info}", account=account)
-                self.accounts_page.refresh()
-                self._refresh_stats()
-                self._sync_account_auth_status(r)
-
-            thread.quit()
-            worker.deleteLater()
-            thread.finished.connect(thread.deleteLater)
-            self.workers.pop(r, None)
-            self.threads.pop(r, None)
-            self._save_accounts()
-
-        worker.log.connect(self.log)
-        worker.status.connect(on_status)
-        worker.finished.connect(on_finished)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        worker.log.connect(self._handle_worker_log, Qt.ConnectionType.QueuedConnection)
+        worker.status.connect(self._handle_worker_status, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._handle_worker_finished, Qt.ConnectionType.QueuedConnection)
         thread.started.connect(worker.run)
 
         self.workers[row] = worker
@@ -2142,6 +2293,7 @@ class MainWindow(QMainWindow):
                     self.log(f"[ERROR] stop failed: {exc}", account=acc)
         acc.process = None
         acc.status = "stopped"
+        self.process_log_threads.pop(row, None)
         self.accounts_page.refresh()
         self._refresh_stats()
         self._save_accounts()
@@ -2155,9 +2307,10 @@ class MainWindow(QMainWindow):
             self._sync_account_auth_status(row)
             return
         env, context = self.shafa_auth_service.create_login_context(account, self._account_env(account))
+        project_path = str(Path(account.path).expanduser())
         proc = subprocess.Popen(
             [self._account_python(account), "main.py", "--login-shafa"],
-            cwd=account.path,
+            cwd=project_path,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -2384,16 +2537,18 @@ class MainWindow(QMainWindow):
         return env
 
     def _account_python(self, account: Account) -> str:
+        project_path = Path(account.path).expanduser()
         if os.name == "nt":
-            candidate = Path(account.path) / ".venv" / "Scripts" / "python.exe"
+            candidate = project_path / ".venv" / "Scripts" / "python.exe"
         else:
-            candidate = Path(account.path) / ".venv" / "bin" / "python"
+            candidate = project_path / ".venv" / "bin" / "python"
         return str(candidate if candidate.exists() else Path(sys.executable))
 
     def _run_account_command(self, account: Account, args: list[str]) -> subprocess.CompletedProcess:
+        project_path = str(Path(account.path).expanduser())
         return subprocess.run(
             [self._account_python(account), *args],
-            cwd=account.path,
+            cwd=project_path,
             capture_output=True,
             text=True,
             env=self._account_env(account),
@@ -2560,7 +2715,10 @@ class MainWindow(QMainWindow):
                     )
                 self.telegram_auth_finalize_signal.emit(row, account)
 
-    def _finalize_telegram_auth_process(self, row: int, account: Account) -> None:
+    @Slot(int, object)
+    def _finalize_telegram_auth_process(self, row: int, account: object) -> None:
+        if not isinstance(account, Account):
+            return
         proc = self.telegram_auth_processes.pop(row, None)
         self.telegram_auth_states.pop(row, None)
         self.telegram_auth_runtimes.pop(row, None)
@@ -2625,7 +2783,7 @@ class MainWindow(QMainWindow):
         )
         proc = subprocess.Popen(
             [self._account_python(account), *self.telegram_auth_service.interactive_command()],
-            cwd=account.path,
+            cwd=str(Path(account.path).expanduser()),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -2650,6 +2808,7 @@ class MainWindow(QMainWindow):
         self._save_accounts()
         self._sync_account_auth_status(row)
 
+    @Slot(int, int)
     def _restart_telegram_auth_attempt(self, row: int, attempt: int) -> None:
         account = self._account_by_row(row)
         if account is None:
