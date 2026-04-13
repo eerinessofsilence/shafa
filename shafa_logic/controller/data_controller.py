@@ -1,0 +1,2531 @@
+import asyncio
+import json
+import os
+import re
+import unicodedata
+from pathlib import Path
+from typing import Optional
+
+try:
+    from telethon import TelegramClient
+    from telethon.errors import RPCError
+    from telethon.tl.functions.messages import GetDiscussionMessageRequest
+    from telethon.types import (
+        DocumentAttributeAnimated,
+        DocumentAttributeFilename,
+        DocumentAttributeSticker,
+        MessageMediaDocument,
+        MessageMediaPhoto,
+    )
+    from telethon.utils import get_peer_id
+except ModuleNotFoundError:  # pragma: no cover - optional at import time for tests
+    TelegramClient = object
+    RPCError = Exception
+    GetDiscussionMessageRequest = object
+    DocumentAttributeAnimated = object
+    DocumentAttributeFilename = object
+    DocumentAttributeSticker = object
+    MessageMediaDocument = object
+    MessageMediaPhoto = object
+
+    def get_peer_id(*args, **kwargs):
+        raise RuntimeError("telethon is required for Telegram operations")
+
+from controller.catalog_filter import find_slug_by_word, find_word
+from data.const import (
+    BRAND_NAME_TO_ID,
+    COLOR_NAME_TO_ENUM,
+    DEFAULT_MESSAGE_PARSE_LIMIT,
+    MAX_PRODUCT_CREATE_ATTEMPTS,
+    MAX_UPLOAD_BYTES,
+    TELEGRAM_API_HASH,
+    TELEGRAM_API_ID,
+    TELEGRAM_SESSION_PATH,
+)
+from data.db import (
+    get_brand_id_by_name,
+    get_next_uncreated_telegram_product,
+    get_size_id_by_name,
+    increment_telegram_product_attempt,
+    list_brand_names,
+    load_telegram_channels,
+    mark_telegram_product_created,
+    save_telegram_channels,
+    save_telegram_product,
+    size_id_exists,
+)
+from utils.logging import log
+from utils.progress import ProgressBar, verbose_photo_logs_enabled
+from telegram_subscription import get_telegram_channels, set_telegram_channels
+
+APP_MODE_ENV = "SHAFA_APP_MODE"
+MODE_CLOTHES = "clothes"
+MODE_SNEAKERS = "sneakers"
+
+api_id = TELEGRAM_API_ID
+api_hash = TELEGRAM_API_HASH
+SKIPPED_CREATE_RETRY_LIMIT = "SKIPPED_CREATE_RETRY_LIMIT"
+
+DEFAULT_DESCRIPTION = (
+    "36 (23.0 см)\n"
+    "37 (23.5 см)\n"
+    "38 (24.0 см)\n"
+    "39 (25.0 см)\n"
+    "40 (25.5 см)\n"
+    "41 (26.0 см)\n"
+    "42 (26.5 см)\n"
+    "43 (27.5 см)\n"
+    "44 (28.0 см)\n"
+    "45 (29.0 см)\n"
+    "\n"
+    "Представляємо втілення комфорту, стилю та універсальності: "
+    "наші чудові кросівки. Це взуття є втіленням сучасного взуття, "
+    "яке підходить для будь-якого випадку, одягу та способу життя. "
+    "Створені з прискіпливою увагою до деталей, наші кросівки "
+    "розроблені, щоб забезпечити виняткове поєднання моди та "
+    "функціональності."
+)
+
+
+DEFAULT_CLOTHES_DESCRIPTION = (
+    "Розмірна сітка:\n"
+    "S - 42\n"
+    "M - 44\n"
+    "L - 46\n"
+    "\n"
+
+    "Параметри та доступні розміри уточнюйте в повідомленнях. Якщо виникнуть додаткові запитання — пишіть у чат, із радістю відповім.\n"
+    
+    "Стильна річ для створення сучасного та впевненого образу. Добре поєднується з різними елементами гардеробу та підходить як для повсякденного носіння, так і для особливих випадків. Приємний матеріал забезпечує комфорт протягом усього дня, а універсальний дизайн легко вписується у будь-який стиль — від класичного до casual. Вдалий вибір для тих, хто цінує поєднання комфорту, практичності та актуального вигляду."
+)
+MAX_DOWNLOAD_PHOTOS = 10
+DEFAULT_SHOES_CATEGORY = "obuv/krossovki"
+WOMEN_SNEAKERS_CATEGORY = "zhenskaya-obuv/krossovki"
+DEFAULT_CLOTHES_CATEGORY = "mayki-i-futbolki/futbolki"
+CLOTHES_CATEGORIES = {
+    "verhnyaya-odezhda/plashi": ["плащ", "плащі", "плащи", "плащь"],
+    "verhnyaya-odezhda/kurtki": ["куртка", "куртки", "бомбер", "парка", "ветровка"],
+    "verhnyaya-odezhda/shuby": ["шуба", "шубы", "шуби", "шубка", "шубки", "полушубок", "полушубки", "полушуба"],
+
+}
+WOMEN_SNEAKERS_MIN_SIZE = 36.0
+WOMEN_SNEAKERS_MAX_SIZE = 41.0
+UNSUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/heic", "image/heif"})
+UNSUPPORTED_IMAGE_EXTENSIONS = frozenset({".heic", ".heif"})
+
+CLOTHES_SIZE_MAPPING = {
+    "XS": range(32, 37),  # 32-36
+    "S": range(36, 41),   # 36-40
+    "M": range(40, 45),   # 40-44
+    "L": range(44, 49),   # 44-48
+    "XL": range(48, 53),  # 48-52
+    "XXL": range(52, 57), # 52-56
+}
+
+CLOTHES_SLUGS = [
+    "verhnyaya-odezhda/palto",
+    "verhnyaya-odezhda/plashi",
+    "verhnyaya-odezhda/kurtki",
+    "verhnyaya-odezhda/shuby",
+    "verhnyaya-odezhda/zhiletki",
+    "verhnyaya-odezhda/pidzhaki-i-zhakety",
+    "verhnyaya-odezhda/puhoviki",
+    "verhnyaya-odezhda/parki",
+    "verhnyaya-odezhda/dublenki",
+    "verhnyaya-odezhda/dozhdeviki",
+    "verhnyaya-odezhda/vetrovki",
+
+    "platya/mini",
+    "platya/midi",
+    "platya/maksi",
+    "platya/vechernie",
+    "platya/svadebnye",
+    "platya/sarafany",
+    "platya/tuniki",
+
+    "yubki/mini",
+    "yubki/midi",
+    "yubki/maksi",
+
+    "mayki-i-futbolki/futbolki",
+    "mayki-i-futbolki/mayki",
+    "mayki-i-futbolki/polo",
+    "mayki-i-futbolki/topy",
+
+    "rubashki-i-bluzy/rubashki",
+    "rubashki-i-bluzy/bluzy",
+    "rubashki-i-bluzy/vyshivanki",
+
+    "kofty/dzhempery",
+    "kofty/svitery",
+    "kofty/kardigany",
+    "kofty/vodolazki",
+    "kofty/svitshoty",
+    "kofty/hudi",
+    "kofty/pulovery",
+    "kofty/tolstovky",
+    "kofty/nakidki",
+    "kofty/bolero",
+    "kofty/poncho",
+    "kofty/reglan",
+    "kofty/longslivy",
+    "kofty/zhilety",
+
+    "nizhnee-bele-i-kupalniki/lifchiki",
+    "nizhnee-bele-i-kupalniki/trusiki",
+    "nizhnee-bele-i-kupalniki/komplekty",
+    "nizhnee-bele-i-kupalniki/kupalniki",
+    "nizhnee-bele-i-kupalniki/noski",
+    "nizhnee-bele-i-kupalniki/bodi",
+    "nizhnee-bele-i-kupalniki/korsety",
+    "nizhnee-bele-i-kupalniki/chulki",
+    "nizhnee-bele-i-kupalniki/kolgotki",
+    "nizhnee-bele-i-kupalniki/penyuary",
+    "nizhnee-bele-i-kupalniki/termobelye",
+    "nizhnee-bele-i-kupalniki/portupei",
+    "nizhnee-bele-i-kupalniki/eroticheskoye",
+    "nizhnee-bele-i-kupalniki/eroticheskiye-kostyumy",
+    "nizhnee-bele-i-kupalniki/belyevyye-mayki",
+    "nizhnee-bele-i-kupalniki/aksessuary",
+
+    "sport-otdyh/sportivnyye-kostyumy",
+    "sport-otdyh/sportivnyye-shtany",
+    "sport-otdyh/losiny",
+    "sport-otdyh/shorty",
+    "sport-otdyh/topy",
+    "sport-otdyh/kofty",
+    "sport-otdyh/mayki",
+    "sport-otdyh/kapri",
+    "sport-otdyh/kombinezony",
+    "sport-otdyh/belye",
+
+    "sport-otdyh/gornolyzhnyye/kurtki",
+    "sport-otdyh/gornolyzhnyye/kostyumy",
+    "sport-otdyh/gornolyzhnyye/shtany",
+    "sport-otdyh/gornolyzhnyye/kombinezony",
+
+    "zhenskie-kostyumy/kostyumy-s-platem",
+    "zhenskie-kostyumy/kostyumy-s-shortami",
+    "zhenskie-kostyumy/kostyumy-s-yubkoj",
+    "zhenskie-kostyumy/bryuchnye-kostyumy",
+
+    "zhenskie-kombinezony/dzhinsovye-kombinezony",
+    "zhenskie-kombinezony/bryuchnye-kombinezony",
+    "zhenskie-kombinezony/kombinezony-s-shortami",
+
+    "odezhda-dlya-doma-i-sna/domashnyaya-odezhda",
+    "odezhda-dlya-doma-i-sna/pizhamy",
+    "odezhda-dlya-doma-i-sna/nochnushki",
+    "odezhda-dlya-doma-i-sna/halaty",
+    "odezhda-dlya-doma-i-sna/masky-dlya-sna",
+    "odezhda-dlya-doma-i-sna/kigurumi",
+]
+
+_PRICE_HINTS = (
+    "цена",
+    "ціна",
+    "price",
+    "грн",
+    "uah",
+    "₴",
+    "дроп",
+    "drop",
+    "опт",
+    "оптов",
+    "рознич",
+    "роздріб",
+    "sale",
+)
+_SIZE_HINTS = (
+    "розмір",
+    "размер",
+    "size",
+    "розміри",
+    "размеры",
+    "сітка",
+    "сетк",
+    "sizes",
+)
+SIZE_NAME_MAPPING = {
+    "XS": "34",
+    "S": "36",
+    "M": "38",
+    "L": "40",
+    "XL": "42",
+    "XXL": "44",
+}
+_NAME_LABELS = ("назва", "name", "модель", "model")
+_BRAND_LABELS = ("бренд", "brand")
+_COLOR_LABELS = ("колір", "цвет", "color")
+_GENERIC_NAME_TOKENS = {
+    "чоловічі",
+    "чоловічий",
+    "жіночі",
+    "жіночий",
+    "мужские",
+    "мужской",
+    "женские",
+    "женский",
+    "дитячі",
+    "дитячий",
+    "детские",
+    "детский",
+    "підліткові",
+    "подростковые",
+    "unisex",
+    "унісекс",
+    "унисекс",
+    "kids",
+    "kid",
+    "junior",
+    "youth",
+    "boy",
+    "boys",
+    "girl",
+    "girls",
+    "кросівки",
+    "кросівка",
+    "кросівок",
+    "кроси",
+    "кросовки",
+    "кроссовки",
+    "кеди",
+    "кеды",
+    "кед",
+    "ботинки",
+    "ботінки",
+    "ботінок",
+    "черевики",
+    "boots",
+    "boot",
+    "sneaker",
+    "sneakers",
+    "trainer",
+    "trainers",
+    "shoe",
+    "shoes",
+    "running",
+    "взуття",
+    "обувь",
+}
+_CONTACT_HINTS = (
+    "тел",
+    "телефон",
+    "viber",
+    "вайбер",
+    "whatsapp",
+    "instagram",
+    "inst",
+    "tg",
+    "телеграм",
+    "доставка",
+    "оплата",
+    "налож",
+    "передоплата",
+    "самовывоз",
+    "самовивіз",
+    "заказ",
+    "замовлення",
+    "в наличии",
+    "в наявності",
+)
+_NON_NAME_HINTS = (
+    _PRICE_HINTS
+    + _SIZE_HINTS
+    + _CONTACT_HINTS
+    + (
+        "артикул",
+        "код",
+        "barcode",
+        "штрихкод",
+        "опис",
+        "характеристики",
+        "в наявності",
+        "топ",
+        "продажів",
+    )
+)
+_NAME_EXCLUDE_HINTS = (
+    "виробник",
+    "made in",
+    "сезон",
+    "матеріал",
+    "матеріали",
+    "упакован",
+    "упаков",
+    "каталог",
+    "розділ",
+    "раздел",
+    "коментар",
+    "фото",
+    "відео",
+    "додатков",
+    "црм",
+    "crm",
+    "розмірна",
+    "сітка",
+    "опис",
+    "характеристик",
+)
+_PRICE_EXCLUDE_HINTS = (
+    "артикул",
+    "код",
+    "barcode",
+    "штрихкод",
+    "каталог",
+    "catalog",
+)
+_BRAND_PATTERNS: Optional[list[tuple[str, re.Pattern]]] = None
+_SIZE_EXCLUDE_HINTS = (
+    "артикул",
+    "код",
+    "barcode",
+    "штрихкод",
+    "каталог",
+    "catalog",
+    "виробник",
+    "сезон",
+    "матеріал",
+    "матеріали",
+    "упакован",
+    "коментар",
+    "фото",
+    "відео",
+    "опис",
+    "характеристик",
+)
+_ALPHA_SIZES = {
+    "XXXS",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "XXXL",
+    "XXXXL",
+    "OS",
+    "ONE SIZE",
+}
+_COLOR_SYNONYMS = {
+    "black": "black",
+    "white": "white",
+    "gray": "gray",
+    "grey": "gray",
+    "brown": "brown",
+    "orange": "orange",
+    "red": "red",
+    "blue": "blue",
+    "green": "green",
+    "pink": "pink",
+    "purple": "purple",
+    "beige": "beige",
+    "cream": "cream",
+    "navy": "navy",
+    "tan": "tan",
+    "silver": "silver",
+    "gold": "gold",
+    "yellow": "yellow",
+    "olive": "olive",
+    "khaki": "khaki",
+    "чорний": "black",
+    "черный": "black",
+    "білий": "white",
+    "белый": "white",
+    "сірий": "gray",
+    "серый": "gray",
+    "коричневий": "brown",
+    "коричневый": "brown",
+    "помаранчевий": "orange",
+    "оранжевый": "orange",
+    "червоний": "red",
+    "красный": "red",
+    "синій": "blue",
+    "синий": "blue",
+    "зелений": "green",
+    "зеленый": "green",
+    "рожевий": "pink",
+    "розовый": "pink",
+    "фіолетовий": "purple",
+    "фиолетовый": "purple",
+    "бежевий": "beige",
+    "бежевый": "beige",
+    "кремовий": "cream",
+    "кремовый": "cream",
+    "темно-синій": "navy",
+    "темно-синий": "navy",
+    "оливковий": "olive",
+    "оливковый": "olive",
+    "хаки": "khaki",
+    "жовтий": "yellow",
+    "желтый": "yellow",
+    "золотий": "gold",
+    "золотой": "gold",
+    "срібний": "silver",
+    "серебряный": "silver",
+    "молочный": "cream",
+    "молочний": "cream",
+}
+_COLOR_MODIFIERS = {
+    "dark": "dark",
+    "light": "light",
+    "темний": "dark",
+    "темный": "dark",
+    "темна": "dark",
+    "темное": "dark",
+    "світлий": "light",
+    "светлый": "light",
+    "світла": "light",
+    "светлая": "light",
+    "светлое": "light",
+}
+sizes_dict = {
+    # 94 размера
+    "nizhnee-bele-i-kupalniki/lifchiki": [
+        "nizhnee-bele-i-kupalniki/lifchiki",
+        "nizhnee-bele-i-kupalniki/komplekty",
+        "dlya-beremennyh/bele/byustgaltery"
+    ],
+    # 76 размеров
+    "verhnyaya-odezhda/palto": [
+        "verhnyaya-odezhda/palto",
+        "verhnyaya-odezhda/plashi",
+        "verhnyaya-odezhda/kurtki",
+        "verhnyaya-odezhda/shuby",
+        "verhnyaya-odezhda/zhiletki",
+        "verhnyaya-odezhda/pidzhaki-i-zhakety",
+        "verhnyaya-odezhda/puhoviki",
+        "verhnyaya-odezhda/parki",
+        "verhnyaya-odezhda/dublenki",
+        "verhnyaya-odezhda/dozhdeviki",
+        "verhnyaya-odezhda/vetrovki",
+        "platya/mini",
+        "platya/midi",
+        "platya/maksi",
+        "platya/vechernie",
+        "platya/svadebnye",
+        "platya/sarafany",
+        "platya/tuniki",
+        "yubki/mini",
+        "yubki/midi",
+        "yubki/maksi",
+        "mayki-i-futbolki/futbolki",
+        "mayki-i-futbolki/mayki",
+        "mayki-i-futbolki/polo",
+        "mayki-i-futbolki/topy",
+        "rubashki-i-bluzy/rubashki",
+        "rubashki-i-bluzy/bluzy",
+        "rubashki-i-bluzy/vyshivanki",
+        "kofty/dzhempery",
+        "kofty/svitery",
+        "kofty/kardigany",
+        "kofty/vodolazki",
+        "kofty/svitshoty",
+        "kofty/hudi",
+        "kofty/pulovery",
+        "kofty/tolstovky",
+        "kofty/nakidki",
+        "kofty/bolero",
+        "kofty/poncho",
+        "kofty/reglan",
+        "kofty/longslivy",
+        "kofty/zhilety",
+        "nizhnee-bele-i-kupalniki/trusiki",
+        "nizhnee-bele-i-kupalniki/kupalniki",
+        "nizhnee-bele-i-kupalniki/bodi",
+        "nizhnee-bele-i-kupalniki/korsety",
+        "nizhnee-bele-i-kupalniki/chulki",
+        "nizhnee-bele-i-kupalniki/kolgotki",
+        "nizhnee-bele-i-kupalniki/penyuary",
+        "nizhnee-bele-i-kupalniki/termobelye",
+        "nizhnee-bele-i-kupalniki/portupei",
+        "nizhnee-bele-i-kupalniki/eroticheskoye",
+        "nizhnee-bele-i-kupalniki/eroticheskiye-kostyumy",
+        "nizhnee-bele-i-kupalniki/belyevyye-mayki",
+        "nizhnee-bele-i-kupalniki/aksessuary",
+        "sport-otdyh/sportivnyye-kostyumy",
+        "sport-otdyh/sportivnyye-shtany",
+        "sport-otdyh/losiny",
+        "sport-otdyh/shorty",
+        "sport-otdyh/topy",
+        "sport-otdyh/kofty",
+        "sport-otdyh/mayki",
+        "sport-otdyh/kapri",
+        "sport-otdyh/kombinezony",
+        "sport-otdyh/belye",
+        "sport-otdyh/gornolyzhnyye/kurtki",
+        "sport-otdyh/gornolyzhnyye/kostyumy",
+        "sport-otdyh/gornolyzhnyye/shtany",
+        "sport-otdyh/gornolyzhnyye/kombinezony",
+        "zhenskie-kostyumy/kostyumy-s-platem",
+        "zhenskie-kostyumy/kostyumy-s-shortami",
+        "zhenskie-kostyumy/kostyumy-s-yubkoj",
+        "zhenskie-kostyumy/bryuchnye-kostyumy",
+        "zhenskie-kombinezony/dzhinsovye-kombinezony",
+        "zhenskie-kombinezony/bryuchnye-kombinezony",
+        "zhenskie-kombinezony/kombinezony-s-shortami",
+        "odezhda-dlya-doma-i-sna/domashnyaya-odezhda",
+        "odezhda-dlya-doma-i-sna/pizhamy",
+        "odezhda-dlya-doma-i-sna/nochnushki",
+        "odezhda-dlya-doma-i-sna/halaty",
+        "odezhda-dlya-doma-i-sna/masky-dlya-sna",
+        "odezhda-dlya-doma-i-sna/kigurumi",
+        "dlya-beremennyh/verhnyaya-odezhda",
+        "dlya-beremennyh/platya",
+        "dlya-beremennyh/sarafany",
+        "dlya-beremennyh/futbolki",
+        "dlya-beremennyh/shtany",
+        "dlya-beremennyh/bele/kolgoty",
+        "dlya-beremennyh/bele/bandazhi",
+        "dlya-beremennyh/bele/trusy",
+        "dlya-beremennyh/bele/komplekty",
+        "dlya-beremennyh/bele/kupalnyky",
+        "dlya-beremennyh/bele/halaty",
+        "dlya-beremennyh/bele/pizhamy",
+        "dlya-beremennyh/bele/sorochki",
+        "dlya-beremennyh/drugoe",
+        "dlya-beremennyh/losiny",
+        "dlya-beremennyh/kombinezony",
+        "dlya-beremennyh/kofty",
+        "dlya-beremennyh/longslivy",
+        "dlya-beremennyh/yubki",
+        "dlya-beremennyh/rubashki",
+        "shtany/bryuki",
+        "shtany/losiny-i-legginsy",
+        "shtany/shorty",
+        "shtany/bridzhi",
+        "dlya-beremennyh/platya"
+    ],
+    # 95 размеров — спецодежда
+    "specodezhda/sfera-obsluzhivaniya": [
+        "specodezhda/sfera-obsluzhivaniya",
+        "specodezhda/medicinskaya",
+        "specodezhda/rabochaya",
+        "specodezhda/zashchitnaya",
+        "specodezhda/akademicheskaya",
+        "specodezhda/formennaya"
+    ],
+    # 65 размеров
+    "dlya-beremennyh/dzhinsy": [
+        "dlya-beremennyh/dzhinsy",
+        "shtany/dzhinsy"
+    ]
+}
+
+_TOP_TOKENS = (
+
+# RU
+"бомбер",
+"майка","майки",
+"футболка","футболки",
+"кофта","кофты",
+"свитер","свитера",
+"толстовка",
+"джемпер",
+"рубашка",
+"блузка",
+"жакет",
+"пиджак",
+"кардиган",
+"жилетка",
+"жилет",
+
+# UA
+"майка",
+"футболка",
+"кофта",
+"светр",
+"светрик",
+"сорочка",
+"блуза",
+"жакет",
+"кардиган",
+"жилетка",
+
+# EN
+"t-shirt",
+"tshirt",
+"tee",
+"tank top",
+"top",
+"shirt",
+"blouse",
+"sweater",
+"jumper",
+"cardigan",
+"hoodie",
+"sweatshirt"
+)
+_OUTERWEAR_TOKENS = (
+
+# RU
+"куртка","куртки",
+"пальто",
+"плащ",
+"ветровка",
+"парка",
+
+# UA
+"куртка",
+"пальто",
+"плащ",
+"вітровка",
+"парка",
+
+# EN
+"jacket",
+"coat",
+"trench",
+"windbreaker",
+"parka"
+)
+_BOTTOM_TOKENS = (
+
+# RU
+"штаны",
+"брюки",
+"джинсы",
+"шорты",
+"юбка",
+"лосины",
+"леггинсы",
+
+# UA
+"штани",
+"брюки",
+"джинси",
+"шорти",
+"спідниця",
+"лосини",
+"легінси",
+
+# EN
+"pants",
+"trousers",
+"jeans",
+"shorts",
+"skirt",
+"leggings"
+)
+_DRESS_TOKENS = (
+
+# RU
+"платье",
+"сарафан",
+
+# UA
+"сукня",
+"сарафан",
+
+# EN
+"dress",
+"sundress"
+)
+_JUMPSUIT_TOKENS = (
+
+# RU
+"комбинезон",
+"комбез",
+
+# UA
+"комбінезон",
+
+# EN
+"jumpsuit",
+"romper",
+"playsuit"
+)
+_SET_TOKENS = (
+
+# RU
+"костюм",
+"комплект",
+"набор",
+"двойка",
+"тройка",
+
+# UA
+"костюм",
+"комплект",
+"набір",
+"двійка",
+"трійка",
+
+# EN
+"set",
+"outfit",
+"matching set",
+"two piece",
+"two-piece"
+)
+_CLOTHES_NAME_HINTS = (
+    _TOP_TOKENS
+    + _BOTTOM_TOKENS
+    + _OUTERWEAR_TOKENS
+    + _DRESS_TOKENS
+    + _JUMPSUIT_TOKENS
+    + _SET_TOKENS
+)
+
+
+
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _line_has_url(line: str) -> bool:
+    lower = line.casefold()
+    return "http://" in lower or "https://" in lower or "www." in lower
+
+
+def _debug_fetch_enabled() -> bool:
+    value = os.getenv("SHAFA_DEBUG_FETCH", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _debug_fetch_verbose() -> bool:
+    value = os.getenv("SHAFA_DEBUG_FETCH_VERBOSE", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _require_telegram_credentials() -> tuple[int, str]:
+    if api_id is None or not api_hash:
+        raise RuntimeError(
+            "Missing Telegram credentials. "
+            "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH."
+        )
+    return int(api_id), api_hash
+
+
+def _extra_photos_aggressive_limit() -> int:
+    raw = os.getenv("SHAFA_EXTRA_PHOTOS_AGGRESSIVE_LIMIT", "").strip()
+    parsed = _parse_int(raw) if raw else None
+    if parsed is None or parsed <= 0:
+        return 50
+    return min(parsed, 2000)
+
+
+def _extra_photos_window_minutes() -> int:
+    raw = os.getenv("SHAFA_EXTRA_PHOTOS_WINDOW_MINUTES", "").strip()
+    parsed = _parse_int(raw) if raw else None
+    if parsed is None or parsed <= 0:
+        return 180
+    return min(parsed, 24 * 60)
+
+
+def _discussion_fallback_limit() -> int:
+    raw = os.getenv("SHAFA_DISCUSSION_FALLBACK_LIMIT", "").strip()
+    parsed = _parse_int(raw) if raw else None
+    if parsed is None or parsed <= 0:
+        return 200
+    return min(parsed, 2000)
+
+
+def _get_document_filename(document) -> str:
+    attributes = getattr(document, "attributes", None) or []
+    for attr in attributes:
+        if isinstance(attr, DocumentAttributeFilename):
+            return getattr(attr, "file_name", "") or ""
+    return ""
+
+
+def _is_image_document(document) -> bool:
+    if not document:
+        return False
+    mime_type = (getattr(document, "mime_type", "") or "").strip().casefold()
+    if not mime_type.startswith("image/"):
+        return False
+    if mime_type in UNSUPPORTED_IMAGE_MIME_TYPES:
+        return False
+    file_name = _get_document_filename(document).strip().casefold()
+    if file_name and Path(file_name).suffix in UNSUPPORTED_IMAGE_EXTENSIONS:
+        return False
+    attributes = getattr(document, "attributes", None) or []
+    for attr in attributes:
+        if isinstance(attr, (DocumentAttributeSticker, DocumentAttributeAnimated)):
+            return False
+    return True
+
+
+def _is_photo_message(message) -> bool:
+    if not message or not getattr(message, "media", None):
+        return False
+    if isinstance(message.media, MessageMediaPhoto):
+        return True
+    if isinstance(message.media, MessageMediaDocument):
+        return _is_image_document(getattr(message, "document", None))
+    return False
+
+
+def _format_size_mb(size_bytes: Optional[int]) -> str:
+    if not size_bytes or size_bytes <= 0:
+        return "?"
+    return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+
+def _get_message_media_size_bytes(message) -> Optional[int]:
+    if not message or not getattr(message, "media", None):
+        return None
+    if isinstance(message.media, MessageMediaDocument):
+        document = getattr(message, "document", None) or getattr(
+            message.media, "document", None
+        )
+        size = getattr(document, "size", None)
+        if isinstance(size, int):
+            return size
+    if isinstance(message.media, MessageMediaPhoto):
+        photo = getattr(message, "photo", None) or getattr(message.media, "photo", None)
+        sizes = getattr(photo, "sizes", None) or []
+        values: list[int] = []
+        for size in sizes:
+            size_value = getattr(size, "size", None)
+            if isinstance(size_value, int):
+                values.append(size_value)
+                continue
+            progressive = getattr(size, "sizes", None)
+            if isinstance(progressive, list):
+                values.extend([item for item in progressive if isinstance(item, int)])
+                continue
+            raw_bytes = getattr(size, "bytes", None)
+            if isinstance(raw_bytes, (bytes, bytearray)):
+                values.append(len(raw_bytes))
+        if values:
+            return max(values)
+    file_obj = getattr(message, "file", None)
+    size = getattr(file_obj, "size", None)
+    if isinstance(size, int):
+        return size
+    return None
+
+
+def _get_channel_ids() -> list[int]:
+    raw = os.getenv("SHAFA_CHANNEL_IDS", "").strip()
+    if not raw:
+        runtime_channels = get_telegram_channels()
+        if runtime_channels:
+            return [channel_id for channel_id, _, _ in runtime_channels]
+        rows = load_telegram_channels()
+        if rows:
+            mirrored = [
+                (int(row["channel_id"]), str(row["name"]), str(row.get("alias") or "main"))
+                for row in rows
+            ]
+            set_telegram_channels(mirrored)
+            return [row["channel_id"] for row in rows]
+        return []
+    ids: list[int] = []
+    for part in re.split(r"[,\s]+", raw):
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return ids
+
+
+def _get_channel_alias(channel_id: int) -> str:
+    for current_channel_id, _, alias in get_telegram_channels():
+        if current_channel_id == channel_id:
+            return alias or ""
+    for row in load_telegram_channels():
+        if row["channel_id"] == channel_id:
+            return row.get("alias") or ""
+    return ""
+
+
+async def _sync_channel_titles(client: TelegramClient, channel_ids: list[int]) -> None:
+    runtime_rows = {
+        channel_id: {"channel_id": channel_id, "name": name, "alias": alias}
+        for channel_id, name, alias in get_telegram_channels()
+    }
+    db_rows = {row["channel_id"]: row for row in load_telegram_channels()}
+    rows = runtime_rows or db_rows
+    updates: list[tuple[int, str, Optional[str]]] = []
+    for channel_id in channel_ids:
+        current = rows.get(channel_id) or {}
+        name = str(current.get("name") or "").strip()
+        alias = current.get("alias")
+        if name and name != str(channel_id):
+            continue
+        try:
+            entity = await client.get_entity(channel_id)
+        except (ValueError, RPCError):
+            continue
+        title = getattr(entity, "title", None) or getattr(entity, "username", None)
+        if title and title != name:
+            updates.append((channel_id, title, alias))
+    if updates:
+        merged = {
+            channel_id: (channel_id, name, alias or "main")
+            for channel_id, name, alias in get_telegram_channels()
+        }
+        for channel_id, title, alias in updates:
+            merged[channel_id] = (channel_id, title, alias or "main")
+        set_telegram_channels(merged.values())
+        save_telegram_channels(updates)
+
+
+def normalize_message(message: str) -> str:
+    if not message:
+        return ""
+    text = unicodedata.normalize("NFKC", message)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\u00a0", " ")
+    text = text.replace("–", "-").replace("—", "-")
+
+    cleaned: list[str] = []
+    for ch in text:
+        if ch == "\n":
+            cleaned.append("\n")
+            continue
+        if ch == "\t":
+            cleaned.append(" ")
+            continue
+        if ch in {"\u200d", "\ufe0f", "\ufe0e"}:
+            continue
+        cat = unicodedata.category(ch)
+        if cat in {"Cc", "Cf"}:
+            continue
+        if cat in {"So", "Sk"}:
+            continue
+        cleaned.append(ch)
+    text = "".join(cleaned)
+    lines: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[•*#>\-–—\s]+", "", line)
+        line = re.sub(r"\s{2,}", " ", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _clean_name(value: str) -> str:
+    text = value.strip(" \t-–—|:;")
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(
+        r"\s*[-–—:]?\s*\d{2,6}\s*(?:грн|uah|₴)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    stripped = _strip_name_prefix(text)
+    if stripped:
+        text = stripped
+    return text.strip()
+
+
+def _normalize_token(token: str) -> str:
+    return re.sub(r"[^\w]+", "", token, flags=re.UNICODE).casefold()
+
+
+def _strip_name_prefix(text: str) -> str:
+    tokens = text.split()
+    if not tokens:
+        return text
+    idx = 0
+    for token in tokens:
+        normalized = _normalize_token(token)
+        if not normalized:
+            idx += 1
+            continue
+        elif normalized in _GENERIC_NAME_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _OUTERWEAR_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _BOTTOM_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _DRESS_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _JUMPSUIT_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _SET_TOKENS:
+            idx += 1
+            continue
+        elif normalized in _TOP_TOKENS:
+            idx += 1
+            continue
+        else:
+            break
+    if idx > 0 and idx < len(tokens):
+        return " ".join(tokens[idx:])
+    return text
+
+
+def _looks_like_name(line: str) -> bool:
+    if len(line) < 3 or len(line) > 120:
+        return False
+    lower = line.casefold()
+    if _contains_any(lower, _NON_NAME_HINTS) or _contains_any(
+        lower, _NAME_EXCLUDE_HINTS
+    ):
+        return False
+    if _line_has_url(line) or "@" in line:
+        return False
+    letters = sum(ch.isalpha() for ch in line)
+    if letters < 2:
+        return False
+    digits = sum(ch.isdigit() for ch in line)
+    if letters < 3 and digits == 0:
+        return False
+    if digits > letters * 2:
+        return False
+    return True
+
+
+def _score_name_line(line: str) -> float:
+    letters = sum(ch.isalpha() for ch in line)
+    words = len(line.split())
+    score = min(letters / max(len(line), 1), 1.0) * 0.6
+    if 2 <= words <= 8:
+        score += 0.25
+    if any(ch.isdigit() for ch in line):
+        score += 0.05
+    return score
+
+def _looks_like_article(text: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9\-]{3,}", text))
+
+def extract_description(lines: list[str]) -> str:
+
+    material_line = ""
+    color_line = ""
+    size_line = ""
+    mod_line = ""
+
+    capture = False
+    sizes_lines = []
+
+    for line in lines:
+        clean_line = re.sub(r"^[^\wА-Яа-яA-Za-z]+", "", line.lstrip("▫️•- ")).strip()
+        if not material_line:
+            match_material = re.search(
+                r"(?i)тканина[:\s]*([\w\s\(\)%\-\u2013;/]+)", clean_line
+            )
+
+            if match_material:
+                material_line = match_material.group(1)
+
+        if not color_line:
+            match_color = re.search(
+                r"(?i)(?:колір|кольори)[:\s]*([\w\s\(\)%\-\u2013;/]+)", clean_line
+            )
+            if match_color:
+                color_line = match_color.group(1)
+
+        if not size_line:
+            match_size = re.search(
+                r"(?i)(?:розмірна\s*сітка|розміри|розмір|size)[:\s]*([\w\s\(\)%\-\u2013;/]+)", 
+                clean_line
+            )
+            if match_size:
+                size_line = match_size.group(1)
+
+        if not mod_line:
+            match_mod = re.search(
+                r"(?i)\b(?:модель|мод(?:\.|ель)?|арт(?:\.|икул)?|mod|mdl)\b[\s:№.-]*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9\-_/]*)",
+                clean_line
+            )
+            if match_mod:
+                mod_line = match_mod.group(1)
+
+        if not capture and re.search(r"(?i)замір|заміри|виміри", clean_line):
+            capture = True
+            continue
+
+        if capture:
+            if re.match(r"(?i)по всім питанням", clean_line):
+                capture = False
+                continue
+            clean_line = re.sub(r"^[▫️•\-]\s*", "", clean_line)
+            if clean_line:
+                sizes_lines.append(clean_line)
+
+    sizes_text = "\n".join(sizes_lines)
+    sizes_block = f"Заміри:\n{sizes_text}\n" if sizes_lines else ""
+    mod_block = f"Модель: {mod_line}\n" if mod_line else ""        
+    size_block = f"Розмір: {size_line}\n" if size_line else ""
+    color_block = f"Колір: {color_line}\n" if color_line else ""
+    material_block = f"Тканина: {material_line}\n" if material_line else ""
+
+    description = (
+        "\n"
+        "Параметри та доступні розміри уточнюйте в повідомленнях. Якщо виникнуть додаткові запитання — пишіть у чат, із радістю відповім.\n"
+        "Стильна річ для створення сучасного та впевненого образу. Добре поєднується з різними елементами гардеробу та підходить як для повсякденного носіння, так і для особливих випадків. Приємний матеріал забезпечує комфорт протягом усього дня, а універсальний дизайн легко вписується у будь-який стиль — від класичного до casual.\n"
+        f"{material_block}\n"
+        f"{color_block}\n"
+        f"{size_block}\n"
+        f"{mod_block}\n"
+        f"{sizes_block}\n"
+        "Виробництво: Україна"
+    )
+    return description
+
+
+def clean_line_name(line: str) -> str:
+    cleaned = re.sub(r"[^\w\s\.\-,]", "", line)
+    cleaned = cleaned.strip()
+    return cleaned
+
+def capitalise_first_word(s: str) -> str:
+    s = s.strip()
+    if not s:
+        return s
+    return s[0].upper() + s[1:]
+
+def extract_name(lines: list[str]) -> str:
+    mod_number = ""
+    best_candidate = None
+    fallback_candidate = None
+    word_for_slack = ""
+
+    for line in lines:
+        lower_words = line.casefold().split()
+        if any(bad in lower_words for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
+            continue
+        for word in lower_words:
+            word_found = find_word(word)
+            if word_found:
+                word_for_slack = word_found
+                if len(lower_words) > 3 and best_candidate is None:
+                    best_candidate = line
+                    if "." in best_candidate:
+                        best_candidate = best_candidate.split(".")[0].strip().split(",")[0].strip()
+                elif fallback_candidate is None:
+                    fallback_candidate = line
+
+    result = best_candidate or fallback_candidate or ""
+    if result:
+        result = clean_line_name(result)
+        if mod_number:
+            result = f"{result}"
+        result = capitalise_first_word(result)
+        return result, word_for_slack or ""
+            
+
+    for line in lines:
+        match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and not _looks_like_article(candidate):
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)^(?:отримали|получили|поступили|поступление|завезли)\s+(?:новинк\w*\s+)?(.+)$",
+            line,
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate:
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate:
+                return candidate, word_for_slack or ""
+    for line in lines[:3]:
+        if not _looks_like_name(line):
+            continue
+        candidate = _clean_name(line)
+        if candidate and (
+            len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate)
+        ):
+            return candidate, word_for_slack or ""
+    best = ""
+    best_score = 0.0
+    for idx, line in enumerate(lines):
+        if not _looks_like_name(line):
+            continue
+        candidate = _clean_name(line)
+        if not candidate:
+            continue
+        score = _score_name_line(candidate) - min(idx, 10) * 0.02
+        if candidate.endswith(".") and len(candidate.split()) > 4:
+            score -= 0.2
+        if score > best_score:
+            best = candidate
+            best_score = score       
+    return best, word_for_slack or ""
+
+
+def _normalize_number(value: str) -> str:
+    text = value.replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
+def _to_number(value: str) -> Optional[float]:
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _extract_last_price_token(text: str, *, allow_small: bool) -> str:
+    for token in reversed(
+        re.findall(
+            r"(?<!\d)\d{1,3}(?:[ \u00A0]\d{3})+(?:[.,]\d{1,2})?(?!\d)",
+            text,
+        )
+    ):
+        normalized = _normalize_number(token)
+        numeric = _to_number(normalized)
+        if numeric is None:
+            continue
+        if allow_small or numeric >= 100:
+            return normalized
+    for token in reversed(re.findall(r"(?<!\d)\d{2,6}(?:[.,]\d{1,2})?(?!\d)", text)):
+        numeric = _to_number(token)
+        if numeric is None:
+            continue
+        if allow_small or numeric >= 100:
+            return _normalize_number(token)
+    return ""
+
+
+def _price_from_line(
+    line: str, *, allow_small: bool, require_currency: bool = False
+) -> str:
+    currency_match = None
+    for match in re.finditer(r"(?:грн|uah|₴|usd|eur|руб)\b", line, flags=re.IGNORECASE):
+        currency_match = match
+    if currency_match:
+        token = _extract_last_price_token(
+            line[: currency_match.start()], allow_small=allow_small
+        )
+        if token:
+            return token
+        if require_currency:
+            return ""
+    if require_currency:
+        return ""
+    return _extract_last_price_token(line, allow_small=allow_small)
+
+
+def _looks_like_standalone_price_line(line: str) -> bool:
+    # Fallback price parsing should work only for mostly numeric lines
+    # to avoid treating model numbers in product names as prices.
+    cleaned = re.sub(r"[\d\s.,:/()+\-–—$€£₴]", "", line)
+    return cleaned == ""
+
+
+def extract_price(lines: list[str]) -> str:
+    for line in lines:
+        lower = line.casefold()
+        if _line_has_url(line) or _contains_any(lower, _PRICE_EXCLUDE_HINTS):
+            continue
+        if not _contains_any(lower, _PRICE_HINTS):
+            continue
+        price = _price_from_line(line, allow_small=True)
+        if price:
+            return price
+    for line in lines:
+        lower = line.casefold()
+        if _line_has_url(line) or _contains_any(lower, _PRICE_EXCLUDE_HINTS):
+            continue
+        price = _price_from_line(line, allow_small=False, require_currency=True)
+        if price:
+            return price
+    candidates: list[tuple[float, str]] = []
+    for line in lines:
+        lower = line.casefold()
+        if (
+            _line_has_url(line)
+            or _contains_any(lower, _PRICE_EXCLUDE_HINTS)
+            or _contains_any(lower, _CONTACT_HINTS)
+        ):
+            continue
+        if _contains_any(lower, _SIZE_HINTS):
+            continue
+        if not _looks_like_standalone_price_line(line):
+            continue
+        compact = line.replace("\u00a0", " ")
+        for token in re.findall(r"\d{2,6}(?:[.,]\d{1,2})?", compact):
+            numeric = _to_number(token)
+            if numeric is None or numeric < 100:
+                continue
+            candidates.append((numeric, token))
+    if candidates:
+        return _normalize_number(max(candidates, key=lambda item: item[0])[1])
+    return ""
+
+
+def _normalize_size_token(token: str) -> str:
+    text = token.strip().upper()
+    if text in _ALPHA_SIZES:
+        return text
+    if text.replace(",", ".").replace(".", "", 1).isdigit():
+        value = text.replace(",", ".")
+        if value.endswith(".0"):
+            value = value[:-2]
+        return value
+    return ""
+
+
+def _extract_size_tokens_from_line(line: str) -> list[str]:
+    tokens: list[str] = []
+    lower = line.casefold()
+    if re.search(r"\bone\s*size\b", lower):
+        tokens.append("ONE SIZE")
+    for size in re.findall(
+        r"\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL|OS)\b", line.upper()
+    ):
+        tokens.append(size)
+    for match in re.finditer(r"\b(\d{2})\s*[-–]\s*(\d{2})\b", line):
+        after = line[match.end() : match.end() + 4].casefold()
+        if "см" in after or "cm" in after:
+            continue
+        start = int(match.group(1))
+        end = int(match.group(2))
+        if not (15 <= start <= 60 and 15 <= end <= 60):
+            continue
+        if end < start or end - start > 20:
+            continue
+        for value in range(start, end + 1):
+            tokens.append(str(value))
+    cleaned = re.sub(
+        r"\b\d{2,3}(?:[.,]\d+)?\s*(?:см|cm)\b", "", line, flags=re.IGNORECASE
+    )
+    for match in re.finditer(r"\d{2,3}(?:[.,]\d+)?", cleaned):
+        if match.start() > 0 and cleaned[match.start() - 1].isdigit():
+            continue
+        if match.end() < len(cleaned) and cleaned[match.end()].isdigit():
+            continue
+        numeric = _to_number(match.group(0))
+        if numeric is None or not (15 <= numeric <= 60):
+            continue
+        normalized = _normalize_size_token(match.group(0))
+        if normalized:
+            tokens.append(normalized)
+    return tokens
+
+
+def extract_sizes(lines: list[str]) -> tuple[str, list[str]]:
+    sizes: list[str] = []
+    hinted_lines: list[str] = []
+    fallback_lines: list[str] = []
+    for line in lines:
+        lower = line.casefold()
+        if _contains_any(lower, _PRICE_HINTS) and not _contains_any(lower, _SIZE_HINTS):
+            continue
+        if not _contains_any(lower, _SIZE_HINTS) and _contains_any(
+            lower, _SIZE_EXCLUDE_HINTS
+        ):
+            continue
+        if _contains_any(lower, _SIZE_HINTS):
+            hinted_lines.append(line)
+        else:
+            fallback_lines.append(line)
+
+    if hinted_lines:
+        for line in hinted_lines:
+            for token in _extract_size_tokens_from_line(line):
+                if token not in sizes:
+                    sizes.append(token)
+    else:
+        for line in fallback_lines:
+            tokens = _extract_size_tokens_from_line(line)
+            if not tokens:
+                continue
+            if len(tokens) < 2:
+                cleaned = re.sub(r"[\d\s.,:/()+\-–—]", "", line)
+                if cleaned:
+                    continue
+            for token in tokens:
+                if token not in sizes:
+                    sizes.append(token)
+    size = sizes[0] if sizes else ""
+    additional_sizes = sizes[1:] if len(sizes) > 1 else []
+    return size, additional_sizes
+
+
+def _load_brand_patterns() -> list[tuple[str, re.Pattern]]:
+    global _BRAND_PATTERNS
+    if _BRAND_PATTERNS is not None:
+        return _BRAND_PATTERNS
+    names = [name.strip() for name in list_brand_names() if str(name).strip()]
+    names.sort(key=len, reverse=True)
+    patterns: list[tuple[str, re.Pattern]] = []
+    for name in names:
+        escaped = re.escape(name)
+        patterns.append((name, re.compile(rf"(?i)(?<!\w){escaped}(?!\w)")))
+    _BRAND_PATTERNS = patterns
+    return patterns
+
+
+def _find_brand_in_text(text: str) -> str:
+    if not text:
+        return ""
+    for name, pattern in _load_brand_patterns():
+        if pattern.search(text):
+            return name
+    return ""
+
+
+def _fallback_brand_from_name(name: str) -> str:
+    if not name:
+        return ""
+    for token in name.split():
+        normalized = _normalize_token(token)
+        if not normalized or normalized in _GENERIC_NAME_TOKENS:
+            continue
+        if not normalized or normalized in _OUTERWEAR_TOKENS:
+            continue
+        if not normalized or normalized in _TOP_TOKENS:
+            continue
+        if not normalized or normalized in _BOTTOM_TOKENS:
+            continue
+        if not normalized or normalized in _JUMPSUIT_TOKENS:
+            continue
+        if not normalized or normalized in _SET_TOKENS:
+            continue
+        if not normalized or normalized in _DRESS_TOKENS:
+            continue
+        return token.strip(".,;:()[]{}")
+    return name.split()[0] if name else ""
+
+
+def extract_brand(lines: list[str], name: str) -> str:
+    for line in lines:
+        if not _contains_any(line.casefold(), _BRAND_LABELS):
+            continue
+        match = re.search(
+            rf"(?i)\b(?:{'|'.join(_BRAND_LABELS)})\b\s*[:\-]?\s*(.+)$", line
+        )
+        if match:
+            value = match.group(1)
+            value = re.split(r"[|,/]", value)[0].strip()
+            if value:
+                normalized = _normalize_token(value)
+                if normalized and normalized not in _GENERIC_NAME_TOKENS:
+                    return value
+    cleaned_name = _strip_name_prefix(name)
+    brand = _find_brand_in_text(cleaned_name)
+    if brand:
+        return brand
+    for line in lines:
+        brand = _find_brand_in_text(line)
+        if brand:
+            return brand
+    return _fallback_brand_from_name(cleaned_name or name)
+
+
+def extract_colors(lines: list[str], name: str) -> str:
+    color_lines = [
+        line for line in lines if _contains_any(line.casefold(), _COLOR_LABELS)
+    ]
+    candidates = (
+        [name] + (color_lines if color_lines else lines)
+        if name
+        else (color_lines or list(lines))
+    )
+    text = " ".join(candidates)
+    tokens = re.findall(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]+", text)
+    colors: list[str] = []
+    pending_modifier = ""
+    for token in tokens:
+        key = token.casefold()
+        modifier = _COLOR_MODIFIERS.get(key)
+        if modifier:
+            pending_modifier = modifier
+            continue
+        base = _COLOR_SYNONYMS.get(key)
+        if base:
+            if pending_modifier:
+                color = f"{pending_modifier} {base}"
+                pending_modifier = ""
+            else:
+                color = base
+            if color not in colors:
+                colors.append(color)
+        else:
+            pending_modifier = ""
+    return " ".join(colors)
+
+
+def _calculate_confidence(
+    name: str,
+    price: str,
+    size: str,
+    brand: str,
+    color: str,
+) -> float:
+    score = 0.0
+    if name:
+        score += 0.4
+    if price:
+        score += 0.25
+    if size:
+        score += 0.25
+    if brand:
+        score += 0.05
+    if color:
+        score += 0.05
+    return round(score, 2)
+
+
+def parse_message(message: str) -> dict:
+    normalized = normalize_message(message)
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    name, word_for_slack = extract_name(lines)
+    description = extract_description(lines)
+    brand = extract_brand(lines, name)
+    size, additional_sizes = extract_sizes(lines)
+    color = extract_colors(lines, name)
+    price = extract_price(lines)
+    confidence = _calculate_confidence(name, price, size, brand, color)
+
+
+
+    return {
+        "description": description,
+        "name": name,
+        "word_for_slack": word_for_slack,
+        "brand": brand,
+        "size": size,
+        "additional_sizes": additional_sizes,
+        "color": color,
+        "price": price,
+        "confidence": confidence,
+    }
+
+
+def get_runtime_mode() -> str:
+    raw = os.getenv(APP_MODE_ENV, MODE_CLOTHES).strip().lower()
+    if raw not in {MODE_CLOTHES, MODE_SNEAKERS}:
+        return MODE_CLOTHES
+    return raw
+
+
+def should_run_first_fetch() -> bool:
+    return get_runtime_mode() == MODE_CLOTHES
+
+
+def is_mode_allowed_parsed(parsed: dict) -> bool:
+    if get_runtime_mode() != MODE_SNEAKERS:
+        return True
+    word_for_slack = str(parsed.get("word_for_slack") or "").strip().lower()
+    if word_for_slack in {"sneakers", "slack"}:
+        return True
+    additional_sizes = parsed.get("additional_sizes", [])
+    if not isinstance(additional_sizes, list):
+        additional_sizes = []
+    size_value = parsed.get("size")
+    numeric_sizes = [
+        numeric_size
+        for value in [size_value, *additional_sizes]
+        for numeric_size in _extract_numeric_sizes(value)
+    ]
+    if not numeric_sizes:
+        return False
+    category = _resolve_catalog_slug(parsed.get("size"), additional_sizes, word_for_slack)
+    return category in {DEFAULT_SHOES_CATEGORY, WOMEN_SNEAKERS_CATEGORY}
+
+
+async def first_fetch() -> int:
+    inserted = 0
+    debug_fetch = _debug_fetch_enabled()
+    debug_verbose = _debug_fetch_verbose()
+    stats = {
+        "total": 0,
+        "no_media": 0,
+        "non_photo_media": 0,
+        "no_text": 0,
+        "missing_name": 0,
+        "missing_price": 0,
+        "missing_size": 0,
+        "parsed_ok": 0,
+        "saved": 0,
+        "duplicate": 0,
+    }
+    verbose_limit = 5
+    verbose_count = 0
+    valid_messages = 0
+    all_valid_messages = 0
+    itter_amount = 0
+    
+    def log_skip(reason: str, text: str, message_id: int, channel_id: int) -> None:
+        nonlocal verbose_count
+        if not debug_verbose or verbose_count >= verbose_limit:
+            return
+        preview_lines = normalize_message(text).splitlines() if text else []
+        preview = preview_lines[0] if preview_lines else ""
+        verbose_count += 1
+
+
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    async with TelegramClient(str(TELEGRAM_SESSION_PATH), api_id_value, api_hash_value) as client:
+        channel_ids = _get_channel_ids()
+        await _sync_channel_titles(client, channel_ids)
+        for channel_id in channel_ids:
+            async for msg in client.iter_messages(channel_id, limit=1000):
+                if debug_fetch:
+                    stats["total"] += 1
+                if not msg.media:
+                    if debug_fetch:
+                        stats["no_media"] += 1
+                    log_skip("no_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not _is_photo_message(msg):
+                    if debug_fetch:
+                        stats["non_photo_media"] += 1
+                    log_skip("non_photo_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not msg.message:
+                    if debug_fetch:
+                        stats["no_text"] += 1
+                    log_skip("no_text", "", msg.id, channel_id)
+                    continue
+                parsed = parse_message(msg.message)
+                if not is_mode_allowed_parsed(parsed):
+                    continue
+                if not parsed.get("name"):
+                    if debug_fetch:
+                        stats["missing_name"] += 1
+                    log_skip("missing_name", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("price"):
+                    if debug_fetch:
+                        stats["missing_price"] += 1
+                    log_skip("missing_price", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("size"):
+                    if debug_fetch:
+                        stats["missing_size"] += 1
+                    log_skip("missing_size", msg.message, msg.id, channel_id)
+                    continue
+                if debug_fetch:
+                    stats["parsed_ok"] += 1
+                if save_telegram_product(channel_id, msg.id, msg.message, parsed):
+                    inserted += 1
+                    if debug_fetch:
+                        stats["saved"] += 1
+                elif debug_fetch:
+                    stats["duplicate"] += 1
+                itter_amount += 1
+                valid_messages += 1
+                print(valid_messages)
+                if valid_messages >= 20:
+                    all_valid_messages += 20
+                    print(all_valid_messages)
+                    valid_messages = 0
+                    break
+                elif itter_amount >= 500:
+                    itter_amount = 0
+                    break
+
+    if debug_fetch:
+        print(
+            "[DEBUG] fetch stats: "
+            f"total={stats['total']} "
+            f"no_media={stats['no_media']} "
+            f"non_photo_media={stats['non_photo_media']} "
+            f"no_text={stats['no_text']} "
+            f"missing_name={stats['missing_name']} "
+            f"missing_price={stats['missing_price']} "
+            f"missing_size={stats['missing_size']} "
+            f"parsed_ok={stats['parsed_ok']} "
+            f"saved={stats['saved']} "
+            f"duplicate={stats['duplicate']}"
+        )
+    return inserted
+
+async def _fetch_messages(message_amount: int = 200) -> int:
+    inserted = 0
+    debug_fetch = _debug_fetch_enabled()
+    debug_verbose = _debug_fetch_verbose()
+    stats = {
+        "total": 0,
+        "no_media": 0,
+        "non_photo_media": 0,
+        "no_text": 0,
+        "missing_name": 0,
+        "missing_price": 0,
+        "missing_size": 0,
+        "parsed_ok": 0,
+        "saved": 0,
+        "duplicate": 0,
+    }
+    verbose_limit = 5
+    verbose_count = 0
+
+    def log_skip(reason: str, text: str, message_id: int, channel_id: int) -> None:
+        nonlocal verbose_count
+        if not debug_verbose or verbose_count >= verbose_limit:
+            return
+        preview_lines = normalize_message(text).splitlines() if text else []
+        preview = preview_lines[0] if preview_lines else ""
+        verbose_count += 1
+
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    async with TelegramClient(str(TELEGRAM_SESSION_PATH), api_id_value, api_hash_value) as client:
+        channel_ids = _get_channel_ids()
+        await _sync_channel_titles(client, channel_ids)
+        for channel_id in channel_ids:
+            async for msg in client.iter_messages(channel_id, limit=message_amount):
+                if debug_fetch:
+                    stats["total"] += 1
+                if not msg.media:
+                    if debug_fetch:
+                        stats["no_media"] += 1
+                    log_skip("no_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not _is_photo_message(msg):
+                    if debug_fetch:
+                        stats["non_photo_media"] += 1
+                    log_skip("non_photo_media", msg.message or "", msg.id, channel_id)
+                    continue
+                if not msg.message:
+                    if debug_fetch:
+                        stats["no_text"] += 1
+                    log_skip("no_text", "", msg.id, channel_id)
+                    continue
+                parsed = parse_message(msg.message)
+                if not is_mode_allowed_parsed(parsed):
+                    continue
+                if not parsed.get("name"):
+                    if debug_fetch:
+                        stats["missing_name"] += 1
+                    log_skip("missing_name", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("price"):
+                    if debug_fetch:
+                        stats["missing_price"] += 1
+                    log_skip("missing_price", msg.message, msg.id, channel_id)
+                    continue
+                if not parsed.get("size"):
+                    if debug_fetch:
+                        stats["missing_size"] += 1
+                    log_skip("missing_size", msg.message, msg.id, channel_id)
+                    continue
+                if debug_fetch:
+                    stats["parsed_ok"] += 1
+                if save_telegram_product(channel_id, msg.id, msg.message, parsed):
+                    inserted += 1
+                    if debug_fetch:
+                        stats["saved"] += 1
+                elif debug_fetch:
+                    stats["duplicate"] += 1
+    if debug_fetch:
+        print(
+            "[DEBUG] fetch stats: "
+            f"total={stats['total']} "
+            f"no_media={stats['no_media']} "
+            f"non_photo_media={stats['non_photo_media']} "
+            f"no_text={stats['no_text']} "
+            f"missing_name={stats['missing_name']} "
+            f"missing_price={stats['missing_price']} "
+            f"missing_size={stats['missing_size']} "
+            f"parsed_ok={stats['parsed_ok']} "
+            f"saved={stats['saved']} "
+            f"duplicate={stats['duplicate']}"
+        )
+    return inserted
+
+
+async def _collect_group_messages(
+    client: TelegramClient,
+    channel_id: int,
+    message_id: int,
+    grouped_id: int,
+) -> list:
+    min_id = max(1, message_id - 50)
+    max_id = message_id + 50
+    messages: list = []
+    async for msg in client.iter_messages(channel_id, min_id=min_id, max_id=max_id):
+        if msg.grouped_id == grouped_id and _is_photo_message(msg):
+            messages.append(msg)
+    return messages
+
+
+async def _collect_discussion_photos(
+    client: TelegramClient,
+    channel_id: int,
+    message_id: int,
+    message_ids: Optional[list[int]] = None,
+) -> list:
+    alias = _get_channel_alias(channel_id)
+    if "extra_photos" not in alias:
+        return []
+    candidate_ids = [message_id]
+    if message_ids:
+        seen_ids: set[int] = set()
+        candidate_ids = []
+        for item in message_ids:
+            if item and item not in seen_ids:
+                candidate_ids.append(item)
+                seen_ids.add(item)
+        if not candidate_ids:
+            candidate_ids = [message_id]
+    result = None
+    last_exc: Optional[Exception] = None
+    for candidate_id in candidate_ids:
+        try:
+            result = await client(
+                GetDiscussionMessageRequest(peer=channel_id, msg_id=candidate_id)
+            )
+        except RPCError as exc:
+            last_exc = exc
+            result = None
+            continue
+        if result.messages:
+            break
+        result = None
+    if not result or not result.messages:
+        if last_exc:
+            preview = ", ".join(str(value) for value in candidate_ids[:5])
+            suffix = "..." if len(candidate_ids) > 5 else ""
+            log(
+                "WARN",
+                "Не удалось получить обсуждение для сообщения: "
+                f"channel_id={channel_id} \n"
+                + f"message_ids=[{preview}{suffix}]\n"
+                + f"error={last_exc}.",
+            )
+        return []
+    discussion_chat_id: Optional[int] = None
+    for msg in result.messages:
+        chat_id = getattr(msg, "chat_id", None)
+        if chat_id and chat_id != channel_id:
+            discussion_chat_id = chat_id
+            break
+    if discussion_chat_id is None:
+        for chat in result.chats:
+            chat_id = get_peer_id(chat)
+            if chat_id != channel_id:
+                discussion_chat_id = chat_id
+                break
+    if not discussion_chat_id:
+        return []
+    root = next(
+        (
+            msg
+            for msg in result.messages
+            if getattr(msg, "chat_id", None) == discussion_chat_id
+        ),
+        None,
+    )
+    if not root:
+        return []
+    messages: list = []
+    grouped_seen: set[int] = set()
+
+    async def add_reply(reply) -> None:
+        if not _is_photo_message(reply):
+            return
+        if reply.grouped_id:
+            if reply.grouped_id in grouped_seen:
+                return
+            grouped_seen.add(reply.grouped_id)
+            grouped = await _collect_group_messages(
+                client,
+                discussion_chat_id,
+                reply.id,
+                reply.grouped_id,
+            )
+            if grouped:
+                messages.extend(grouped)
+                return
+        messages.append(reply)
+
+    root_id = getattr(root, "id", None)
+    if not root_id:
+        return []
+    root_date = getattr(root, "date", None)
+    try:
+        async for reply in client.iter_messages(discussion_chat_id, reply_to=root_id):
+            await add_reply(reply)
+    except RPCError as exc:
+        if verbose_photo_logs_enabled():
+            log(
+                "WARN",
+                "Не удалось получить ответы из обсуждения: "
+                f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
+            )
+    if messages:
+        return messages
+
+    fallback_limit = _discussion_fallback_limit()
+    window_minutes = _extra_photos_window_minutes()
+    window_seconds = window_minutes * 60 if window_minutes > 0 else 0
+    try:
+        async for reply in client.iter_messages(
+            discussion_chat_id, limit=fallback_limit
+        ):
+            header = getattr(reply, "reply_to", None)
+            if header:
+                top_id = getattr(header, "reply_to_top_id", None)
+                msg_id = getattr(header, "reply_to_msg_id", None)
+                if top_id != root_id and msg_id != root_id:
+                    continue
+                await add_reply(reply)
+                continue
+            if window_seconds <= 0:
+                continue
+            reply_id = getattr(reply, "id", None)
+            if reply_id is not None and reply_id <= root_id:
+                continue
+            if root_date is not None:
+                reply_date = getattr(reply, "date", None)
+                if reply_date is not None:
+                    delta = (reply_date - root_date).total_seconds()
+                    if delta < 0 or delta > window_seconds:
+                        continue
+            await add_reply(reply)
+    except RPCError as exc:
+        log(
+            "WARN",
+            "Не удалось прочитать обсуждение: "
+            f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
+        )
+        return []
+    if messages:
+        return messages
+
+    aggressive_limit = _extra_photos_aggressive_limit()
+    try:
+        async for reply in client.iter_messages(
+            discussion_chat_id,
+            min_id=root_id,
+            limit=aggressive_limit,
+            reverse=True,
+        ):
+            reply_id = getattr(reply, "id", None)
+            if reply_id is not None and reply_id <= root_id:
+                continue
+            await add_reply(reply)
+            if len(messages) >= aggressive_limit:
+                break
+    except RPCError as exc:
+        log(
+            "WARN",
+            "Не удалось получить фото из обсуждения (aggressive): "
+            f"chat_id={discussion_chat_id} root_id={root_id} error={exc}.",
+        )
+        return []
+    return messages
+
+
+async def _download_message_photos(
+    channel_id: int,
+    message_id: int,
+    target_dir: Path,
+    max_photos: int,
+) -> int:
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    async with TelegramClient(str(TELEGRAM_SESSION_PATH), api_id_value, api_hash_value) as client:
+        await _sync_channel_titles(client, _get_channel_ids())
+        verbose_photo_logs = verbose_photo_logs_enabled()
+        if verbose_photo_logs:
+            log(
+                "INFO",
+                "Скачиваю фото из Telegram: \n"
+                + f"channel_id={channel_id}\n"
+                + f"message_id={message_id}.",
+            )        
+        message = await client.get_messages(channel_id, ids=message_id)
+        if not message or not _is_photo_message(message):
+            return 0
+        messages = [message]
+        if message.grouped_id:
+            grouped = await _collect_group_messages(
+                client,
+                channel_id,
+                message_id,
+                message.grouped_id,
+            )
+            messages = grouped or [message]
+            if not messages:
+                messages = [message]
+        discussion_message_ids = [message_id]
+        for msg in sorted(messages, key=lambda item: item.id):
+            if msg.id != message_id:
+                discussion_message_ids.append(msg.id)
+        extra = await _collect_discussion_photos(
+            client,
+            channel_id,
+            message_id,
+            discussion_message_ids,
+        )
+        if extra:
+            messages.extend(extra)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        downloaded = 0
+        seen: set[tuple[int, int]] = set()
+        queue: list[tuple] = []
+        skipped_large = 0
+        max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
+        for msg in messages:
+            chat_id = getattr(msg, "chat_id", channel_id)
+            key = (int(chat_id), msg.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            size_bytes = _get_message_media_size_bytes(msg)
+            if size_bytes is not None and size_bytes > MAX_UPLOAD_BYTES:
+                skipped_large += 1
+                size_mb = size_bytes / (1024 * 1024)
+                log(
+                    "WARN",
+                    "Пропускаю фото из Telegram: "
+                    f"message_id={msg.id} chat_id={chat_id} "
+                    f"{size_mb:.2f} MB > лимита {max_mb:.2f} MB.",
+                )
+                continue
+            queue.append((msg, chat_id, size_bytes))
+        if max_photos > 0 and len(queue) > max_photos:
+            if verbose_photo_logs:
+                log("INFO", f"Ограничение на фото: {max_photos}.")
+            queue = queue[:max_photos]
+        if skipped_large:
+            log(
+                "INFO",
+                f"Пропущено крупных файлов: {skipped_large}.\n"
+                + f"К скачиванию: {len(queue)}.",
+            )
+        if not queue:
+            log("WARN", "Нет подходящих фото для скачивания.")
+            return 0
+        failed_downloads = 0
+        with ProgressBar(
+            total=len(queue),
+            label="Скачивание фото",
+            enabled=not verbose_photo_logs,
+        ) as progress:
+            for idx, (msg, chat_id, size_bytes) in enumerate(queue, start=1):
+                if verbose_photo_logs:
+                    size_label = _format_size_mb(size_bytes)
+                    log(
+                        "INFO",
+                        f"Скачивание фото {idx}/{len(queue)}: "
+                        f"message_id={msg.id} chat_id={chat_id} size={size_label}.",
+                    )
+                result = await client.download_media(msg, file=str(target_dir))
+                if result:
+                    downloaded += 1
+                    if verbose_photo_logs:
+                        log(
+                            "OK",
+                            f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.",
+                        )
+                else:
+                    failed_downloads += 1
+                    if verbose_photo_logs:
+                        log(
+                            "WARN",
+                            f"Не удалось скачать фото {idx}/{len(queue)}: "
+                            f"message_id={msg.id}.",
+                        )
+                if not verbose_photo_logs:
+                    progress.advance()
+        if failed_downloads and not verbose_photo_logs:
+            log("WARN", f"Не удалось скачать фото: {failed_downloads}/{len(queue)}.")
+        return downloaded
+
+
+def _parse_int(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d+", text):
+        return int(text)
+    return None
+
+
+def _parse_price(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return int(float(text))
+    return None
+
+
+def _extract_numeric_sizes(value: object) -> list[float]:
+    sizes: list[float] = []
+
+    def add_size(numeric: Optional[float]) -> None:
+        if numeric is None or not (15 <= numeric <= 60):
+            return
+        if numeric not in sizes:
+            sizes.append(numeric)
+
+    if value is None:
+        return sizes
+    if isinstance(value, (int, float)):
+        add_size(float(value))
+        return sizes
+
+    text = str(value).strip()
+    if not text:
+        return sizes
+
+    normalized = text.replace(",", ".")
+    without_length = re.sub(
+        r"\b\d{1,3}(?:\.\d+)?\s*(?:см|cm)\b",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+    for match in re.finditer(r"\b(\d{2})\s*[-–]\s*(\d{2})\b", without_length):
+        start = int(match.group(1))
+        end = int(match.group(2))
+        if not (15 <= start <= 60 and 15 <= end <= 60):
+            continue
+        if end < start or end - start > 20:
+            continue
+        for current in range(start, end + 1):
+            add_size(float(current))
+
+    for token in re.findall(r"(?<!\d)\d{2,3}(?:\.\d+)?(?!\d)", without_length):
+        add_size(_to_number(token))
+
+    return sizes
+
+
+def _size_name_candidates(value: object) -> list[str]:
+    text = str(value).strip()
+    candidates: list[str] = []
+
+    def add_candidate(candidate: str) -> None:
+        item = candidate.strip()
+        if item and item not in candidates:
+            candidates.append(item)
+
+    add_candidate(text)
+    add_candidate(text.replace(",", "."))
+    add_candidate(text.replace(".", ","))
+
+    for numeric in _extract_numeric_sizes(text):
+        normalized = f"{numeric:g}"
+        add_candidate(normalized)
+        add_candidate(normalized.replace(".", ","))
+        if numeric.is_integer():
+            add_candidate(str(int(numeric)))
+
+    return candidates
+
+def _resolve_catalog_slug(size: object, additional_sizes: list[object], word_for_slack: str) -> str:
+
+    values = [size, *additional_sizes]
+    numeric_sizes = [
+        numeric_size
+        for value in values
+        for numeric_size in _extract_numeric_sizes(value)
+    ]
+
+    slug = find_slug_by_word(word_for_slack)
+    if slug:
+        return slug
+    if numeric_sizes and all(
+        WOMEN_SNEAKERS_MIN_SIZE <= numeric_size <= WOMEN_SNEAKERS_MAX_SIZE
+        for numeric_size in numeric_sizes
+    ):
+        return WOMEN_SNEAKERS_CATEGORY
+    return DEFAULT_SHOES_CATEGORY
+
+
+def _resolve_brand_id(brand: Optional[str]) -> Optional[int]:
+    if brand is None:
+        return None
+    if isinstance(brand, int):
+        return brand
+    text = str(brand).strip()
+    if not text:
+        return None
+    brand_id = get_brand_id_by_name(text)
+    if brand_id is not None:
+        return brand_id
+    brand_id = _parse_int(text)
+    if brand_id is not None:
+        return brand_id
+    return BRAND_NAME_TO_ID.get(text.lower())
+
+def _resolve_size_id_from_category_map(
+    value: Optional[object],
+    catalog_slug: Optional[str],
+) -> Optional[int]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    mapped_text = SIZE_NAME_MAPPING.get(text.upper(), text)
+    reverse_sizes_dict = {}
+    for key, values in sizes_dict.items():
+        for v in values:
+            reverse_sizes_dict[v] = key
+    main_slug = reverse_sizes_dict.get(catalog_slug or "", catalog_slug)
+    if not main_slug:
+        return None
+    return get_size_id_by_name(mapped_text, catalog_slug=main_slug)
+
+
+def _resolve_size_id(
+    value: Optional[object],
+    catalog_slug: Optional[str] = None,
+) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value if size_id_exists(value, catalog_slug=catalog_slug) else None
+
+    text = str(value).strip()
+    for candidate in _size_name_candidates(text):
+        size_id = get_size_id_by_name(candidate, catalog_slug=catalog_slug)
+        if size_id is not None:
+            return size_id
+
+    mapped_size_id = _resolve_size_id_from_category_map(text, catalog_slug)
+    if mapped_size_id is not None:
+        return mapped_size_id
+
+    parsed = _parse_int(text)
+    if parsed is None:
+        return None
+    return parsed if size_id_exists(parsed, catalog_slug=catalog_slug) else None
+
+
+def _normalize_colors(color_raw: Optional[str]) -> list[str]:
+    if not color_raw:
+        return ["WHITE"]
+    tokens = re.findall(r"[A-Za-z]+", color_raw.lower())
+    colors: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in {"light", "dark"} and i + 1 < len(tokens):
+            base = tokens[i + 1]
+            i += 2
+        else:
+            base = token
+            i += 1
+        mapped = COLOR_NAME_TO_ENUM.get(base)
+        if mapped and mapped not in colors:
+            colors.append(mapped)
+    return colors or ["WHITE"]
+
+
+def _parse_additional_sizes(
+    values: list[str],
+    catalog_slug: Optional[str] = None,
+) -> list[int]:
+    sizes: list[int] = []
+    for value in values:
+        size = _resolve_size_id(value, catalog_slug=catalog_slug)
+        if size is not None:
+            sizes.append(size)
+    return sizes
+
+
+def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
+    additional_size_values = parsed.get("additional_sizes", [])
+    if not isinstance(additional_size_values, list):
+        additional_size_values = []
+    word_for_slack = parsed.get("word_for_slack", "")
+    size_value = parsed.get("size")
+    catalog_slug = _resolve_catalog_slug(
+        size_value,
+        additional_size_values,
+        word_for_slack=word_for_slack,
+    )
+    slug = find_slug_by_word(word_for_slack)
+
+    description = DEFAULT_DESCRIPTION
+    if slug:
+        description = parsed.get("description") or DEFAULT_DESCRIPTION
+
+    product_raw_data: dict = {
+        "word_for_slack": parsed.get("word_for_slack", ""),
+        "name": parsed.get("name", ""),
+        "description": description,
+        "category": catalog_slug,
+        "brand": _resolve_brand_id(parsed.get("brand")),
+        "size": _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug),
+        "price": _parse_price(parsed.get("price")),
+        "slug": slug,
+    }
+    product_raw_data["colors"] = _normalize_colors(parsed.get("color"))
+    additional_sizes = _parse_additional_sizes(
+        additional_size_values,
+        catalog_slug=catalog_slug,
+    )
+    if additional_sizes:
+        product_raw_data["additional_sizes"] = additional_sizes
+    return product_raw_data
+
+
+def build_product_raw_data(parsed: dict) -> dict:
+    return _build_product_raw_data(parsed)
+
+
+def _pick_next_product_for_upload() -> Optional[dict]:
+    while True:
+        rows = [
+            row
+            for channel_id in _get_channel_ids()
+            for row in [get_next_uncreated_telegram_product(channel_id)]
+            if row
+        ]
+        if not rows:
+            return None
+        row = max(rows, key=lambda item: item["created_at"])
+        parsed_from_db = json.loads(row["parsed_data"]) if row["parsed_data"] else {}
+        raw_message = row["raw_message"] or ""
+
+        parsed = parse_message(raw_message) if raw_message else parsed_from_db
+        if not is_mode_allowed_parsed(parsed):
+            log(
+                "INFO",
+                f"Пропускаю сообщение channel_id={row['channel_id']} "
+                + f"message_id={row['message_id']}: не подходит для режима {get_runtime_mode()}.",
+            )
+            mark_telegram_product_created(
+                row["channel_id"],
+                row["message_id"],
+                created_product_id="SKIPPED_BY_MODE",
+            )
+            continue
+        if not parsed.get("price") or not parsed.get("size"):
+            log(
+                "WARN",
+                f"Пропускаю сообщение channel_id={row['channel_id']} "
+                + f"message_id={row['message_id']}: нет цены/размера.",
+            )
+            mark_telegram_product_created(
+                row["channel_id"],
+                row["message_id"],
+                created_product_id="SKIPPED_MISSING_DATA",
+            )
+            continue
+        return {
+            "channel_id": row["channel_id"],
+            "message_id": row["message_id"],
+            "parsed_data": parsed,
+            "product_raw_data": _build_product_raw_data(parsed),
+        }
+
+
+async def get_next_product_for_upload_async(
+    message_amount: int = 200,
+    first_fetch_check: bool | None = None,
+) -> Optional[dict]:
+    if first_fetch_check:
+        await first_fetch()
+    else:
+        await _fetch_messages(message_amount=message_amount)
+    return _pick_next_product_for_upload()
+
+
+def get_next_product_for_upload(message_amount: int = 200, first_fetch_check: bool | None = None) -> Optional[dict]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            get_next_product_for_upload_async(message_amount=message_amount, first_fetch_check=first_fetch_check)
+        )
+    raise RuntimeError(
+        "get_next_product_for_upload cannot be called when an event loop is running. "
+        "Use get_next_product_for_upload_async."
+    )
+
+
+async def download_product_photos_async(
+    message_id: int,
+    target_dir: Path,
+    channel_id: Optional[int] = None,
+    max_photos: int = MAX_DOWNLOAD_PHOTOS,
+) -> int:
+    resolved_channel_id = (
+        channel_id if channel_id is not None else _get_channel_ids()[0]
+    )
+    return await _download_message_photos(
+        resolved_channel_id,
+        message_id,
+        target_dir,
+        max_photos,
+    )
+
+
+def download_product_photos(
+    message_id: int,
+    target_dir: Path,
+    channel_id: Optional[int] = None,
+    max_photos: int = MAX_DOWNLOAD_PHOTOS,
+) -> int:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            download_product_photos_async(
+                message_id,
+                target_dir,
+                channel_id=channel_id,
+                max_photos=max_photos,
+            )
+        )
+    raise RuntimeError(
+        "download_product_photos cannot be called when an event loop is running. "
+        "Use download_product_photos_async."
+    )
+
+
+def mark_product_created(
+    message_id: int,
+    created_product_id: Optional[str] = None,
+    channel_id: Optional[int] = None,
+) -> None:
+    resolved_channel_id = (
+        channel_id if channel_id is not None else _get_channel_ids()[0]
+    )
+    mark_telegram_product_created(resolved_channel_id, message_id, created_product_id)
+
+
+def register_product_failure(
+    message_id: int,
+    failure_reason: str,
+    channel_id: Optional[int] = None,
+) -> tuple[int, bool]:
+    resolved_channel_id = (
+        channel_id if channel_id is not None else _get_channel_ids()[0]
+    )
+    attempts = increment_telegram_product_attempt(
+        resolved_channel_id,
+        message_id,
+        failure_reason=failure_reason,
+    )
+    if attempts >= MAX_PRODUCT_CREATE_ATTEMPTS:
+        mark_telegram_product_created(
+            resolved_channel_id,
+            message_id,
+            created_product_id=SKIPPED_CREATE_RETRY_LIMIT,
+        )
+        return attempts, True
+    return attempts, False
+
+
+if __name__ == "__main__":
+    product = get_next_product_for_upload(message_amount=200, first_fetch_check=True)
+    print(product)
