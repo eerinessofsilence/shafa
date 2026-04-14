@@ -81,7 +81,19 @@ def _default_account_project_dir() -> str:
     for candidate in (DEFAULT_PROJECT_DIR, BASE_DIR):
         if _is_runnable_project_dir(candidate):
             return str(candidate)
+        nested = _nested_runnable_project_dir(candidate)
+        if nested is not None:
+            return str(nested)
     return ""
+
+
+def _nested_runnable_project_dir(project_dir: Path) -> Path | None:
+    if not project_dir.is_dir():
+        return None
+    candidates = [child for child in project_dir.iterdir() if child.is_dir() and _is_runnable_project_dir(child)]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
 
 
 class Worker(QObject):
@@ -449,7 +461,7 @@ class AccountsPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.MultiSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._load_selected_to_form)
         self.table.itemChanged.connect(self._handle_item_changed)
@@ -618,13 +630,17 @@ class AccountsPage(QWidget):
         self.browser_state.update()
 
     def _toggle_all(self, state: int) -> None:
-        checked = state == Qt.Checked
+        checked = Qt.CheckState(state) == Qt.Checked
         self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item is not None:
                 item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
         self.table.blockSignals(False)
+        if checked:
+            self.table.selectAll()
+        else:
+            self.table.clearSelection()
 
     def _handle_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
@@ -635,7 +651,13 @@ class AccountsPage(QWidget):
             if row_item is not None and row_item.checkState() == Qt.Checked:
                 checked_count += 1
         self.select_all.blockSignals(True)
-        self.select_all.setChecked(checked_count > 0 and checked_count == self.table.rowCount())
+        self.select_all.setTristate(self.table.rowCount() > 0)
+        if checked_count == 0:
+            self.select_all.setCheckState(Qt.Unchecked)
+        elif checked_count == self.table.rowCount():
+            self.select_all.setCheckState(Qt.Checked)
+        else:
+            self.select_all.setCheckState(Qt.PartiallyChecked)
         self.select_all.blockSignals(False)
 
     def refresh(self) -> None:
@@ -665,6 +687,9 @@ class AccountsPage(QWidget):
                 self.table.setItem(row, col, item)
             self._paint_status(row, acc.status)
         self.table.blockSignals(False)
+        self.select_all.blockSignals(True)
+        self.select_all.setCheckState(Qt.Unchecked)
+        self.select_all.blockSignals(False)
 
     def _paint_status(self, row: int, status: str) -> None:
         item = self.table.item(row, 7)
@@ -1422,8 +1447,8 @@ def _make_shadow() -> QGraphicsDropShadowEffect:
 
 class MainWindow(QMainWindow):
     DEBUG_PROCESS = False  # Toggle console logging here
-    background_log_signal = Signal(str, object)
-    telegram_auth_finalize_signal = Signal(int, object)
+    background_log_signal = Signal(str, str)
+    telegram_auth_finalize_signal = Signal(int, str)
     telegram_auth_retry_signal = Signal(int, int)
 
     def __init__(self) -> None:
@@ -1448,6 +1473,7 @@ class MainWindow(QMainWindow):
             self.telegram_auth_processes: dict[int, subprocess.Popen] = {}
             self.telegram_auth_states: dict[int, str] = {}
             self.telegram_auth_runtimes: dict[int, TelegramAuthRuntime] = {}
+            self.telegram_auth_lock = threading.RLock()
             self.session_started = datetime.now()
             self.success_count = 0
             self.product_count = 0
@@ -1543,8 +1569,13 @@ class MainWindow(QMainWindow):
     def _validate_account_launch(self, row: int, account: Account) -> tuple[Path, str, bool] | None:
         raw_path = account.path.strip()
         if not raw_path:
-            self.log("[ERROR] Project path is empty. Configure a folder with main.py first.", account=account)
-            return None
+            default_path = _default_account_project_dir()
+            if not default_path:
+                self.log("[ERROR] Project path is empty. Configure a folder with main.py first.", account=account)
+                return None
+            raw_path = default_path
+            account.path = default_path
+            self.log(f"[WARN] Project path was empty. Using default project folder {default_path}.", account=account)
 
         project_path = Path(raw_path).expanduser()
         if not project_path.exists():
@@ -1553,11 +1584,21 @@ class MainWindow(QMainWindow):
 
         main_py_path = _project_main_path(project_path)
         if not main_py_path.is_file():
-            self.log(
-                f"[ERROR] main.py not found at {main_py_path}. Configure the correct project folder before launch.",
-                account=account,
-            )
-            return None
+            nested_project = _nested_runnable_project_dir(project_path)
+            if nested_project is not None:
+                self.log(
+                    f"[WARN] main.py not found at {main_py_path}. Using nested project folder {nested_project} instead.",
+                    account=account,
+                )
+                project_path = nested_project
+                raw_path = str(nested_project)
+                main_py_path = _project_main_path(project_path)
+            else:
+                self.log(
+                    f"[ERROR] main.py not found at {main_py_path}. Configure the correct project folder before launch.",
+                    account=account,
+                )
+                return None
 
         project_path = self._normalize_project_path(raw_path)
         account.path = str(project_path)
@@ -1828,9 +1869,9 @@ class MainWindow(QMainWindow):
         if is_product or is_error:
             self._refresh_stats()
 
-    @Slot(str, object)
-    def _handle_background_log(self, text: str, account: object) -> None:
-        self.log(text, account=account if isinstance(account, Account) else None)
+    @Slot(str, str)
+    def _handle_background_log(self, text: str, account_id: str) -> None:
+        self.log(text, account=self._account_by_id(account_id))
 
     @Slot(str)
     def _handle_worker_log(self, text: str) -> None:
@@ -1916,7 +1957,7 @@ class MainWindow(QMainWindow):
 
         log_thread = threading.Thread(
             target=self._read_process_output,
-            args=(row, proc, account.name),
+            args=(row, proc, account.id, account.name),
             daemon=True,
         )
         log_thread.start()
@@ -1980,7 +2021,7 @@ class MainWindow(QMainWindow):
         }
         if detail:
             payload["detail"] = detail
-        self.background_log_signal.emit(f"[TG_STATE] {json.dumps(payload, ensure_ascii=False)}", account)
+        self.background_log_signal.emit(f"[TG_STATE] {json.dumps(payload, ensure_ascii=False)}", account.id)
 
     def _restore_account_auth_form_state(self, row: int) -> None:
         account = self._account_by_row(row)
@@ -2164,9 +2205,8 @@ class MainWindow(QMainWindow):
         for row in rows:
             self.run_account(row)
 
-    def _read_process_output(self, row: int, proc: subprocess.Popen, account_name: str) -> None:
+    def _read_process_output(self, row: int, proc: subprocess.Popen, account_id: str, account_name: str) -> None:
         try:
-            account = self._account_by_row(row)
             if proc.stdout is None:
                 if self.DEBUG_PROCESS:
                     print(f"[DEBUG] proc.stdout is None for {account_name}")
@@ -2183,7 +2223,7 @@ class MainWindow(QMainWindow):
                 line_count += 1
                 if self.DEBUG_PROCESS and line_count <= 5:  # Показываем первые 5 строк
                     print(f"[PROC:{account_name}] {line}")
-                self.background_log_signal.emit(line, account)
+                self.background_log_signal.emit(line, account_id)
             
             if self.DEBUG_PROCESS:
                 print(f"[DEBUG] Finished reading output from {account_name}, total lines: {line_count}")
@@ -2193,7 +2233,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             if self.DEBUG_PROCESS:
                 print(f"[PROC:ERROR] log reader failed for {account_name}: {exc}")
-            self.background_log_signal.emit(f"[ERROR] log reader failed for {account_name}: {exc}", account)
+            self.background_log_signal.emit(f"[ERROR] log reader failed for {account_name}: {exc}", account_id)
 
     # def _run_bootstrap(self, py_bin: str, account_path: Path, account_name: str) -> None:
     #     self.log(f"[BOOTSTRAP] {account_name}: bootstrap.py")
@@ -2505,6 +2545,14 @@ class MainWindow(QMainWindow):
             return None
         return self.accounts[row]
 
+    def _account_by_id(self, account_id: str) -> Optional[Account]:
+        if not account_id:
+            return None
+        for account in self.accounts:
+            if account.id == account_id:
+                return account
+        return None
+
     def _account_state_dir(self, account: Account) -> Path:
         return self.session_store.account_dir(account)
 
@@ -2566,31 +2614,36 @@ class MainWindow(QMainWindow):
         if source_journal.exists():
             shutil.copy2(source_journal, Path(f"{target_file}-journal"))
 
-    def _read_telegram_auth_output(self, row: int, proc: subprocess.Popen, account: Account) -> None:
+    def _read_telegram_auth_output(self, row: int, proc: subprocess.Popen, account_id: str) -> None:
+        account = self._account_by_id(account_id)
+        if account is None:
+            return
         if proc.stdout is None:
-            self.background_log_signal.emit("[ERROR] Telegram auth output channel is unavailable.", account)
+            self.background_log_signal.emit("[ERROR] Telegram auth output channel is unavailable.", account.id)
             return
         try:
             for raw_line in proc.stdout:
                 line = raw_line.rstrip("\n")
                 if not line:
                     continue
-                runtime = self.telegram_auth_runtimes.get(row)
+                with self.telegram_auth_lock:
+                    runtime = self.telegram_auth_runtimes.get(row)
                 if self._is_phone_prompt(line):
                     if runtime is not None:
                         status = runtime.transition("PHONE_PROMPT")
-                        self.telegram_auth_states[row] = runtime.state
+                        with self.telegram_auth_lock:
+                            self.telegram_auth_states[row] = runtime.state
                         if status and not status.ok:
-                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account.id)
                             self._terminate_telegram_auth_process(row)
                             continue
-                        self.background_log_signal.emit("[AUTH] Phone prompt detected", account)
+                        self.background_log_signal.emit("[AUTH] Phone prompt detected", account.id)
                         self._log_telegram_state(account, runtime.state, runtime.attempt, "Phone prompt detected")
                     state = self.telegram_auth_service.load_auth_state(account)
                     phone_value = state.get("phone_number", "").strip() or account.phone_number.strip()
                     phone_status = self.telegram_auth_service.validate_phone(phone_value)
                     if not phone_status.ok:
-                        self.background_log_signal.emit(f"[ERROR] {phone_status.message}", account)
+                        self.background_log_signal.emit(f"[ERROR] {phone_status.message}", account.id)
                         self.telegram_auth_service.persist_auth_state(
                             account,
                             phone_number=phone_value,
@@ -2605,18 +2658,19 @@ class MainWindow(QMainWindow):
                         current_auth_step="WAIT_PHONE",
                         code_confirmed=False,
                     )
-                    self.background_log_signal.emit(f"[AUTH] Phone ready for Telegram: {phone_status.message}", account)
+                    self.background_log_signal.emit(f"[AUTH] Phone ready for Telegram: {phone_status.message}", account.id)
                     self._write_telegram_auth_input(proc, phone_status.message, "phone", account)
                     continue
                 if line == "TG_AUTH:PHONE_RECEIVED":
-                    self.background_log_signal.emit("[AUTH] Phone submission acknowledged", account)
+                    self.background_log_signal.emit("[AUTH] Phone submission acknowledged", account.id)
                     continue
                 if self._is_code_prompt(line):
                     if runtime is not None:
                         status = runtime.transition("CODE_PROMPT")
-                        self.telegram_auth_states[row] = runtime.state
+                        with self.telegram_auth_lock:
+                            self.telegram_auth_states[row] = runtime.state
                         if status and not status.ok:
-                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account.id)
                             self._terminate_telegram_auth_process(row)
                             continue
                         state = self.telegram_auth_service.load_auth_state(account)
@@ -2630,7 +2684,7 @@ class MainWindow(QMainWindow):
                         code_status = self.telegram_auth_service.validate_code(state.get("verification_code", ""))
                         if state.get("code_confirmed", False) and code_status.ok:
                             self._write_telegram_auth_input(proc, code_status.message, "verification code", account)
-                    self.background_log_signal.emit("[AUTH] Code request sent", account)
+                    self.background_log_signal.emit("[AUTH] Code request sent", account.id)
                     continue
                 if self._is_password_prompt(line):
                     state = self.telegram_auth_service.load_auth_state(account)
@@ -2638,7 +2692,7 @@ class MainWindow(QMainWindow):
                         state.get("telegram_password", "") or account.telegram_password
                     )
                     if not password_status.ok:
-                        self.background_log_signal.emit(f"[ERROR] {password_status.message}", account)
+                        self.background_log_signal.emit(f"[ERROR] {password_status.message}", account.id)
                         self.telegram_auth_service.persist_auth_state(
                             account,
                             current_auth_step="FAILED",
@@ -2654,12 +2708,13 @@ class MainWindow(QMainWindow):
                         code_confirmed=True,
                     )
                     self._write_telegram_auth_input(proc, password_status.message, "password", account)
-                    self.background_log_signal.emit("[AUTH] Password prompt handled", account)
+                    self.background_log_signal.emit("[AUTH] Password prompt handled", account.id)
                     continue
                 if line == "TG_AUTH:CODE_RECEIVED":
                     if runtime is not None:
                         status = runtime.transition("CODE_SENT")
-                        self.telegram_auth_states[row] = runtime.state
+                        with self.telegram_auth_lock:
+                            self.telegram_auth_states[row] = runtime.state
                         self.telegram_auth_service.persist_auth_state(
                             account,
                             current_auth_step="WAIT_CODE",
@@ -2667,15 +2722,16 @@ class MainWindow(QMainWindow):
                         )
                         self._log_telegram_state(account, runtime.state, runtime.attempt, "Verification code accepted")
                         if status and not status.ok:
-                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
-                            self.telegram_auth_finalize_signal.emit(row, account)
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account.id)
+                            self.telegram_auth_finalize_signal.emit(row, account.id)
                             continue
-                    self.background_log_signal.emit("[AUTH] Code received by terminal session", account)
+                    self.background_log_signal.emit("[AUTH] Code received by terminal session", account.id)
                     continue
                 if line == "TG_AUTH:SUCCESS":
                     if runtime is not None:
                         status = runtime.transition("SUCCESS")
-                        self.telegram_auth_states[row] = runtime.state
+                        with self.telegram_auth_lock:
+                            self.telegram_auth_states[row] = runtime.state
                         state = self.telegram_auth_service.load_auth_state(account)
                         self.telegram_auth_service.persist_auth_state(
                             account,
@@ -2687,41 +2743,46 @@ class MainWindow(QMainWindow):
                         )
                         self._log_telegram_state(account, runtime.state, runtime.attempt, "Authentication completed")
                         if status and not status.ok:
-                            self.background_log_signal.emit(f"[ERROR] {status.message}", account)
-                            self.telegram_auth_finalize_signal.emit(row, account)
+                            self.background_log_signal.emit(f"[ERROR] {status.message}", account.id)
+                            self.telegram_auth_finalize_signal.emit(row, account.id)
                             continue
-                    self.background_log_signal.emit("[AUTH] Telegram session saved", account)
-                    self.telegram_auth_finalize_signal.emit(row, account)
+                    self.background_log_signal.emit("[AUTH] Telegram session saved", account.id)
+                    self.telegram_auth_finalize_signal.emit(row, account.id)
                     continue
                 if line.startswith("TG_AUTH:ERROR:"):
                     details = line.split("TG_AUTH:ERROR:", 1)[1]
                     if runtime is not None:
                         runtime.transition("ERROR")
-                        self.telegram_auth_states[row] = runtime.state
+                        with self.telegram_auth_lock:
+                            self.telegram_auth_states[row] = runtime.state
                         self.telegram_auth_service.persist_auth_state(account, current_auth_step="FAILED", code_confirmed=False)
                         self._log_telegram_state(account, runtime.state, runtime.attempt, details)
-                    self.background_log_signal.emit(f"[ERROR] Telegram auth failed: {details}", account)
-                    self.telegram_auth_finalize_signal.emit(row, account)
+                    self.background_log_signal.emit(f"[ERROR] Telegram auth failed: {details}", account.id)
+                    self.telegram_auth_finalize_signal.emit(row, account.id)
                     continue
-                self.background_log_signal.emit(line, account)
+                self.background_log_signal.emit(line, account.id)
         except Exception as exc:
-            self.background_log_signal.emit(f"[ERROR] Telegram auth crashed: {exc}", account)
+            self.background_log_signal.emit(f"[ERROR] Telegram auth crashed: {exc}", account.id)
         finally:
             if proc.poll() is not None:
-                if self.telegram_auth_states.get(row) not in {"SUCCESS", "FAILED"}:
+                with self.telegram_auth_lock:
+                    state = self.telegram_auth_states.get(row)
+                if state not in {"SUCCESS", "FAILED"}:
                     self.background_log_signal.emit(
                         f"[ERROR] Telegram auth process exited unexpectedly with code {proc.returncode}",
-                        account,
+                        account.id,
                     )
-                self.telegram_auth_finalize_signal.emit(row, account)
+                self.telegram_auth_finalize_signal.emit(row, account.id)
 
-    @Slot(int, object)
-    def _finalize_telegram_auth_process(self, row: int, account: object) -> None:
-        if not isinstance(account, Account):
+    @Slot(int, str)
+    def _finalize_telegram_auth_process(self, row: int, account_id: str) -> None:
+        account = self._account_by_id(account_id)
+        if account is None:
             return
-        proc = self.telegram_auth_processes.pop(row, None)
-        self.telegram_auth_states.pop(row, None)
-        self.telegram_auth_runtimes.pop(row, None)
+        with self.telegram_auth_lock:
+            proc = self.telegram_auth_processes.pop(row, None)
+            self.telegram_auth_states.pop(row, None)
+            self.telegram_auth_runtimes.pop(row, None)
         if proc and proc.stdin:
             try:
                 proc.stdin.close()
@@ -2731,7 +2792,8 @@ class MainWindow(QMainWindow):
         self._sync_account_auth_status(row)
 
     def _terminate_telegram_auth_process(self, row: int) -> None:
-        proc = self.telegram_auth_processes.get(row)
+        with self.telegram_auth_lock:
+            proc = self.telegram_auth_processes.get(row)
         if proc and proc.poll() is None:
             try:
                 proc.terminate()
@@ -2745,8 +2807,9 @@ class MainWindow(QMainWindow):
     def _telegram_auth_watchdog(self, row: int, account: Account) -> None:
         while True:
             time.sleep(0.2)
-            proc = self.telegram_auth_processes.get(row)
-            runtime = self.telegram_auth_runtimes.get(row)
+            with self.telegram_auth_lock:
+                proc = self.telegram_auth_processes.get(row)
+                runtime = self.telegram_auth_runtimes.get(row)
             if proc is None or runtime is None:
                 return
             timeout_status = runtime.timeout_status()
@@ -2754,7 +2817,7 @@ class MainWindow(QMainWindow):
                 if proc.poll() is not None:
                     return
                 continue
-            self.background_log_signal.emit(f"[ERROR] {timeout_status.message}", account)
+            self.background_log_signal.emit(f"[ERROR] {timeout_status.message}", account.id)
             self.telegram_auth_service.persist_auth_state(account, current_auth_step="FAILED", code_confirmed=False)
             self._log_telegram_state(account, runtime.state, runtime.attempt, timeout_status.message)
             self._terminate_telegram_auth_process(row)
@@ -2762,12 +2825,12 @@ class MainWindow(QMainWindow):
                 next_attempt = runtime.attempt + 1
                 self.background_log_signal.emit(
                     f"[AUTH] Retrying Telegram authentication (attempt {next_attempt})",
-                    account,
+                    account.id,
                 )
-                self.telegram_auth_finalize_signal.emit(row, account)
+                self.telegram_auth_finalize_signal.emit(row, account.id)
                 self.telegram_auth_retry_signal.emit(row, next_attempt)
             else:
-                self.telegram_auth_finalize_signal.emit(row, account)
+                self.telegram_auth_finalize_signal.emit(row, account.id)
             return
 
     def _start_telegram_auth_attempt(self, row: int, account: Account, attempt: int = 1) -> None:
@@ -2791,12 +2854,13 @@ class MainWindow(QMainWindow):
             bufsize=1,
             env=self._account_env(account),
         )
-        self.telegram_auth_processes[row] = proc
-        self.telegram_auth_states[row] = runtime.state
-        self.telegram_auth_runtimes[row] = runtime
+        with self.telegram_auth_lock:
+            self.telegram_auth_processes[row] = proc
+            self.telegram_auth_states[row] = runtime.state
+            self.telegram_auth_runtimes[row] = runtime
         threading.Thread(
             target=self._read_telegram_auth_output,
-            args=(row, proc, account),
+            args=(row, proc, account.id),
             daemon=True,
         ).start()
         threading.Thread(
@@ -2842,18 +2906,18 @@ class MainWindow(QMainWindow):
         if not clean_value:
             self.background_log_signal.emit(
                 f"[ERROR] Refusing to send empty {label} to Telegram auth process.",
-                account,
+                account.id,
             )
             return False
         if proc.stdin is None:
             self.background_log_signal.emit(
                 f"[ERROR] Telegram auth input channel is unavailable for {label}.",
-                account,
+                account.id,
             )
             return False
-        self.background_log_signal.emit(f"[AUTH] Writing {label} to subprocess stdin", account)
+        self.background_log_signal.emit(f"[AUTH] Writing {label} to subprocess stdin", account.id)
         proc.stdin.write(f"{clean_value}\n")
-        self.background_log_signal.emit(f"[AUTH] Flushing subprocess stdin after {label} write", account)
+        self.background_log_signal.emit(f"[AUTH] Flushing subprocess stdin after {label} write", account.id)
         proc.stdin.flush()
         return True
 
