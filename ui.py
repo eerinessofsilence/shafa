@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import uuid
+import webbrowser
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -344,6 +347,46 @@ class TelegramAuthTask(QObject):
             self.finished.emit(self.row, False, str(exc))
 
 
+class TelegramCredentialsDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None, api_id: str = "", api_hash: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Telegram API")
+        self.setModal(True)
+        self.resize(460, 220)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        info = QLabel(
+            "Откройте my.telegram.org, авторизуйтесь в своём аккаунте Telegram и вставьте сюда API ID и API Hash."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        open_site_btn = QPushButton("Открыть my.telegram.org")
+        open_site_btn.clicked.connect(lambda: webbrowser.open("https://my.telegram.org"))
+        layout.addWidget(open_site_btn)
+
+        layout.addWidget(QLabel("Telegram API ID"))
+        self.api_id_input = QLineEdit(api_id)
+        self.api_id_input.setPlaceholderText("Например: 12345678")
+        layout.addWidget(self.api_id_input)
+
+        layout.addWidget(QLabel("Telegram API Hash"))
+        self.api_hash_input = QLineEdit(api_hash)
+        self.api_hash_input.setPlaceholderText("Например: abcdef1234567890abcdef1234567890")
+        layout.addWidget(self.api_hash_input)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> tuple[str, str]:
+        return self.api_id_input.text().strip(), self.api_hash_input.text().strip()
+
+
 class StatCard(QFrame):
     def __init__(self, title: str, value: str, subtitle: str = "") -> None:
         super().__init__()
@@ -447,6 +490,7 @@ class AccountsPage(QWidget):
     telegram_session_export_requested = Signal(int)
     telegram_session_import_requested = Signal(int)
     telegram_session_delete_requested = Signal(int)
+    telegram_credentials_requested = Signal(int)
     channel_template_save_requested = Signal(int, str)
     channel_template_load_requested = Signal(int, str)
 
@@ -499,7 +543,7 @@ class AccountsPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.MultiSelection)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._load_selected_to_form)
         self.table.itemChanged.connect(self._handle_item_changed)
@@ -538,6 +582,8 @@ class AccountsPage(QWidget):
         self.telegram_password_input.setPlaceholderText("Telegram password")
         self.telegram_password_input.setEchoMode(QLineEdit.Password)
         self.telegram_submit_password_btn = QPushButton("OK")
+        self.telegram_credentials_btn = QPushButton("Добавить данные Telegram API")
+        self.telegram_credentials_ready = False
 
         self.browser_toggle = QCheckBox("Открывать с браузером")
         self.browser_toggle.setCursor(Qt.PointingHandCursor)
@@ -605,6 +651,8 @@ class AccountsPage(QWidget):
         self.delete_shafa_session_btn = QPushButton("Удалить Shafa сессию")
         self.shafa_auth_status = QLabel("Shafa auth: отсутствует")
         self.shafa_auth_status.setObjectName("MutedLabel")
+        self.telegram_credentials_status = QLabel("Telegram API: отсутствует")
+        self.telegram_credentials_status.setObjectName("MutedLabel")
         self.telegram_auth_status = QLabel("Telegram session: отсутствует")
         self.telegram_auth_status.setObjectName("MutedLabel")
         config_layout.addWidget(self.apply_btn)
@@ -622,12 +670,14 @@ class AccountsPage(QWidget):
         config_layout.addLayout(telegram_password_row)
         config_layout.addWidget(self.shafa_auth_btn)
         config_layout.addWidget(self.delete_shafa_session_btn)
+        config_layout.addWidget(self.telegram_credentials_btn)
         config_layout.addWidget(self.telegram_auth_btn)
         config_layout.addWidget(self.clone_session_btn)
         config_layout.addWidget(self.export_tg_session_btn)
         config_layout.addWidget(self.import_tg_session_btn)
         config_layout.addWidget(self.delete_tg_session_btn)
         config_layout.addWidget(self.shafa_auth_status)
+        config_layout.addWidget(self.telegram_credentials_status)
         config_layout.addWidget(self.telegram_auth_status)
         config_layout.addStretch()
 
@@ -658,6 +708,7 @@ class AccountsPage(QWidget):
         self.telegram_auth_btn.clicked.connect(self._request_telegram_code)
         self.telegram_submit_code_btn.clicked.connect(self._request_telegram_code_submit)
         self.telegram_submit_password_btn.clicked.connect(self._request_telegram_password_submit)
+        self.telegram_credentials_btn.clicked.connect(self._request_telegram_credentials)
         self.clone_session_btn.clicked.connect(self._request_clone_session)
         self.export_tg_session_btn.clicked.connect(self._request_export_session)
         self.import_tg_session_btn.clicked.connect(self._request_import_session)
@@ -675,21 +726,24 @@ class AccountsPage(QWidget):
         self.browser_state.update()
 
     def _toggle_all(self, state: int) -> None:
-        checked = Qt.CheckState(state) == Qt.Checked
+        check_state = Qt.CheckState(state)
+        if check_state == Qt.PartiallyChecked:
+            return
+        checked = check_state == Qt.Checked
         self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item is not None:
                 item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
         self.table.blockSignals(False)
-        if checked:
-            self.table.selectAll()
-        else:
-            self.table.clearSelection()
+        self._sync_select_all_state()
 
     def _handle_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
             return
+        self._sync_select_all_state()
+
+    def _sync_select_all_state(self) -> None:
         checked_count = 0
         for row in range(self.table.rowCount()):
             row_item = self.table.item(row, 0)
@@ -782,7 +836,7 @@ class AccountsPage(QWidget):
             self.telegram_code_input.blockSignals(False)
             self.telegram_password_input.blockSignals(False)
             self.channel_links.clear()
-            self.update_auth_status(False, False, False)
+            self.update_auth_status(False, False, False, False)
             self._sync_telegram_button_state()
             return
         self.selected_account_label.setText(acc.name)
@@ -947,9 +1001,19 @@ class AccountsPage(QWidget):
             return
         self.table.selectRow(row)
 
-    def update_auth_status(self, shafa_ready: bool, telegram_ready: bool, telegram_pending: bool) -> None:
+    def update_auth_status(
+        self,
+        shafa_ready: bool,
+        telegram_ready: bool,
+        telegram_pending: bool,
+        telegram_credentials_ready: bool,
+    ) -> None:
         self.shafa_auth_status.setText(
             "Shafa auth: готово" if shafa_ready else "Shafa auth: отсутствует"
+        )
+        self.telegram_credentials_ready = telegram_credentials_ready
+        self.telegram_credentials_status.setText(
+            "Telegram API: настроен" if telegram_credentials_ready else "Telegram API: отсутствует"
         )
         if telegram_ready:
             telegram_text = "Telegram session: готово"
@@ -958,14 +1022,17 @@ class AccountsPage(QWidget):
         else:
             telegram_text = "Telegram session: отсутствует"
         self.telegram_auth_status.setText(telegram_text)
+        self._sync_telegram_button_state()
 
     def _sync_telegram_button_state(self) -> None:
         phone_status = TelegramAuthService.validate_phone(self.phone_input.text())
         code_status = TelegramAuthService.validate_code(self.telegram_code_input.text())
         password_status = TelegramAuthService.validate_password(self.telegram_password_input.text())
-        self.telegram_auth_btn.setEnabled(phone_status.ok)
-        self.telegram_submit_code_btn.setEnabled(phone_status.ok and code_status.ok)
-        self.telegram_submit_password_btn.setEnabled(phone_status.ok and password_status.ok)
+        self.telegram_auth_btn.setEnabled(self.telegram_credentials_ready and phone_status.ok)
+        self.telegram_submit_code_btn.setEnabled(self.telegram_credentials_ready and phone_status.ok and code_status.ok)
+        self.telegram_submit_password_btn.setEnabled(
+            self.telegram_credentials_ready and phone_status.ok and password_status.ok
+        )
 
     def _request_shafa_auth(self) -> None:
         row = self.selected_row()
@@ -987,6 +1054,9 @@ class AccountsPage(QWidget):
         if row < 0:
             QMessageBox.information(self, "Telegram auth", "Сначала выберите аккаунт.")
             return
+        if not self.telegram_credentials_ready:
+            QMessageBox.information(self, "Telegram auth", "Сначала добавьте Telegram API ID и API hash.")
+            return
         if not self.phone_input.text().strip():
             QMessageBox.information(self, "Telegram auth", "Заполните номер телефона.")
             return
@@ -997,6 +1067,9 @@ class AccountsPage(QWidget):
         row = self.selected_row()
         if row < 0:
             QMessageBox.information(self, "Telegram auth", "Сначала выберите аккаунт.")
+            return
+        if not self.telegram_credentials_ready:
+            QMessageBox.information(self, "Telegram auth", "Сначала добавьте Telegram API ID и API hash.")
             return
         code = self.telegram_code_input.text().strip()
         if not TelegramAuthService.validate_code(code).ok:
@@ -1009,6 +1082,9 @@ class AccountsPage(QWidget):
         row = self.selected_row()
         if row < 0:
             QMessageBox.information(self, "Telegram auth", "Сначала выберите аккаунт.")
+            return
+        if not self.telegram_credentials_ready:
+            QMessageBox.information(self, "Telegram auth", "Сначала добавьте Telegram API ID и API hash.")
             return
         password = self.telegram_password_input.text()
         if not TelegramAuthService.validate_password(password).ok:
@@ -1023,6 +1099,13 @@ class AccountsPage(QWidget):
             QMessageBox.information(self, "Telegram session", "Сначала выберите аккаунт.")
             return
         self.telegram_session_clone_requested.emit(row)
+
+    def _request_telegram_credentials(self) -> None:
+        row = self.selected_row()
+        if row < 0:
+            QMessageBox.information(self, "Telegram API", "Сначала выберите аккаунт.")
+            return
+        self.telegram_credentials_requested.emit(row)
 
     def _request_delete_tg_session(self) -> None:
         row = self.selected_row()
@@ -1790,6 +1873,7 @@ class MainWindow(QMainWindow):
         self.accounts_page.telegram_code_requested.connect(self.request_telegram_code)
         self.accounts_page.telegram_code_submit_requested.connect(self.complete_telegram_code)
         self.accounts_page.telegram_password_submit_requested.connect(self.complete_telegram_password)
+        self.accounts_page.telegram_credentials_requested.connect(self.configure_telegram_credentials)
         self.accounts_page.telegram_session_clone_requested.connect(self.clone_telegram_session)
         self.accounts_page.telegram_session_export_requested.connect(self.export_telegram_session)
         self.accounts_page.telegram_session_import_requested.connect(self.import_telegram_session)
@@ -2269,13 +2353,14 @@ class MainWindow(QMainWindow):
 
     def _sync_account_auth_status(self, row: int) -> None:
         if row < 0 or row >= len(self.accounts):
-            self.accounts_page.update_auth_status(False, False, False)
+            self.accounts_page.update_auth_status(False, False, False, False)
             return
         account = self.accounts[row]
         self.accounts_page.update_auth_status(
             shafa_ready=self.session_store.is_valid_shafa_session(account),
             telegram_ready=self.session_store.is_valid_telegram_session(account),
             telegram_pending=self.session_store.has_pending_telegram_code(account),
+            telegram_credentials_ready=self.session_store.has_telegram_credentials(account),
         )
 
     def delete_accounts(self, rows: List[int]) -> None:
@@ -2597,7 +2682,35 @@ class MainWindow(QMainWindow):
         source_account = next(account for account in sources if account.name == source_name)
         self.telegram_auth_service.copy_session(source_account, target_account)
         self._save_accounts()
-        self.log(f"[AUTH] Telegram session copied from {source_account.name}", account=target_account)
+        self.log(f"[AUTH] Telegram session and API data copied from {source_account.name}", account=target_account)
+        self._sync_account_auth_status(row)
+
+    def configure_telegram_credentials(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            return
+        current = self.session_store.load_telegram_credentials(account)
+        dialog = TelegramCredentialsDialog(
+            self,
+            api_id=current.get("SHAFA_TELEGRAM_API_ID", ""),
+            api_hash=current.get("SHAFA_TELEGRAM_API_HASH", ""),
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        api_id, api_hash = dialog.values()
+        if not api_id.isdigit():
+            QMessageBox.warning(self, "Telegram API", "API ID должен быть целым числом.")
+            return
+        if not api_hash:
+            QMessageBox.warning(self, "Telegram API", "API Hash обязателен.")
+            return
+        try:
+            self.session_store.save_telegram_credentials(account, api_id, api_hash)
+        except Exception as exc:
+            QMessageBox.warning(self, "Telegram API", str(exc))
+            return
+        self._save_accounts()
+        self.log("[AUTH] Telegram API credentials saved for account", account=account)
         self._sync_account_auth_status(row)
 
     def import_telegram_session(self, row: int) -> None:
@@ -2705,6 +2818,7 @@ class MainWindow(QMainWindow):
     def _account_env(self, account: Account) -> dict[str, str]:
         env = os.environ.copy()
         state_dir = self._account_state_dir(account)
+        telegram_credentials = self.session_store.load_telegram_credentials(account)
         env.setdefault("PYTHONUNBUFFERED", "1")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self._account_auth_file(account))
@@ -2712,6 +2826,16 @@ class MainWindow(QMainWindow):
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self._account_telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self._account_telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self._account_channels_file(account))
+        api_id = telegram_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
+        api_hash = telegram_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
+        if api_id:
+            env["SHAFA_TELEGRAM_API_ID"] = api_id
+        else:
+            env.pop("SHAFA_TELEGRAM_API_ID", None)
+        if api_hash:
+            env["SHAFA_TELEGRAM_API_HASH"] = api_hash
+        else:
+            env.pop("SHAFA_TELEGRAM_API_HASH", None)
         env["SHAFA_APP_MODE"] = self.app_config.mode
         return env
 

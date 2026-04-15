@@ -29,6 +29,8 @@ def test_session_store_writes_index_and_account_manifest(tmp_path: Path) -> None
     assert index_payload[0]["phone_number"] == "+380123456789"
     assert manifest_payload["telegram_session_path"].endswith("Shuffa/acc-1/telegram.session")
     assert manifest_payload["browser_session_path"].endswith("Shuffa/acc-1/auth.json")
+    assert manifest_payload["telegram_credentials_path"].endswith("Shuffa/acc-1/.env")
+    assert manifest_payload["telegram_credentials_configured"] is False
 
 
 def test_session_store_reads_legacy_file_when_index_missing(tmp_path: Path) -> None:
@@ -95,9 +97,12 @@ def test_session_store_copies_imports_and_exports_telegram_sessions(tmp_path: Pa
     target = Account(id="dst", name="Target", path="/tmp/project")
     source_session = store.telegram_session_file(source)
     source_session.write_bytes(b"SQLite format 3\x00payload")
+    store.save_telegram_credentials(source, "123456", "hash-value")
 
     store.copy_telegram_session(source, target)
     assert store.is_valid_telegram_session(target) is True
+    assert store.has_telegram_credentials(target) is True
+    assert store.load_telegram_credentials(target)["SHAFA_TELEGRAM_API_ID"] == "123456"
 
     exported = tmp_path / "exported.session"
     store.export_telegram_session(target, exported)
@@ -164,3 +169,22 @@ def test_session_store_rejects_shafa_session_without_shafa_csrftoken(tmp_path: P
         encoding="utf-8",
     )
     assert store.is_valid_shafa_session(account) is False
+
+
+def test_session_store_persists_telegram_credentials_in_env_file(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    account = Account(id="acc-4", name="Creds", path="/tmp/project")
+
+    path = store.save_telegram_credentials(account, "777000", "secret-hash")
+
+    assert path.name == ".env"
+    assert "SHAFA_TELEGRAM_API_ID=777000" in path.read_text(encoding="utf-8")
+    assert store.has_telegram_credentials(account) is True
+    assert store.load_telegram_credentials(account) == {
+        "SHAFA_TELEGRAM_API_ID": "777000",
+        "SHAFA_TELEGRAM_API_HASH": "secret-hash",
+    }

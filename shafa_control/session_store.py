@@ -89,6 +89,8 @@ class AccountSessionStore:
             "telegram_session_valid": self.is_valid_telegram_session(account),
             "telegram_login_state_path": str(self.telegram_login_state_file(account)),
             "telegram_login_pending": self.has_pending_telegram_code(account),
+            "telegram_credentials_path": str(self.telegram_credentials_file(account)),
+            "telegram_credentials_configured": self.has_telegram_credentials(account),
             "telegram_channels_path": str(self.channels_file(account)),
             "logs_path": str(self.account_log_file(account)),
         }
@@ -114,6 +116,9 @@ class AccountSessionStore:
 
     def telegram_login_state_file(self, account: Account) -> Path:
         return self.account_dir(account) / "telegram_login_state.json"
+
+    def telegram_credentials_file(self, account: Account) -> Path:
+        return self.account_dir(account) / ".env"
 
     def channels_file(self, account: Account) -> Path:
         return self.account_dir(account) / "shafa_telegram_channels.json"
@@ -178,6 +183,60 @@ class AccountSessionStore:
         self.telegram_login_state_file(account).unlink(missing_ok=True)
         self.write_account_manifest(account)
 
+    def load_telegram_credentials(self, account: Account) -> dict[str, str]:
+        path = self.telegram_credentials_file(account)
+        if not path.exists():
+            return {
+                "SHAFA_TELEGRAM_API_ID": "",
+                "SHAFA_TELEGRAM_API_HASH": "",
+            }
+        credentials = {
+            "SHAFA_TELEGRAM_API_ID": "",
+            "SHAFA_TELEGRAM_API_HASH": "",
+        }
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key not in credentials:
+                    continue
+                credentials[key] = value.strip().strip('"').strip("'")
+        except OSError:
+            return {
+                "SHAFA_TELEGRAM_API_ID": "",
+                "SHAFA_TELEGRAM_API_HASH": "",
+            }
+        return credentials
+
+    def save_telegram_credentials(self, account: Account, api_id: str, api_hash: str) -> Path:
+        clean_api_id = str(api_id or "").strip()
+        clean_api_hash = str(api_hash or "").strip()
+        if not clean_api_id or not clean_api_hash:
+            raise RuntimeError("Telegram API ID and API hash are required.")
+        path = self.telegram_credentials_file(account)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rendered = (
+            f"SHAFA_TELEGRAM_API_ID={clean_api_id}\n"
+            f"SHAFA_TELEGRAM_API_HASH={clean_api_hash}\n"
+        )
+        path.write_text(rendered, encoding="utf-8")
+        self.write_account_manifest(account)
+        return path
+
+    def delete_telegram_credentials(self, account: Account) -> None:
+        self.telegram_credentials_file(account).unlink(missing_ok=True)
+        self.write_account_manifest(account)
+
+    def has_telegram_credentials(self, account: Account) -> bool:
+        credentials = self.load_telegram_credentials(account)
+        return bool(
+            credentials["SHAFA_TELEGRAM_API_ID"].strip()
+            and credentials["SHAFA_TELEGRAM_API_HASH"].strip()
+        )
+
     def delete_shafa_session(self, account: Account) -> None:
         self.auth_file(account).unlink(missing_ok=True)
         self.write_account_manifest(account)
@@ -202,6 +261,8 @@ class AccountSessionStore:
         source_journal = Path(f"{source_file}-journal")
         if source_journal.exists():
             shutil.copy2(source_journal, Path(f"{target_file}-journal"))
+        if self.has_telegram_credentials(source):
+            shutil.copy2(self.telegram_credentials_file(source), self.telegram_credentials_file(target))
         self.write_account_manifest(target)
 
     def copy_shafa_session(self, source: Account, target: Account) -> None:
