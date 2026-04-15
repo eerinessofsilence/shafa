@@ -1,0 +1,37 @@
+{
+  "name": "shafa-control-desktop-ui",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Static Electron + React desktop UI prototype for Shafa Control",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\" \"npm:dev:desktop\"",
+    "dev:renderer": "vite --host 127.0.0.1 --port 5173",
+    "dev:electron": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
+    "dev:desktop": "wait-on tcp:5173 file:dist-electron/main.js && ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build": "npm run typecheck && npm run build:electron && vite build",
+    "start": "npm run build && electron ."
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@trivago/prettier-plugin-sort-imports": "^6.0.2",
+    "@types/node": "^22.14.1",
+    "@types/react": "^18.3.20",
+    "@types/react-dom": "^18.3.6",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "electron": "^35.1.5",
+    "prettier": "^3.8.2",
+    "prettier-plugin-tailwindcss": "^0.7.2",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.8.3",
+    "vite": "^6.2.6",
+    "wait-on": "^8.0.3"
+  }
+}

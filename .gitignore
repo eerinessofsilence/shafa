@@ -1,8 +1,6 @@
 venv
-.env
 __pycache__/
 */__pycache__/
-*/*/__pycache__/
 runtime/
 logs/
 .pytest_cache/
@@ -22,6 +20,13 @@ logs/
 *.egg-info/
 dist/
 build/
+node_modules/
+.vite/
+desktop-ui/dist/
+desktop-ui/node_modules/
+desktop-ui/release/
+desktop-ui/dist-electron/
+*.tsbuildinfo
 eggs/
 parts/
 sdist/
@@ -42,6 +47,3 @@ app_config.json
 chart_history.json
 channel_templates.json
 session.session
-*.json
-shafa_logic/*.json
-!shafa_logic/data/materials_compact.json

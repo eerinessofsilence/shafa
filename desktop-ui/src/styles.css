@@ -1,0 +1,53 @@
+@import 'tailwindcss';
+
+:root {
+  --font-sans: 'Avenir Next', 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --bg-dark: oklch(90% 0 0);
+  --bg: oklch(95% 0 0);
+  --bg-light: oklch(100% 0 0);
+  --text: oklch(15% 0 0);
+  --text-muted: oklch(30% 0 0);
+  --border: oklch(40% 0 0);
+  --success: oklch(72.3% 0.219 149.6);
+  --warning: oklch(76.9% 0.188 70.1);
+  --error: oklch(63.7% 0.237 25.3);
+  --info: oklch(62.3% 0.214 259.8);
+  --alert: oklch(85.2% 0.199 91.9);
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --color-background: var(--bg-dark);
+  --color-foreground: var(--bg);
+  --color-secondary: var(--bg-light);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-info: var(--info);
+  --color-alert: var(--alert);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-size: 16px;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background font-sans text-text-muted;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+:root {
+  color-scheme: dark;
+}

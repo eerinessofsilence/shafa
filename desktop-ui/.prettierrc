@@ -1,0 +1,11 @@
+{
+  "plugins": [
+    "prettier-plugin-tailwindcss",
+    "@trivago/prettier-plugin-sort-imports"
+  ],
+  "tailwindStylesheet": "./src/styles.css",
+  "tailwindFunctions": ["clsx", "cn", "cva"],
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "all"
+}
