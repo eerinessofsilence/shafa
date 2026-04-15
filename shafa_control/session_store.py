@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 from .models import Account
 
@@ -150,7 +151,9 @@ class AccountSessionStore:
         except (OSError, json.JSONDecodeError):
             return False
         cookies = payload.get("cookies")
-        return isinstance(cookies, list) and bool(cookies)
+        if not isinstance(cookies, list) or not cookies:
+            return False
+        return self._has_valid_shafa_cookies(cookies)
 
     def is_valid_telegram_session(self, account: Account) -> bool:
         path = self.telegram_session_file(account)
@@ -237,3 +240,34 @@ class AccountSessionStore:
         if not isinstance(raw, list):
             return None
         return raw
+
+    @staticmethod
+    def _has_valid_shafa_cookies(cookies: list[dict]) -> bool:
+        has_csrftoken = False
+        has_shafa_cookie = False
+        for cookie in cookies:
+            if not isinstance(cookie, dict):
+                continue
+            domain = AccountSessionStore._normalize_cookie_domain(cookie.get("domain", ""))
+            name = str(cookie.get("name") or "").strip()
+            if not name:
+                continue
+            if AccountSessionStore._is_allowed_shafa_domain(domain):
+                has_shafa_cookie = True
+                if name == "csrftoken":
+                    value = cookie.get("value")
+                    if isinstance(value, str) and value.strip():
+                        has_csrftoken = True
+        return has_shafa_cookie and has_csrftoken
+
+    @staticmethod
+    def _normalize_cookie_domain(domain: str) -> str:
+        raw = str(domain or "").strip()
+        if "://" in raw:
+            parsed = urlparse(raw)
+            raw = parsed.hostname or raw
+        return raw.lstrip(".").lower()
+
+    @staticmethod
+    def _is_allowed_shafa_domain(domain: str) -> bool:
+        return domain == "shafa.ua" or domain.endswith(".shafa.ua")

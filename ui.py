@@ -2365,8 +2365,14 @@ class MainWindow(QMainWindow):
                 print(f"[DEBUG] {acc.name} already running")
             self.log("[RUN] already running", account=acc)
             return
-        if self._account_auth_file(acc).exists() and not self.session_store.is_valid_shafa_session(acc):
+        shafa_session_ready = self.session_store.is_valid_shafa_session(acc)
+        if self._account_auth_file(acc).exists() and not shafa_session_ready:
             self.log("[ERROR] Shafa session is corrupted. Re-login is required.", account=acc)
+            self._sync_account_auth_status(row)
+            return
+        if not shafa_session_ready:
+            self.log("[ERROR] Shafa session is missing. Please log in before starting the account.", account=acc)
+            self._sync_account_auth_status(row)
             return
         if self._account_telegram_session_file(acc).exists() and not self.session_store.is_valid_telegram_session(acc):
             self.log("[ERROR] Telegram session is corrupted. Re-authentication is required.", account=acc)

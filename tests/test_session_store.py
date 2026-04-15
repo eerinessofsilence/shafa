@@ -66,7 +66,10 @@ def test_session_store_validates_and_deletes_sessions(tmp_path: Path) -> None:
         legacy_state_file=tmp_path / "accounts_state.json",
     )
     account = Account(id="acc-2", name="Secondary", path="/tmp/project")
-    store.auth_file(account).write_text('{"cookies":[{"name":"csrftoken"}]}', encoding="utf-8")
+    store.auth_file(account).write_text(
+        '{"cookies":[{"name":"csrftoken","value":"token","domain":".shafa.ua"}]}',
+        encoding="utf-8",
+    )
     store.telegram_session_file(account).write_bytes(b"sqlite")
     store.telegram_login_state_file(account).write_text("{}", encoding="utf-8")
 
@@ -132,8 +135,32 @@ def test_session_store_copies_shafa_session(tmp_path: Path) -> None:
     )
     source = Account(id="src", name="Source", path="/tmp/project")
     target = Account(id="dst", name="Target", path="/tmp/project")
-    store.auth_file(source).write_text('{"cookies":[{"name":"csrftoken"}]}', encoding="utf-8")
+    store.auth_file(source).write_text(
+        '{"cookies":[{"name":"csrftoken","value":"token","domain":".shafa.ua"}]}',
+        encoding="utf-8",
+    )
 
     store.copy_shafa_session(source, target)
 
     assert store.is_valid_shafa_session(target) is True
+
+
+def test_session_store_rejects_shafa_session_without_shafa_csrftoken(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    account = Account(id="acc-3", name="Broken", path="/tmp/project")
+
+    store.auth_file(account).write_text(
+        '{"cookies":[{"name":"sessionid","value":"x","domain":".example.com"}]}',
+        encoding="utf-8",
+    )
+    assert store.is_valid_shafa_session(account) is False
+
+    store.auth_file(account).write_text(
+        '{"cookies":[{"name":"csrftoken","value":"","domain":".shafa.ua"}]}',
+        encoding="utf-8",
+    )
+    assert store.is_valid_shafa_session(account) is False
