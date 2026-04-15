@@ -1,7 +1,4 @@
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _test_path  # noqa: F401
 
 from controller.catalog_filter import find_slug_by_word, find_word
 

@@ -1,3 +1,4 @@
+import _test_path  # noqa: F401
 import os
 import unittest
 from datetime import datetime, timedelta

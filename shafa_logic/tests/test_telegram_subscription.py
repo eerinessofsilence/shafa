@@ -1,11 +1,9 @@
+import _test_path  # noqa: F401
 import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from telegram_subscription.sync import (
     _channel_tuple_from_entity,

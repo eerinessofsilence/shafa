@@ -1,3 +1,4 @@
+import _test_path  # noqa: F401
 import json
 import unittest
 from unittest.mock import patch

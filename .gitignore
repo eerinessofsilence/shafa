@@ -2,6 +2,7 @@ venv
 .env
 __pycache__/
 */__pycache__/
+*/*/__pycache__/
 runtime/
 logs/
 .pytest_cache/
@@ -41,3 +42,6 @@ app_config.json
 chart_history.json
 channel_templates.json
 session.session
+*.json
+shafa_logic/*.json
+!shafa_logic/data/materials_compact.json
