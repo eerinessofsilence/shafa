@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 import argparse
 
 import inquirer
-from telegram_subscription import complete_login, interactive_login, send_code, sync_channels_from_runtime_config
+from telegram_subscription import complete_login, send_code, submit_password, sync_channels_from_runtime_config
 
 _ADD_CHANNEL = object()
 
@@ -614,23 +614,24 @@ def main(
     actions: Optional[list[tuple[str, Callable[[], None]]]] = None,
     shafa: bool = False,
     login_shafa: bool = False,
-    telegram_auth_interactive: bool = False,
     mode: Optional[str] = None,
     telegram_send_code_phone: Optional[str] = None,
     telegram_login_phone: Optional[str] = None,
     telegram_login_code: Optional[str] = None,
+    telegram_login_password: Optional[str] = None,
 ) -> None:
     if mode:
         os.environ[APP_MODE_ENV] = mode
     if login_shafa:
         _login_account()
         return
-    if telegram_auth_interactive:
-        interactive_login()
-        return
     if telegram_send_code_phone:
         send_code(telegram_send_code_phone)
         print("Telegram code requested.")
+        return
+    if telegram_login_password:
+        submit_password(telegram_login_password)
+        print("Telegram password accepted.")
         return
     if telegram_login_phone and telegram_login_code:
         complete_login(telegram_login_phone, telegram_login_code)
@@ -661,11 +662,11 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--shafa", action="store_true")
     parser.add_argument("--login-shafa", action="store_true")
-    parser.add_argument("--telegram-auth-interactive", action="store_true")
     parser.add_argument("--mode", choices=["clothes", "sneakers"])
     parser.add_argument("--telegram-send-code")
     parser.add_argument("--telegram-login-phone")
     parser.add_argument("--telegram-login-code")
+    parser.add_argument("--telegram-login-password")
     return parser.parse_args()
 
 
@@ -674,10 +675,10 @@ if __name__ == "__main__":
     main(
         shafa=args.shafa,
         login_shafa=args.login_shafa,
-        telegram_auth_interactive=args.telegram_auth_interactive,
         mode=args.mode,
         telegram_send_code_phone=args.telegram_send_code,
         telegram_login_phone=args.telegram_login_phone,
         telegram_login_code=args.telegram_login_code,
+        telegram_login_password=args.telegram_login_password,
     )
 APP_MODE_ENV = "SHAFA_APP_MODE"

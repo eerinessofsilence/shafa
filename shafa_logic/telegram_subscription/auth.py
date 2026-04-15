@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import select
-import sys
 import re
+from pathlib import Path
 
 from data.const import (
     TELEGRAM_API_HASH,
@@ -14,190 +13,251 @@ from data.const import (
     TELEGRAM_SESSION_PATH,
 )
 
+INIT = "INIT"
+WAIT_PHONE = "WAIT_PHONE"
+WAIT_CODE = "WAIT_CODE"
+WAIT_PASSWORD = "WAIT_PASSWORD"
+SUCCESS = "SUCCESS"
+FAILED = "FAILED"
+
 PHONE_PATTERN = re.compile(r"^\+?\d{8,15}$")
 CODE_PATTERN = re.compile(r"^\d{5,6}$")
-AUTH_POLL_INTERVAL_SECONDS = max(5, int(os.getenv("SHAFA_TELEGRAM_AUTH_POLL_INTERVAL", "5")))
 
-
-def _normalize_step(step: str | None) -> str:
-    clean_step = str(step or "").strip().upper()
-    aliases = {
-        "": "INIT",
-        "IDLE": "INIT",
-        "INIT": "INIT",
-        "WAIT_PHONE": "WAIT_PHONE",
-        "WAIT_PHONE_INPUT": "WAIT_PHONE",
-        "PHONE_RECEIVED": "WAIT_PHONE",
-        "SENDING_CODE": "WAIT_PHONE",
-        "PHONE_SUBMITTED": "WAIT_PHONE",
-        "WAIT_CODE": "WAIT_CODE",
-        "WAIT_CODE_INPUT": "WAIT_CODE",
-        "WAITING_FOR_CODE": "WAIT_CODE",
-        "AWAITING_CODE_INPUT": "WAIT_CODE",
-        "CODE_RECEIVED": "WAIT_CODE",
-        "VERIFYING": "WAIT_CODE",
-        "VERIFYING_CODE": "WAIT_CODE",
-        "SUCCESS": "SUCCESS",
-        "FAILED": "FAILED",
-    }
-    return aliases.get(clean_step, "INIT")
+AUTH_STEP_ALIASES = {
+    "": INIT,
+    "IDLE": INIT,
+    "INIT": INIT,
+    "WAIT_PHONE": WAIT_PHONE,
+    "WAIT_PHONE_INPUT": WAIT_PHONE,
+    "PHONE_RECEIVED": WAIT_PHONE,
+    "PHONE_SUBMITTED": WAIT_PHONE,
+    "SENDING_CODE": WAIT_PHONE,
+    "WAIT_CODE": WAIT_CODE,
+    "WAIT_CODE_INPUT": WAIT_CODE,
+    "WAITING_FOR_CODE": WAIT_CODE,
+    "AWAITING_CODE_INPUT": WAIT_CODE,
+    "CODE_RECEIVED": WAIT_CODE,
+    "VERIFYING": WAIT_CODE,
+    "VERIFYING_CODE": WAIT_CODE,
+    "WAIT_PASSWORD": WAIT_PASSWORD,
+    "PASSWORD_REQUIRED": WAIT_PASSWORD,
+    "PASSWORD_REQUESTED": WAIT_PASSWORD,
+    "SUCCESS": SUCCESS,
+    "FAILED": FAILED,
+}
 
 
 def send_code(phone: str) -> None:
-    asyncio.run(_send_code(phone))
+    asyncio.run(_run_auth_step(_send_code(phone)))
 
 
 def complete_login(phone: str, code: str) -> None:
-    asyncio.run(_complete_login(phone, code))
+    asyncio.run(_run_auth_step(_complete_login(phone, code)))
 
 
-def interactive_login() -> None:
-    asyncio.run(_interactive_login())
+def submit_password(password: str) -> None:
+    asyncio.run(_run_auth_step(_submit_password(password)))
+
+
+async def _run_auth_step(coro) -> None:
+    try:
+        await coro
+    except Exception:
+        raise
 
 
 async def _send_code(phone: str) -> None:
     phone = _validate_phone(phone)
+    session_path = _resolve_session_path()
     _persist_login_state(
         phone_number=phone,
         verification_code="",
-        current_auth_step="WAIT_PHONE",
         telegram_password="",
+        current_auth_step=WAIT_PHONE,
+        phone_code_hash="",
+        session_path=str(session_path),
         code_confirmed=False,
     )
-    print(f"[AUTH] Phone received: {phone}", flush=True)
-    print("[AUTH] Sending phone to Telethon", flush=True)
+    _log_step(f"Starting Telegram auth for {phone}")
+    _log_step(f"Using Telegram session file: {session_path}")
+
     telegram_client_cls = _get_telegram_client_cls()
     api_id, api_hash = _require_telegram_credentials()
-    async with telegram_client_cls(str(TELEGRAM_SESSION_PATH), api_id, api_hash) as client:
-        sent = await client.send_code_request(phone)
+
+    try:
+        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
+            _log_step("Sending phone to Telethon")
+            sent = await client.send_code_request(phone)
+    except Exception as exc:
+        _persist_failed_state(phone_number=phone, session_path=session_path)
+        _log_step(f"Failed to send Telegram code: {_classify_auth_error(exc)}")
+        raise
+
     _persist_login_state(
         phone_number=phone,
-        current_auth_step="WAIT_CODE",
-        phone_code_hash=sent.phone_code_hash,
+        verification_code="",
+        telegram_password="",
+        current_auth_step=WAIT_CODE,
+        phone_code_hash=str(sent.phone_code_hash).strip(),
+        session_path=str(session_path),
+        code_confirmed=False,
     )
-    print("[AUTH] Waiting for code input", flush=True)
+    _log_step("Verification code requested successfully")
 
 
 async def _complete_login(phone: str, code: str) -> None:
     payload = _read_login_state()
     phone = _validate_phone(phone)
     code = _validate_code(code)
+    session_path = _session_path_from_payload(payload)
+    current_step = _normalize_step(payload.get("current_auth_step"))
     expected_phone = str(payload.get("phone_number") or payload.get("phone") or "").strip()
     phone_code_hash = str(payload.get("phone_code_hash") or "").strip()
+
+    if current_step != WAIT_CODE:
+        raise RuntimeError("Telegram login is not waiting for a verification code.")
     if not expected_phone or not phone_code_hash:
         raise RuntimeError("Telegram login was not initialized for this account.")
     if expected_phone != phone:
         raise RuntimeError("Phone number does not match the pending Telegram login.")
+
     _persist_login_state(
         phone_number=phone,
         verification_code=code,
-        current_auth_step="WAIT_CODE",
+        telegram_password=str(payload.get("telegram_password") or ""),
+        current_auth_step=WAIT_CODE,
         phone_code_hash=phone_code_hash,
-        telegram_password=str(payload.get("telegram_password") or "").strip(),
+        session_path=str(session_path),
         code_confirmed=True,
     )
-    print(f"[AUTH] Code received: {code}", flush=True)
-    print("[AUTH] Sending code to Telethon", flush=True)
+    _log_step(f"Submitting verification code for {phone}")
 
     telegram_client_cls = _get_telegram_client_cls()
     api_id, api_hash = _require_telegram_credentials()
-    async with telegram_client_cls(str(TELEGRAM_SESSION_PATH), api_id, api_hash) as client:
-        try:
+
+    try:
+        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
             await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
-        except Exception as exc:
-            if "SessionPasswordNeeded" not in exc.__class__.__name__:
-                raise
-            password = await _await_password_input(phone)
+    except Exception as exc:
+        if _is_password_needed_error(exc):
             _persist_login_state(
                 phone_number=phone,
                 verification_code=code,
-                telegram_password=password,
-                current_auth_step="WAIT_CODE",
+                telegram_password=str(payload.get("telegram_password") or ""),
+                current_auth_step=WAIT_PASSWORD,
                 phone_code_hash=phone_code_hash,
+                session_path=str(session_path),
                 code_confirmed=True,
             )
-            await client.sign_in(password=password)
+            _log_step("Telegram requires a 2FA password")
+            return
+        _persist_failed_state(
+            phone_number=phone,
+            verification_code=code,
+            telegram_password=str(payload.get("telegram_password") or ""),
+            phone_code_hash=phone_code_hash,
+            session_path=session_path,
+        )
+        _log_step(f"Telegram sign-in failed: {_classify_auth_error(exc)}")
+        raise
+
+    _mark_auth_success(
+        phone_number=phone,
+        verification_code=code,
+        telegram_password=str(payload.get("telegram_password") or ""),
+        phone_code_hash=phone_code_hash,
+        session_path=session_path,
+    )
+
+
+async def _submit_password(password: str) -> None:
+    payload = _read_login_state()
+    session_path = _session_path_from_payload(payload)
+    current_step = _normalize_step(payload.get("current_auth_step"))
+    phone = _validate_phone(str(payload.get("phone_number") or payload.get("phone") or "").strip())
+    code = _validate_code(str(payload.get("verification_code") or "").strip())
+    phone_code_hash = str(payload.get("phone_code_hash") or "").strip()
+    password = _validate_password(password)
+
+    if current_step != WAIT_PASSWORD:
+        raise RuntimeError("Telegram login is not waiting for a password.")
+    if not phone_code_hash:
+        raise RuntimeError("Telegram login is missing the phone_code_hash.")
+
     _persist_login_state(
         phone_number=phone,
         verification_code=code,
-        current_auth_step="SUCCESS",
+        telegram_password=password,
+        current_auth_step=WAIT_PASSWORD,
         phone_code_hash=phone_code_hash,
-        telegram_password=str(payload.get("telegram_password") or "").strip(),
-        code_confirmed=False,
+        session_path=str(session_path),
+        code_confirmed=True,
     )
-    print("[AUTH] Authentication success", flush=True)
+    _log_step(f"Submitting Telegram 2FA password for {phone}")
 
+    telegram_client_cls = _get_telegram_client_cls()
+    api_id, api_hash = _require_telegram_credentials()
 
-async def _interactive_login() -> None:
-    phone = ""
     try:
-        telegram_client_cls = _get_telegram_client_cls()
-        api_id, api_hash = _require_telegram_credentials()
-        async with telegram_client_cls(str(TELEGRAM_SESSION_PATH), api_id, api_hash) as client:
-            print("TG_AUTH:PHONE_REQUEST", flush=True)
-            print("Please enter your phone:", flush=True)
-            _persist_login_state(current_auth_step="WAIT_PHONE", code_confirmed=False)
-            phone = await _await_phone_input()
-            _persist_login_state(phone_number=phone, current_auth_step="WAIT_PHONE")
-            print(f"[AUTH] Phone received: {phone}", flush=True)
-
-            print("TG_AUTH:PHONE_RECEIVED", flush=True)
-            print("[AUTH] Sending phone to Telethon", flush=True)
-            sent = await client.send_code_request(phone)
-            _persist_login_state(
-                phone_number=phone,
-                current_auth_step="WAIT_CODE",
-                phone_code_hash=sent.phone_code_hash,
-                telegram_password="",
-                code_confirmed=False,
-            )
-            print("TG_AUTH:CODE_REQUESTED", flush=True)
-            print("Please enter the code:", flush=True)
-            print("[AUTH] Waiting for code input", flush=True)
-            code = await _await_confirmed_code(phone)
-            _persist_login_state(
-                phone_number=phone,
-                verification_code=code,
-                current_auth_step="WAIT_CODE",
-                phone_code_hash=sent.phone_code_hash,
-                code_confirmed=True,
-            )
-            print(f"[AUTH] Code received: {code}", flush=True)
-
-            print("TG_AUTH:CODE_RECEIVED", flush=True)
-            print("[AUTH] Sending code to Telethon", flush=True)
-            try:
-                await client.sign_in(phone=phone, code=code, phone_code_hash=sent.phone_code_hash)
-            except Exception as exc:
-                if "SessionPasswordNeeded" not in exc.__class__.__name__:
-                    raise
-                print("TG_AUTH:PASSWORD_REQUEST", flush=True)
-                print("Please enter your password:", flush=True)
-                password = await _await_password_input(phone)
-                _persist_login_state(
-                    phone_number=phone,
-                    verification_code=code,
-                    telegram_password=password,
-                    current_auth_step="WAIT_CODE",
-                    phone_code_hash=sent.phone_code_hash,
-                    code_confirmed=True,
-                )
-                await client.sign_in(password=password)
-        _persist_login_state(
+        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
+            await client.sign_in(password=password)
+    except Exception as exc:
+        _persist_failed_state(
             phone_number=phone,
             verification_code=code,
-            current_auth_step="SUCCESS",
-            phone_code_hash=sent.phone_code_hash,
-            telegram_password=str(_read_login_state().get("telegram_password") or "").strip(),
-            code_confirmed=False,
+            telegram_password=password,
+            phone_code_hash=phone_code_hash,
+            session_path=session_path,
         )
-        print("[AUTH] Authentication success", flush=True)
-        print("TG_AUTH:SUCCESS", flush=True)
-    except Exception as exc:
-        _persist_login_state(phone_number=phone, current_auth_step="FAILED")
-        print(f"[AUTH] Authentication failure: {exc}", flush=True)
-        print(f"TG_AUTH:ERROR:{_classify_auth_error(exc)}", flush=True)
+        _log_step(f"Telegram password sign-in failed: {_classify_auth_error(exc)}")
         raise
+
+    _mark_auth_success(
+        phone_number=phone,
+        verification_code=code,
+        telegram_password=password,
+        phone_code_hash=phone_code_hash,
+        session_path=session_path,
+    )
+
+
+def _mark_auth_success(
+    *,
+    phone_number: str,
+    verification_code: str,
+    telegram_password: str,
+    phone_code_hash: str,
+    session_path: Path,
+) -> None:
+    _persist_login_state(
+        phone_number=phone_number,
+        verification_code=verification_code,
+        telegram_password=telegram_password,
+        current_auth_step=SUCCESS,
+        phone_code_hash=phone_code_hash,
+        session_path=str(session_path),
+        code_confirmed=False,
+    )
+    _log_step(f"Telegram session saved to {session_path}")
+
+
+def _persist_failed_state(
+    *,
+    phone_number: str | None = None,
+    verification_code: str | None = None,
+    telegram_password: str | None = None,
+    phone_code_hash: str | None = None,
+    session_path: Path | None = None,
+) -> None:
+    _persist_login_state(
+        phone_number=phone_number,
+        verification_code=verification_code,
+        telegram_password=telegram_password,
+        current_auth_step=FAILED,
+        phone_code_hash=phone_code_hash,
+        session_path=str(session_path or _resolve_session_path()),
+        code_confirmed=False,
+    )
 
 
 def _require_telegram_credentials() -> tuple[int, str]:
@@ -215,26 +275,28 @@ def _get_telegram_client_cls():
     return TelegramClient
 
 
-def _read_line_nonblocking() -> str | None:
-    try:
-        ready, _, _ = select.select([sys.stdin], [], [], 0)
-    except (OSError, ValueError):
-        return None
-    if not ready:
-        return None
-    line = sys.stdin.readline()
-    if line == "":
-        return None
-    return line.strip()
+class _connected_client:
+    def __init__(self, client) -> None:
+        self.client = client
+
+    async def __aenter__(self):
+        await self.client.connect()
+        return self.client
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.client.disconnect()
 
 
 def _read_login_state() -> dict:
     if not TELEGRAM_LOGIN_STATE_PATH.exists():
-        return {}
+        return {"session_path": str(_resolve_session_path()), "current_auth_step": INIT}
     try:
-        return json.loads(TELEGRAM_LOGIN_STATE_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(TELEGRAM_LOGIN_STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return {"session_path": str(_resolve_session_path()), "current_auth_step": INIT}
+    payload.setdefault("session_path", str(_resolve_session_path()))
+    payload["current_auth_step"] = _normalize_step(payload.get("current_auth_step"))
+    return payload
 
 
 def _persist_login_state(
@@ -244,6 +306,7 @@ def _persist_login_state(
     current_auth_step: str | None = None,
     phone_code_hash: str | None = None,
     telegram_password: str | None = None,
+    session_path: str | None = None,
     code_confirmed: bool | None = None,
 ) -> None:
     payload = _read_login_state()
@@ -257,7 +320,9 @@ def _persist_login_state(
     if phone_code_hash is not None:
         payload["phone_code_hash"] = str(phone_code_hash).strip()
     if telegram_password is not None:
-        payload["telegram_password"] = str(telegram_password).strip()
+        payload["telegram_password"] = str(telegram_password)
+    if session_path is not None:
+        payload["session_path"] = str(session_path).strip()
     if code_confirmed is not None:
         payload["code_confirmed"] = bool(code_confirmed)
     TELEGRAM_LOGIN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -270,11 +335,9 @@ def _persist_login_state(
 def _validate_phone(phone: str) -> str:
     clean_phone = str(phone or "").strip()
     if not clean_phone or clean_phone.casefold() in {"+380...", "phone", "none", "null"}:
-        print("Phone number is required for Telegram login", flush=True)
         raise RuntimeError("Phone number is required for Telegram login")
     clean_phone = re.sub(r"[\s()-]+", "", clean_phone)
     if not PHONE_PATTERN.fullmatch(clean_phone):
-        print("Phone number is required for Telegram login", flush=True)
         raise RuntimeError("Phone number is required for Telegram login")
     return clean_phone
 
@@ -287,79 +350,31 @@ def _validate_code(code: str) -> str:
 
 
 def _validate_password(password: str) -> str:
-    clean_password = str(password or "").strip()
-    if not clean_password:
+    clean_password = str(password or "")
+    if clean_password == "":
         raise RuntimeError("Telegram password is required.")
     return clean_password
 
 
-async def _await_phone_input() -> str:
-    while True:
-        payload = _read_login_state()
-        candidate = str(payload.get("phone_number") or payload.get("phone") or "").strip()
-        try:
-            if candidate:
-                return _validate_phone(candidate)
-        except RuntimeError:
-            pass
-
-        stdin_value = _read_line_nonblocking()
-        if stdin_value:
-            try:
-                return _validate_phone(stdin_value)
-            except RuntimeError:
-                pass
-
-        await asyncio.sleep(AUTH_POLL_INTERVAL_SECONDS)
+def _resolve_session_path() -> Path:
+    TELEGRAM_SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return TELEGRAM_SESSION_PATH
 
 
-async def _await_confirmed_code(phone: str) -> str:
-    while True:
-        payload = _read_login_state()
-        pending_phone = str(payload.get("phone_number") or payload.get("phone") or "").strip()
-        if pending_phone and pending_phone != phone:
-            raise RuntimeError("Phone number does not match the pending Telegram login.")
-
-        code_candidate = str(payload.get("verification_code") or "").strip()
-        code_confirmed = bool(payload.get("code_confirmed", False))
-        if code_candidate and code_confirmed:
-            try:
-                return _validate_code(code_candidate)
-            except RuntimeError:
-                pass
-
-        stdin_value = _read_line_nonblocking()
-        if stdin_value:
-            try:
-                return _validate_code(stdin_value)
-            except RuntimeError:
-                pass
-
-        await asyncio.sleep(AUTH_POLL_INTERVAL_SECONDS)
+def _session_path_from_payload(payload: dict) -> Path:
+    raw_path = str(payload.get("session_path") or "").strip()
+    if not raw_path:
+        return _resolve_session_path()
+    return Path(raw_path).expanduser()
 
 
-async def _await_password_input(phone: str) -> str:
-    while True:
-        payload = _read_login_state()
-        pending_phone = str(payload.get("phone_number") or payload.get("phone") or "").strip()
-        if pending_phone and pending_phone != phone:
-            raise RuntimeError("Phone number does not match the pending Telegram login.")
+def _normalize_step(step: str | None) -> str:
+    clean_step = str(step or "").strip().upper()
+    return AUTH_STEP_ALIASES.get(clean_step, INIT)
 
-        password_candidate = str(payload.get("telegram_password") or "").strip()
-        if password_candidate:
-            try:
-                return _validate_password(password_candidate)
-            except RuntimeError:
-                pass
 
-        stdin_value = _read_line_nonblocking()
-        if stdin_value:
-            try:
-                return _validate_password(stdin_value)
-            except RuntimeError:
-                pass
-
-        await asyncio.sleep(AUTH_POLL_INTERVAL_SECONDS)
+def _is_password_needed_error(exc: Exception) -> bool:
+    return "SessionPasswordNeeded" in exc.__class__.__name__
 
 
 def _classify_auth_error(exc: Exception) -> str:
@@ -375,6 +390,12 @@ def _classify_auth_error(exc: Exception) -> str:
         return f"INVALID_PHONE:{message}"
     if "SessionPasswordNeeded" in name:
         return "PASSWORD_REQUIRED:Telegram password is required."
+    if "PasswordHashInvalid" in name:
+        return f"INVALID_PASSWORD:{message}"
     if "ApiIdInvalid" in name:
         return f"INVALID_API:{message}"
     return f"GENERIC:{message}"
+
+
+def _log_step(message: str) -> None:
+    print(f"[AUTH] {message}", flush=True)

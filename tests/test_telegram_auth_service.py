@@ -67,6 +67,43 @@ def test_submit_code_runs_login_command(tmp_path: Path) -> None:
     ]]
 
 
+def test_submit_code_reports_password_requirement_from_state(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project", phone_number="+380501112233")
+
+    def runner(_account: Account, _args: list[str]) -> subprocess.CompletedProcess:
+        store.telegram_login_state_file(account).write_text(
+            '{"current_auth_step":"WAIT_PASSWORD"}',
+            encoding="utf-8",
+        )
+        return _completed(0, stdout="password required")
+
+    service = TelegramAuthService(store, runner)
+
+    result = service.submit_code(account, "123456")
+
+    assert result.ok is True
+    assert result.pending_code is True
+    assert result.message == "Telegram password required."
+
+
+def test_submit_password_runs_password_command(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project", phone_number="+380501112233")
+    captured: list[list[str]] = []
+
+    def runner(_account: Account, args: list[str]) -> subprocess.CompletedProcess:
+        captured.append(args)
+        return _completed(0, stdout="done")
+
+    service = TelegramAuthService(store, runner)
+
+    result = service.submit_password(account, "secret-pass")
+
+    assert result.ok is True
+    assert captured == [["main.py", "--telegram-login-password", "secret-pass"]]
+
+
 def test_request_code_fails_without_phone(tmp_path: Path) -> None:
     store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
     account = Account(id="acc", name="Test", path="/tmp/project", phone_number="")
@@ -76,13 +113,6 @@ def test_request_code_fails_without_phone(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert result.message == "Phone number is required for Telegram login"
-
-
-def test_interactive_command_matches_terminal_flow(tmp_path: Path) -> None:
-    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
-    service = TelegramAuthService(store, lambda *_args, **_kwargs: _completed(0))
-
-    assert service.interactive_command() == ["main.py", "--telegram-auth-interactive"]
 
 
 def test_reuse_status_detects_existing_session(tmp_path: Path) -> None:
@@ -166,6 +196,7 @@ def test_auth_state_persists_phone_code_and_step(tmp_path: Path) -> None:
         phone_number=" +380501112233 ",
         verification_code=" 123456 ",
         current_auth_step="VERIFYING",
+        session_path="/tmp/telegram.session",
         code_confirmed=True,
         extra={"phone_code_hash": "hash"},
     )
@@ -176,4 +207,5 @@ def test_auth_state_persists_phone_code_and_step(tmp_path: Path) -> None:
     assert state["verification_code"] == "123456"
     assert state["current_auth_step"] == "WAIT_CODE"
     assert state["phone_code_hash"] == "hash"
+    assert state["session_path"] == "/tmp/telegram.session"
     assert state["code_confirmed"] is True

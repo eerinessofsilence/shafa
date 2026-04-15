@@ -112,7 +112,11 @@ async def _resolve_single_channel(
 ) -> tuple[int, str, str] | None:
     try:
         _log(f"resolving channel: {link}")
-        await _ensure_channel_membership(client, link)
+        entity = await _ensure_channel_membership(client, link)
+        resolved_from_entity = _channel_tuple_from_entity(entity)
+        if resolved_from_entity is not None:
+            _log(f"resolved {link} directly via entity: id={resolved_from_entity[0]}, title={resolved_from_entity[1]!r}")
+            return resolved_from_entity
         response_text = await _fetch_id_bot_response(client, link)
         _log(f"bot response for {link}: {response_text!r}")
         channel_id, title = parse_id_bot_response(response_text)
@@ -181,7 +185,7 @@ async def _ensure_channel_membership(client: "TelegramClient", link: str) -> Non
 
     if entity is None:
         _log(f"no search results for {link}")
-        return
+        return None
 
     try:
         await client(JoinChannelRequest(entity))
@@ -190,8 +194,36 @@ async def _ensure_channel_membership(client: "TelegramClient", link: str) -> Non
         message = str(exc).upper()
         if "USER_ALREADY_PARTICIPANT" in message:
             _log(f"already joined {link}")
-            return
+            return entity
         _log(f"join failed for {link}: {exc}")
+    return entity
+
+
+def _channel_tuple_from_entity(entity: object | None) -> tuple[int, str, str] | None:
+    if entity is None:
+        return None
+    raw_title = getattr(entity, "title", None)
+    if not isinstance(raw_title, str) or not raw_title.strip():
+        raw_title = getattr(entity, "username", None)
+    if not isinstance(raw_title, str):
+        return None
+    title = raw_title.strip()
+    if not title:
+        return None
+    try:
+        channel_id = int(_get_peer_id(entity))
+    except Exception:
+        raw_id = getattr(entity, "id", None)
+        if not isinstance(raw_id, int):
+            return None
+        channel_id = int(raw_id)
+    return (channel_id, title, "main")
+
+
+def _get_peer_id(entity: object) -> int:
+    from telethon.utils import get_peer_id
+
+    return int(get_peer_id(entity))
 
 
 def _extract_search_query(link: str) -> str:

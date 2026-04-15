@@ -31,12 +31,16 @@ AUTH_STEP_ALIASES = {
     "CODE_RECEIVED": "WAIT_CODE",
     "VERIFYING": "WAIT_CODE",
     "VERIFYING_CODE": "WAIT_CODE",
+    "WAIT_PASSWORD": "WAIT_PASSWORD",
+    "PASSWORD_REQUIRED": "WAIT_PASSWORD",
+    "PASSWORD_REQUESTED": "WAIT_PASSWORD",
     "SUCCESS": "SUCCESS",
     "FAILED": "FAILED",
 }
 PENDING_AUTH_STEPS = {
     "WAIT_PHONE",
     "WAIT_CODE",
+    "WAIT_PASSWORD",
 }
 
 
@@ -156,13 +160,30 @@ class TelegramAuthService:
         )
         if result.returncode != 0:
             return TelegramAuthStatus(False, self._command_error(result))
+        state = self.load_auth_state(account)
+        if state.get("current_auth_step") == "WAIT_PASSWORD":
+            return TelegramAuthStatus(True, "Telegram password required.", pending_code=True)
+        return TelegramAuthStatus(True, "Telegram session saved.", pending_code=False)
+
+    def submit_password(self, account: Account, password: str) -> TelegramAuthStatus:
+        password_status = self.validate_password(password)
+        if not password_status.ok:
+            return password_status
+
+        result = self.runner(
+            account,
+            [
+                "main.py",
+                "--telegram-login-password",
+                password_status.message,
+            ],
+        )
+        if result.returncode != 0:
+            return TelegramAuthStatus(False, self._command_error(result))
         return TelegramAuthStatus(True, "Telegram session saved.", pending_code=False)
 
     def has_pending_code(self, account: Account) -> bool:
         return self.store.has_pending_telegram_code(account)
-
-    def interactive_command(self) -> list[str]:
-        return ["main.py", "--telegram-auth-interactive"]
 
     def reuse_status(self, account: Account) -> TelegramAuthStatus | None:
         if self.store.is_valid_telegram_session(account):
@@ -188,9 +209,10 @@ class TelegramAuthService:
         return {
             "phone_number": str(payload.get("phone_number") or payload.get("phone") or account.phone_number or "").strip(),
             "verification_code": str(payload.get("verification_code") or "").strip(),
-            "telegram_password": str(payload.get("telegram_password") or account.telegram_password or "").strip(),
+            "telegram_password": str(payload.get("telegram_password") or account.telegram_password or ""),
             "current_auth_step": self.normalize_auth_step(payload.get("current_auth_step")),
             "phone_code_hash": str(payload.get("phone_code_hash") or "").strip(),
+            "session_path": str(payload.get("session_path") or self.store.telegram_session_file(account)).strip(),
             "code_confirmed": bool(payload.get("code_confirmed", False)),
         }
 
@@ -203,6 +225,7 @@ class TelegramAuthService:
         telegram_password: str | None = None,
         current_auth_step: str | None = None,
         code_confirmed: bool | None = None,
+        session_path: str | None = None,
         extra: dict | None = None,
     ) -> dict:
         state = self.load_auth_state(account)
@@ -211,11 +234,13 @@ class TelegramAuthService:
         if verification_code is not None:
             state["verification_code"] = str(verification_code).strip()
         if telegram_password is not None:
-            state["telegram_password"] = str(telegram_password).strip()
+            state["telegram_password"] = str(telegram_password)
         if current_auth_step is not None:
             state["current_auth_step"] = self.normalize_auth_step(current_auth_step)
         if code_confirmed is not None:
             state["code_confirmed"] = bool(code_confirmed)
+        if session_path is not None:
+            state["session_path"] = str(session_path).strip()
         if extra:
             for key, value in extra.items():
                 state[key] = value
@@ -247,8 +272,8 @@ class TelegramAuthService:
 
     @staticmethod
     def validate_password(password: str) -> TelegramAuthStatus:
-        clean_password = str(password or "").strip()
-        if not clean_password:
+        clean_password = str(password or "")
+        if clean_password == "":
             return TelegramAuthStatus(False, "Telegram password is required.")
         return TelegramAuthStatus(True, clean_password)
 
@@ -277,9 +302,10 @@ class TelegramAuthService:
         return {
             "phone_number": str(account.phone_number or "").strip(),
             "verification_code": "",
-            "telegram_password": str(account.telegram_password or "").strip(),
+            "telegram_password": str(account.telegram_password or ""),
             "current_auth_step": "INIT",
             "phone_code_hash": "",
+            "session_path": "",
             "code_confirmed": False,
         }
 
