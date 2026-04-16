@@ -5,15 +5,11 @@ import { Panel } from './components/Panel';
 import { StatusPill } from './components/StatusPill';
 import {
   accountRows,
-  dashboardAlerts,
   dashboardMetrics,
   dashboardSeries,
   logRecords,
   navItems,
-  parserQueue,
-  parserResults,
-  parserToggles,
-  settingsGroups,
+  settingToggles,
   statsMetrics,
   statsSeries,
   systemStatus,
@@ -21,27 +17,36 @@ import {
 import type {
   AccountRow,
   PageId,
-  ParserToggle,
+  SettingToggle,
+  StatusTone,
   TelegramChannel,
   TelegramPhotoSource,
 } from './types';
 import {
+  BarChart3,
   CalendarRange,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Download,
+  Ellipsis,
   Eye,
   Filter,
   FolderOpen,
+  LayoutGrid,
   Link2,
   PencilLine,
-  Play,
   Plus,
   Power,
-  RefreshCw,
   Save,
-  Square,
+  Settings,
+  Star,
+  Trash2,
+  TriangleAlert,
+  User,
+  Users,
   X,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
@@ -54,7 +59,7 @@ const timerOptions = Array.from(
 const accountControlClassName =
   'h-12 w-full rounded-xl border border-border/25 bg-secondary px-3 text-text outline-none transition focus:border-info/50 focus:ring-2 focus:ring-info/25';
 const accountSelectButtonClassName =
-  'flex h-12 w-full items-center justify-between gap-4 rounded-xl border border-border/25 bg-secondary px-3 text-left text-text outline-none transition hover:border-border/50 focus:border-info/50 focus:ring-2 focus:ring-info/25';
+  'flex h-12 w-full cursor-pointer items-center justify-between gap-4 rounded-xl border border-border/25 bg-secondary px-3 text-left text-text outline-none transition hover:border-border/50 focus:border-info/50 focus:ring-2 focus:ring-info/25';
 const telegramDraftInitialState = {
   title: '',
   handle: '',
@@ -89,12 +94,66 @@ const compactActionButtonClassNames = {
 } as const;
 const surfaceCardClassName =
   'rounded-[18px] border border-border/25 bg-secondary/50 p-4';
+const navItemIcons: Record<PageId, ReactNode> = {
+  dashboard: <LayoutGrid className="h-5 w-5" />,
+  accounts: <Users className="h-5 w-5" />,
+  parsing: <Power className="h-5 w-5" />,
+  stats: <BarChart3 className="h-5 w-5" />,
+  settings: <Settings className="h-5 w-5" />,
+};
 
 type TelegramChannelDraft = Pick<
   TelegramChannel,
   'title' | 'handle' | 'photoSource'
 >;
 type ActionTone = keyof typeof actionButtonClassNames;
+type AccountEditableField = 'name' | 'path' | 'browser' | 'timer';
+type AccountDraft = Pick<AccountRow, AccountEditableField>;
+type AccountSortField =
+  | 'name'
+  | 'browser'
+  | 'timer'
+  | 'channels'
+  | 'status'
+  | 'errors';
+type AccountSortDirection = 'asc' | 'desc';
+type AccountBulkActionId = 'open' | 'close' | 'delete';
+
+const accountTableHeaders: Array<{
+  id: AccountSortField;
+  label: string;
+}> = [
+  { id: 'name', label: 'Имя' },
+  { id: 'browser', label: 'Браузер' },
+  { id: 'timer', label: 'Таймер' },
+  { id: 'channels', label: 'Каналы' },
+  { id: 'status', label: 'Статус' },
+  { id: 'errors', label: 'Ошибки' },
+];
+const accountDraftInitialState: AccountDraft = {
+  name: '',
+  path: '',
+  browser: browserOptions[1] ?? 'Нет',
+  timer: timerOptions[4] ?? '5 мин',
+};
+const accountPageSizeOptions = [5, 10, 20, 50] as const;
+
+function getAccountSortValue(account: AccountRow, field: AccountSortField) {
+  switch (field) {
+    case 'name':
+      return account.name;
+    case 'browser':
+      return account.browser;
+    case 'timer':
+      return Number.parseInt(account.timer, 10) || 0;
+    case 'channels':
+      return account.telegramChannels.length;
+    case 'status':
+      return account.statusLabel;
+    case 'errors':
+      return Number.parseInt(account.errors, 10) || 0;
+  }
+}
 
 function normalizeTelegramHandle(value: string) {
   const cleanedValue = value
@@ -143,28 +202,89 @@ function createTelegramChannel(draft: TelegramChannelDraft): TelegramChannel {
   const normalizedHandle = normalizeTelegramHandle(draft.handle);
 
   return {
-    id:
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `telegram-${Date.now()}`,
+    id: createEntityId('telegram'),
     title: draft.title.trim() || formatChannelTitle(normalizedHandle),
     handle: normalizedHandle,
     photoSource: draft.photoSource,
   };
 }
 
+function createEntityId(prefix: string) {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? `${prefix}-${crypto.randomUUID()}`
+    : `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
+}
+
+function deriveAccountBranch(path: string) {
+  const pathSegments = path
+    .trim()
+    .replace(/\/+$/, '')
+    .split('/')
+    .filter(Boolean);
+  const lastPathSegment = pathSegments[pathSegments.length - 1];
+
+  return lastPathSegment || 'main';
+}
+
+function createAccountFromDraft(draft: AccountDraft): AccountRow {
+  return {
+    id: createEntityId('account'),
+    name: draft.name.trim(),
+    path: draft.path.trim(),
+    branch: deriveAccountBranch(draft.path),
+    browser: draft.browser,
+    timer: draft.timer,
+    errors: '0',
+    statusLabel: 'stopped',
+    statusTone: 'neutral',
+    telegramChannels: [],
+  };
+}
+
+function isAccountDraftValid(draft: AccountDraft) {
+  return Boolean(draft.name.trim() && draft.path.trim());
+}
+
+function formatAccountCount(count: number) {
+  const lastDigit = count % 10;
+  const lastTwoDigits = count % 100;
+
+  if (lastDigit === 1 && lastTwoDigits !== 11) {
+    return `${count} аккаунт`;
+  }
+
+  if (
+    lastDigit >= 2 &&
+    lastDigit <= 4 &&
+    (lastTwoDigits < 12 || lastTwoDigits > 14)
+  ) {
+    return `${count} аккаунта`;
+  }
+
+  return `${count} аккаунтов`;
+}
+
 function App() {
   const [activePage, setActivePage] = useState<PageId>('dashboard');
   const [accounts, setAccounts] = useState<AccountRow[]>(accountRows);
   const [parsingToggles, setParsingToggles] =
-    useState<ParserToggle[]>(parserToggles);
-  const [selectedAccountId, setSelectedAccountId] = useState(accountRows[0].id);
+    useState<SettingToggle[]>(settingToggles);
+  const [selectedAccountId, setSelectedAccountId] = useState('');
   const selectedAccount =
-    accounts.find((account) => account.id === selectedAccountId) ?? accounts[0];
+    accounts.find((account) => account.id === selectedAccountId) ?? null;
+
+  useEffect(() => {
+    if (
+      selectedAccountId &&
+      !accounts.some((account) => account.id === selectedAccountId)
+    ) {
+      setSelectedAccountId('');
+    }
+  }, [accounts, selectedAccountId]);
 
   const handleAccountFieldChange = (
     accountId: string,
-    field: 'path' | 'browser' | 'timer',
+    field: AccountEditableField,
     value: string,
   ) => {
     setAccounts((currentAccounts) =>
@@ -172,6 +292,13 @@ function App() {
         account.id === accountId ? { ...account, [field]: value } : account,
       ),
     );
+  };
+
+  const handleCreateAccount = (draft: AccountDraft) => {
+    const nextAccount = createAccountFromDraft(draft);
+
+    setAccounts((currentAccounts) => [...currentAccounts, nextAccount]);
+    setSelectedAccountId(nextAccount.id);
   };
 
   const handleAddTelegramChannel = (
@@ -243,10 +370,67 @@ function App() {
     );
   };
 
+  const handleBulkAccountAction = (
+    action: AccountBulkActionId,
+    accountIds: string[],
+  ) => {
+    if (accountIds.length === 0) {
+      return '';
+    }
+
+    const selectedIdSet = new Set(accountIds);
+    const selectedAccounts = accounts.filter((account) =>
+      selectedIdSet.has(account.id),
+    );
+    const selectedCount = selectedAccounts.length;
+    const firstSelectedAccount = selectedAccounts[0];
+
+    switch (action) {
+      case 'open':
+        setAccounts((currentAccounts) =>
+          currentAccounts.map((account) =>
+            selectedIdSet.has(account.id)
+              ? {
+                  ...account,
+                  browser: 'Да',
+                  statusLabel: 'running',
+                  statusTone: 'success',
+                }
+              : account,
+          ),
+        );
+        if (firstSelectedAccount) {
+          setSelectedAccountId(firstSelectedAccount.id);
+        }
+        return selectedCount === 1 && firstSelectedAccount
+          ? `Открыт аккаунт ${firstSelectedAccount.name}.`
+          : `Открыто ${formatAccountCount(selectedCount)}.`;
+      case 'close':
+        setAccounts((currentAccounts) =>
+          currentAccounts.map((account) =>
+            selectedIdSet.has(account.id)
+              ? {
+                  ...account,
+                  browser: 'Нет',
+                  statusLabel: 'stopped',
+                  statusTone: 'neutral',
+                }
+              : account,
+          ),
+        );
+        return `Остановлено ${formatAccountCount(selectedCount)}.`;
+      case 'delete':
+        setAccounts((currentAccounts) =>
+          currentAccounts.filter((account) => !selectedIdSet.has(account.id)),
+        );
+        return `Удалено ${formatAccountCount(selectedCount)}.`;
+    }
+  };
+
   return (
     <div className="min-h-screen font-sans antialiased">
       <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="bg-foreground min-h-screen w-full p-7.5">
+        <aside className="bg-foreground min-h-screen w-full p-5">
           <div className="space-y-4 sticky top-7.5">
             <h1 className="font-semibold text-text tracking-tight text-3xl">
               Shafa Control
@@ -257,13 +441,22 @@ function App() {
                 <button
                   key={item.id}
                   type="button"
-                  className={`flex flex-col gap-1 w-full items-start rounded-xl py-2 px-4 transition-all duration-200 ${
+                  className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition-all duration-200 ${
                     activePage === item.id
-                      ? 'border text-text border-border/75 bg-secondary'
-                      : 'border border-transparent text-text/75 bg-secondary/50 hover:bg-secondary/75  hover:border-border/50'
+                      ? 'border border-info/50 bg-secondary text-text'
+                      : 'border border-transparent bg-secondary/50 text-text/75 hover:border-border/25 hover:bg-secondary/75'
                   }`}
                   onClick={() => setActivePage(item.id)}
                 >
+                  <span
+                    className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-200 ${
+                      activePage === item.id
+                        ? 'bg-info/15 text-info'
+                        : 'bg-secondary text-text/65'
+                    }`}
+                  >
+                    {navItemIcons[item.id]}
+                  </span>
                   <span className="text-lg font-medium">{item.label}</span>
                 </button>
               ))}
@@ -279,20 +472,21 @@ function App() {
                 accounts={accounts}
                 selectedAccount={selectedAccount}
                 selectedAccountId={selectedAccountId}
+                onBulkAction={handleBulkAccountAction}
+                onCreateAccount={handleCreateAccount}
                 onSelectAccount={setSelectedAccountId}
                 onUpdateAccountField={handleAccountFieldChange}
                 onAddTelegramChannel={handleAddTelegramChannel}
                 onUpdateTelegramChannel={handleUpdateTelegramChannel}
               />
             )}
-            {activePage === 'parsing' && (
-              <ParsingPage
-                parserToggles={parsingToggles}
-                onToggleParserOption={handleToggleParsingOption}
+            {activePage === 'stats' && <StatsPage />}
+            {activePage === 'settings' && (
+              <SettingsPage
+                toggles={parsingToggles}
+                onToggleOption={handleToggleParsingOption}
               />
             )}
-            {activePage === 'stats' && <StatsPage />}
-            {activePage === 'settings' && <SettingsPage />}
           </section>
         </main>
       </div>
@@ -354,6 +548,142 @@ function ToggleSwitch({ checked }: ToggleSwitchProps) {
   );
 }
 
+const accountIconClassNames: Record<StatusTone, string> = {
+  success: 'bg-success/12 text-success',
+  warning: 'bg-info/12 text-info',
+  info: 'bg-info/12 text-info',
+  danger: 'bg-error/12 text-error',
+  neutral: 'bg-info/12 text-info',
+};
+
+const accountStatusBadgeClassNames: Record<StatusTone, string> = {
+  success: 'bg-success/15 text-success',
+  warning: 'bg-info/15 text-info',
+  info: 'bg-info/15 text-info',
+  danger: 'bg-error/15 text-error',
+  neutral: 'bg-secondary text-text-muted',
+};
+
+function AccountRowIcon({ tone }: { tone: StatusTone }) {
+  const icon =
+    tone === 'danger' ? (
+      <TriangleAlert className="h-4 w-4" />
+    ) : tone === 'success' ? (
+      <Star className="h-4 w-4 fill-current" />
+    ) : (
+      <User className="h-4 w-4" />
+    );
+
+  return (
+    <span
+      className={`flex h-9 w-9 items-center justify-center rounded-xl ${accountIconClassNames[tone]}`}
+    >
+      {icon}
+    </span>
+  );
+}
+
+function AccountStatusBadge({
+  tone,
+  children,
+}: {
+  tone: StatusTone;
+  children: ReactNode;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${accountStatusBadgeClassNames[tone]}`}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+      {children}
+    </span>
+  );
+}
+
+interface SelectionCheckboxProps {
+  checked: boolean;
+  indeterminate?: boolean;
+  onToggle: () => void;
+  label: string;
+}
+
+function SelectionCheckbox({
+  checked,
+  indeterminate = false,
+  onToggle,
+  label,
+}: SelectionCheckboxProps) {
+  const isActive = checked || indeterminate;
+
+  return (
+    <button
+      aria-checked={indeterminate ? 'mixed' : checked}
+      aria-label={label}
+      className={`flex h-6 w-6 cursor-pointer items-center justify-center rounded-md border transition-all duration-200 ${
+        isActive
+          ? 'border-info bg-info text-white shadow-[0_10px_20px_rgba(37,99,235,0.18)]'
+          : 'border-border/20 bg-secondary/90 text-transparent hover:border-info/35 hover:bg-secondary'
+      }`}
+      role="checkbox"
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle();
+      }}
+    >
+      {checked ? (
+        <Check className="h-3.5 w-3.5" />
+      ) : indeterminate ? (
+        <span className="h-0.5 w-2.5 rounded-full bg-current" />
+      ) : null}
+    </button>
+  );
+}
+
+type BulkActionTone = 'primary' | 'neutral' | 'danger';
+
+const bulkActionButtonClassNames: Record<BulkActionTone, string> = {
+  primary: 'bg-info text-white hover:bg-info/90',
+  neutral: 'bg-transparent text-text hover:bg-secondary hover:text-text',
+  danger: 'bg-transparent text-error hover:bg-error/8 hover:text-error',
+};
+
+const disabledBulkActionButtonClassNames: Record<BulkActionTone, string> = {
+  primary: 'bg-info text-white',
+  neutral: 'bg-transparent text-text',
+  danger: 'bg-transparent text-error',
+};
+
+interface BulkActionButtonProps {
+  children: ReactNode;
+  icon: ReactNode;
+  tone?: BulkActionTone;
+  disabled?: boolean;
+  className?: string;
+  onClick: () => void;
+}
+
+function BulkActionButton({
+  children,
+  icon,
+  tone = 'neutral',
+  disabled = false,
+  className,
+  onClick,
+}: BulkActionButtonProps) {
+  return (
+    <button
+      className={`inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl px-3.5 text-sm font-medium transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-45 ${disabled ? disabledBulkActionButtonClassNames[tone] : bulkActionButtonClassNames[tone]} ${className ?? ''}`}
+      disabled={disabled}
+      type="button"
+      onClick={onClick}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
 function DashboardPage() {
   return (
     <div className="space-y-4">
@@ -410,66 +740,20 @@ function DashboardPage() {
           </div>
         </Panel>
       </div>
-
-      <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-        <Panel
-          title="Последние сигналы"
-          subtitle="Что требует внимания команды"
-        >
-          <div className="flex flex-col gap-3">
-            {dashboardAlerts.map((alert) => (
-              <div
-                key={alert.title}
-                className="flex gap-2 bg-secondary/50 border border-border/25 p-3 rounded-[18px]"
-              >
-                <div>
-                  <h1 className="text-text font-medium text-lg">
-                    {alert.title}
-                  </h1>
-                  <p className="mt-3 whitespace-pre-line leading-6">
-                    {alert.copy}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel
-          title="Ключевые аккаунты"
-          subtitle="Шаблонное распределение нагрузки"
-        >
-          <div className="flex flex-col">
-            {accountRows.slice(0, 4).map((account) => (
-              <button
-                key={account.id}
-                type="button"
-                className="flex w-full items-center justify-between gap-3.5 border-b border-[rgba(140,172,201,0.16)] py-3.5 text-left last:border-b-0"
-              >
-                <div>
-                  <strong className="block">{account.name}</strong>
-                  <span className="text-text-muted">{account.branch}</span>
-                </div>
-                <StatusPill tone={account.statusTone}>
-                  {account.statusLabel}
-                </StatusPill>
-              </button>
-            ))}
-          </div>
-        </Panel>
-      </div>
     </div>
   );
 }
 
 interface AccountsPageProps {
   accounts: AccountRow[];
-  selectedAccount: AccountRow;
+  selectedAccount: AccountRow | null;
   selectedAccountId: string;
+  onBulkAction: (action: AccountBulkActionId, accountIds: string[]) => string;
+  onCreateAccount: (draft: AccountDraft) => void;
   onSelectAccount: (accountId: string) => void;
   onUpdateAccountField: (
     accountId: string,
-    field: 'path' | 'browser' | 'timer',
+    field: AccountEditableField,
     value: string,
   ) => void;
   onAddTelegramChannel: (
@@ -487,11 +771,189 @@ function AccountsPage({
   accounts,
   selectedAccount,
   selectedAccountId,
+  onBulkAction,
+  onCreateAccount,
   onSelectAccount,
   onUpdateAccountField,
   onAddTelegramChannel,
   onUpdateTelegramChannel,
 }: AccountsPageProps) {
+  const [sortState, setSortState] = useState<{
+    field: AccountSortField;
+    direction: AccountSortDirection;
+  } | null>(null);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [bulkFeedback, setBulkFeedback] = useState('');
+  const [isDetailsDialogOpen, setIsDetailsDialogOpen] = useState(false);
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [itemsPerPage, setItemsPerPage] = useState<
+    (typeof accountPageSizeOptions)[number]
+  >(accountPageSizeOptions[0]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const detailsAccount =
+    selectedAccountIds.length === 1
+      ? (accounts.find((account) => account.id === selectedAccountIds[0]) ??
+        null)
+      : null;
+  const selectedAccounts = accounts.filter((account) =>
+    selectedAccountIds.includes(account.id),
+  );
+  const shouldShowCloseAction =
+    selectedAccounts.length > 0 &&
+    selectedAccounts.every((account) => account.statusLabel !== 'stopped');
+  const visibleAccounts = accounts;
+  const sortedAccounts = [...visibleAccounts].sort(
+    (leftAccount, rightAccount) => {
+      if (!sortState) {
+        return 0;
+      }
+
+      const leftValue = getAccountSortValue(leftAccount, sortState.field);
+      const rightValue = getAccountSortValue(rightAccount, sortState.field);
+      const comparison =
+        typeof leftValue === 'number' && typeof rightValue === 'number'
+          ? leftValue - rightValue
+          : String(leftValue).localeCompare(String(rightValue), 'ru', {
+              sensitivity: 'base',
+              numeric: true,
+            });
+
+      return sortState.direction === 'asc' ? comparison : -comparison;
+    },
+  );
+  const totalPages = Math.max(
+    1,
+    Math.ceil(sortedAccounts.length / itemsPerPage),
+  );
+  const paginatedAccounts = sortedAccounts.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage,
+  );
+  const visibleAccountIds = paginatedAccounts.map((account) => account.id);
+  const allAccountIds = accounts.map((account) => account.id);
+  const allAccountSignature = allAccountIds.join('|');
+  const selectedVisibleCount = selectedAccountIds.filter((accountId) =>
+    visibleAccountIds.includes(accountId),
+  ).length;
+  const isAllVisibleSelected =
+    visibleAccountIds.length > 0 &&
+    selectedVisibleCount === visibleAccountIds.length;
+  const isPartiallyVisibleSelected =
+    selectedVisibleCount > 0 && !isAllVisibleSelected;
+  const visibleRangeStart =
+    paginatedAccounts.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1;
+  const visibleRangeEnd =
+    (currentPage - 1) * itemsPerPage + paginatedAccounts.length;
+
+  const handleSortHeaderClick = (field: AccountSortField) => {
+    setSortState((currentSortState) => {
+      if (!currentSortState || currentSortState.field !== field) {
+        return { field, direction: 'asc' };
+      }
+
+      if (currentSortState.direction === 'asc') {
+        return {
+          field,
+          direction: 'desc',
+        };
+      }
+
+      return null;
+    });
+  };
+
+  const toggleAccountSelection = (accountId: string) => {
+    setSelectedAccountIds((currentSelection) =>
+      currentSelection.includes(accountId)
+        ? currentSelection.filter((selectedId) => selectedId !== accountId)
+        : [...currentSelection, accountId],
+    );
+  };
+
+  const toggleAllVisibleAccounts = () => {
+    const visibleIdSet = new Set(visibleAccountIds);
+
+    setSelectedAccountIds((currentSelection) => {
+      if (selectedVisibleCount > 0) {
+        return currentSelection.filter(
+          (selectedId) => !visibleIdSet.has(selectedId),
+        );
+      }
+
+      const nextSelection = new Set([
+        ...currentSelection,
+        ...visibleAccountIds,
+      ]);
+
+      return accounts
+        .map((account) => account.id)
+        .filter((accountId) => nextSelection.has(accountId));
+    });
+  };
+
+  const runBulkAction = (action: AccountBulkActionId) => {
+    if (selectedAccountIds.length === 0) {
+      return;
+    }
+
+    const message = onBulkAction(action, selectedAccountIds);
+
+    if (message) {
+      setBulkFeedback(message);
+    }
+
+    if (action === 'delete') {
+      setSelectedAccountIds([]);
+      return;
+    }
+
+    if (action === 'open' && selectedAccountIds[0]) {
+      onSelectAccount(selectedAccountIds[0]);
+    }
+  };
+
+  useEffect(() => {
+    if (currentPage <= totalPages) {
+      return;
+    }
+
+    setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    const accountIdSet = new Set(allAccountIds);
+
+    setSelectedAccountIds((currentSelection) => {
+      const nextSelection = currentSelection.filter((accountId) =>
+        accountIdSet.has(accountId),
+      );
+
+      return nextSelection.length === currentSelection.length
+        ? currentSelection
+        : nextSelection;
+    });
+  }, [allAccountSignature]);
+
+  useEffect(() => {
+    if (!bulkFeedback) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setBulkFeedback('');
+    }, 3200);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [bulkFeedback]);
+
+  useEffect(() => {
+    if (!detailsAccount && isDetailsDialogOpen) {
+      setIsDetailsDialogOpen(false);
+    }
+  }, [detailsAccount, isDetailsDialogOpen]);
+
   return (
     <div className="space-y-4">
       <PageHeader title="Аккаунты" />
@@ -500,155 +962,518 @@ function AccountsPage({
         <Panel
           title="Каталог аккаунтов"
           actions={
-            <>
-              <button
-                className="border inline-flex items-center gap-2 rounded-xl border-border/50 bg-success/12.5 cursor-pointer duration-200 transition-all active:scale-[0.975] hover:bg-success/25 hover:border-border/75 px-3 py-1"
-                type="button"
-              >
-                <Plus className="text-text w-3 h-3" />
-                Добавить
-              </button>
-              <button
-                className="border inline-flex items-center gap-2 active:scale-[0.975] rounded-xl border-border/50  hover:bg-info/25 cursor-pointer duration-200 transition-all hover:border-border/75 bg-info/12.5 px-3 py-1"
-                type="button"
-              >
-                <Power className="text-text w-3 h-3" />
-                Запустить
-              </button>
-              <button
-                className="border inline-flex items-center gap-2 active:scale-[0.975] rounded-xl border-border/50  hover:bg-error/25 cursor-pointer duration-200 transition-all hover:border-border/75 bg-error/12.5 px-3 py-1"
-                type="button"
-              >
-                <X className="text-text w-3 h-3" />
-                Удалить
-              </button>
-            </>
+            <div className="flex items-center justify-between gap-4 rounded-[20px] border border-border/10 bg-secondary/95 p-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <BulkActionButton
+                  disabled={selectedAccountIds.length === 0}
+                  icon={
+                    shouldShowCloseAction ? (
+                      <X className="h-4 w-4" />
+                    ) : (
+                      <FolderOpen className="h-4 w-4" />
+                    )
+                  }
+                  tone={shouldShowCloseAction ? 'danger' : 'primary'}
+                  onClick={() =>
+                    runBulkAction(shouldShowCloseAction ? 'close' : 'open')
+                  }
+                >
+                  {shouldShowCloseAction ? 'Остановить' : 'Открыть'}
+                </BulkActionButton>
+                <button
+                  aria-label="Удалить отмеченные аккаунты"
+                  className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-error/15 bg-error/8 text-error transition-all duration-200 hover:border-error/30 hover:bg-error/12 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-error/15 disabled:hover:bg-error/8"
+                  disabled={selectedAccountIds.length === 0}
+                  type="button"
+                  onClick={() => runBulkAction('delete')}
+                >
+                  <Trash2 className="h-4.5 w-4.5" />
+                </button>
+                <button
+                  aria-label="Открыть настройки аккаунта"
+                  className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-border/15 bg-secondary/95 text-text transition-all duration-200 hover:border-border/35 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-border/15 disabled:hover:bg-secondary/95"
+                  disabled={!detailsAccount}
+                  type="button"
+                  onClick={() => setIsDetailsDialogOpen(true)}
+                >
+                  <Ellipsis className="h-4.5 w-4.5" />
+                </button>
+                <button
+                  aria-label="Добавить аккаунт"
+                  className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl bg-info text-white transition-all duration-200 hover:bg-info/90 active:scale-[0.98]"
+                  type="button"
+                  onClick={() => setIsCreateDialogOpen(true)}
+                >
+                  <Plus className="h-4.5 w-4.5" />
+                </button>
+              </div>
+            </div>
           }
         >
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-230 border-collapse">
-              <thead>
-                <tr>
-                  {[
-                    'Имя',
-                    'Проект',
-                    'Браузер',
-                    'Таймер',
-                    'Каналы',
-                    'Статус',
-                    'Ошибки',
-                  ].map((header) => (
-                    <th
-                      key={header}
-                      className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5 text-left text-xs uppercase tracking-[0.08em]"
-                    >
-                      {header}
+          <div className="overflow-hidden bg-secondary/50 rounded-2xl">
+            <div className="overflow-x-auto px-5 py-3">
+              <table className="w-full border-separate [border-spacing:0_10px]">
+                <thead>
+                  <tr>
+                    <th className="border-b border-border/20 px-4 pb-2 text-left">
+                      <SelectionCheckbox
+                        checked={isAllVisibleSelected}
+                        indeterminate={isPartiallyVisibleSelected}
+                        label="Выбрать все видимые аккаунты"
+                        onToggle={toggleAllVisibleAccounts}
+                      />
                     </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.map((account) => (
-                  <tr
-                    key={account.id}
-                    className={`cursor-pointer transition duration-150 hover:bg-[rgba(94,166,255,0.08)]${
-                      selectedAccountId === account.id &&
-                      'bg-[rgba(94,166,255,0.08)]'
-                    }`}
-                    onClick={() => onSelectAccount(account.id)}
-                  >
-                    <td className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5">
-                      <strong>{account.name}</strong>
-                    </td>
-                    <td className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5 text-[#8c9db4]">
-                      {account.path}
-                    </td>
-                    <td className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5">
-                      {account.browser}
-                    </td>
-                    <td className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5">
-                      {account.timer}
-                    </td>
-                    <td className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5">
-                      <span className="inline-flex min-w-8 items-center justify-center rounded-full border border-border/25 bg-secondary/70 px-2.5 py-1 text-sm text-text">
-                        {account.telegramChannels.length}
-                      </span>
-                    </td>
-                    <td className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5">
-                      <StatusPill tone={account.statusTone}>
-                        {account.statusLabel}
-                      </StatusPill>
-                    </td>
-                    <td className="border-b border-[rgba(140,172,201,0.16)] px-3 py-3.5">
-                      {account.errors}
-                    </td>
+                    {accountTableHeaders.map((header) => (
+                      <th
+                        key={header.id}
+                        aria-sort={
+                          sortState?.field === header.id
+                            ? sortState.direction === 'asc'
+                              ? 'ascending'
+                              : 'descending'
+                            : 'none'
+                        }
+                        className="px-4 pb-2 text-left border-b border-border/20 text-xs font-medium uppercase tracking-wide text-text-muted"
+                      >
+                        <button
+                          className={`inline-flex cursor-pointer items-center uppercase gap-1.5 transition-colors duration-200 ${
+                            sortState?.field === header.id
+                              ? 'text-info'
+                              : 'hover:text-text'
+                          }`}
+                          type="button"
+                          onClick={() => handleSortHeaderClick(header.id)}
+                        >
+                          {header.label}
+                          <ChevronDown
+                            className={`h-4 w-4 transition-all duration-200 ${
+                              sortState?.field === header.id
+                                ? `opacity-100 ${
+                                    sortState.direction === 'asc'
+                                      ? 'rotate-180'
+                                      : ''
+                                  }`
+                                : 'opacity-35'
+                            }`}
+                          />
+                        </button>
+                      </th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
+                </thead>
+                <tbody>
+                  {sortedAccounts.length === 0 ? (
+                    <tr>
+                      <td colSpan={accountTableHeaders.length + 1}>
+                        <div className="rounded-2xl border border-dashed border-border/20 bg-secondary/45 px-6 py-10 text-center">
+                          <strong className="block text-base text-text">
+                            Пока нет аккаунтов
+                          </strong>
+                          <p className="mt-2 text-sm leading-6 text-text-muted">
+                            Добавь новый аккаунт, чтобы снова заполнить каталог.
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedAccounts.map((account) => {
+                      const isChecked = selectedAccountIds.includes(account.id);
+                      const rowSurfaceClassName = isChecked
+                        ? 'bg-info/8'
+                        : 'group-hover:bg-secondary/50';
+                      const rowCellClassName = `px-4 py-4 align-middle transition-colors duration-200 ${rowSurfaceClassName}`;
+                      const browserEnabled = account.browser === 'Да';
+                      const hasErrors = Number(account.errors) > 0;
 
-        <Panel
-          title={selectedAccount.name}
-          actions={
-            <StatusPill tone={selectedAccount.statusTone}>
-              {selectedAccount.statusLabel}
-            </StatusPill>
-          }
-        >
-          <div className="space-y-6">
-            <div className="grid gap-3 md:grid-cols-3">
-              <TextInputField
-                label="Корень проекта"
-                value={selectedAccount.path}
-                icon={
-                  <div className="bg-secondary/50 rounded-md w-7 h-7 flex items-center justify-center">
-                    <FolderOpen className="h-3.5 w-3.5 text-warning/75" />
-                  </div>
-                }
-                onChange={(value) =>
-                  onUpdateAccountField(selectedAccount.id, 'path', value)
-                }
-              />
-              <SelectField
-                label="Браузер"
-                value={selectedAccount.browser}
-                options={browserOptions}
-                icon={
-                  <div className="bg-secondary/50 rounded-md w-7 h-7 flex items-center justify-center">
-                    <Eye className="h-3.5 w-3.5 text-success/75" />
-                  </div>
-                }
-                onChange={(value) =>
-                  onUpdateAccountField(selectedAccount.id, 'browser', value)
-                }
-              />
-              <SelectField
-                label="Таймер"
-                value={selectedAccount.timer}
-                options={timerOptions}
-                icon={
-                  <div className="bg-secondary/50 rounded-md w-7 h-7 flex items-center justify-center">
-                    <Clock3 className="h-3.5 w-3.5 text-info/75" />
-                  </div>
-                }
-                onChange={(value) =>
-                  onUpdateAccountField(selectedAccount.id, 'timer', value)
-                }
-              />
+                      return (
+                        <tr
+                          key={account.id}
+                          className="group cursor-pointer text-sm"
+                          onClick={() => onSelectAccount(account.id)}
+                        >
+                          <td
+                            className={`${rowCellClassName} w-16 rounded-l-2xl`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onSelectAccount(account.id);
+                            }}
+                          >
+                            <SelectionCheckbox
+                              checked={isChecked}
+                              label={`Выбрать аккаунт ${account.name}`}
+                              onToggle={() =>
+                                toggleAccountSelection(account.id)
+                              }
+                            />
+                          </td>
+                          <td
+                            className={`${rowCellClassName} font-medium text-md text-text`}
+                          >
+                            <div className="flex items-center font-medium text-text gap-3">
+                              {account.name}
+                            </div>
+                          </td>
+                          <td className={rowCellClassName}>
+                            <span
+                              className={`font-medium ${
+                                browserEnabled ? 'text-info' : 'text-text-muted'
+                              }`}
+                            >
+                              {account.browser}
+                            </span>
+                          </td>
+                          <td className={rowCellClassName}>
+                            <div className="flex items-center gap-2 text-text">
+                              <Clock3 className="h-4 w-4 text-info/50" />
+                              <span>{account.timer}</span>
+                            </div>
+                          </td>
+                          <td className={rowCellClassName}>
+                            <span className="inline-flex min-w-8 items-center justify-center rounded-full bg-info/12 px-2.5 py-1 text-sm font-semibold text-info">
+                              {account.telegramChannels.length}
+                            </span>
+                          </td>
+                          <td className={rowCellClassName}>
+                            <AccountStatusBadge tone={account.statusTone}>
+                              {account.statusLabel}
+                            </AccountStatusBadge>
+                          </td>
+                          <td className={`${rowCellClassName} rounded-r-2xl`}>
+                            <span
+                              className={
+                                hasErrors
+                                  ? 'font-semibold text-error'
+                                  : 'text-text-muted'
+                              }
+                            >
+                              {account.errors}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
 
-            <TelegramChannelsPanel
-              accountId={selectedAccount.id}
-              channels={selectedAccount.telegramChannels}
-              onAddChannel={onAddTelegramChannel}
-              onUpdateChannel={onUpdateTelegramChannel}
-            />
+            <div className="flex items-center justify-between gap-4 border-t border-border/10 px-5 py-4">
+              <p className="text-sm text-text-muted">
+                Показано{' '}
+                {visibleRangeStart === 0
+                  ? 0
+                  : `${visibleRangeStart}-${visibleRangeEnd}`}{' '}
+                из {accounts.length} аккаунтов
+              </p>
+
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-text-muted">На странице</span>
+                  <div className="relative">
+                    <select
+                      aria-label="Количество аккаунтов на странице"
+                      className="h-9 appearance-none rounded-xl border border-border/15 bg-secondary/70 px-3 pr-9 text-sm font-medium text-text outline-none transition focus:border-info/40 focus:ring-2 focus:ring-info/20"
+                      value={String(itemsPerPage)}
+                      onChange={(event) => {
+                        setItemsPerPage(
+                          Number(
+                            event.target.value,
+                          ) as (typeof accountPageSizeOptions)[number],
+                        );
+                        setCurrentPage(1);
+                      }}
+                    >
+                      {accountPageSizeOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-text-muted" />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    aria-label="Предыдущая страница"
+                    className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl border border-border/15 bg-secondary/70 text-text-muted transition-colors duration-200 hover:text-text disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:text-text-muted"
+                    disabled={currentPage === 1}
+                    type="button"
+                    onClick={() =>
+                      setCurrentPage((currentValue) =>
+                        Math.max(1, currentValue - 1),
+                      )
+                    }
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="inline-flex h-9 min-w-9 items-center justify-center rounded-xl bg-info px-3 text-sm font-semibold text-white">
+                    {currentPage}
+                  </span>
+                  <button
+                    aria-label="Следующая страница"
+                    className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl border border-border/15 bg-secondary/70 text-text-muted transition-colors duration-200 hover:text-text disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:text-text-muted"
+                    disabled={currentPage === totalPages}
+                    type="button"
+                    onClick={() =>
+                      setCurrentPage((currentValue) =>
+                        Math.min(totalPages, currentValue + 1),
+                      )
+                    }
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </Panel>
       </div>
+
+      <AccountDetailsDialog
+        account={detailsAccount}
+        isOpen={isDetailsDialogOpen}
+        onAddTelegramChannel={onAddTelegramChannel}
+        onClose={() => setIsDetailsDialogOpen(false)}
+        onUpdateAccountField={onUpdateAccountField}
+        onUpdateTelegramChannel={onUpdateTelegramChannel}
+      />
+      <CreateAccountDialog
+        isOpen={isCreateDialogOpen}
+        onClose={() => setIsCreateDialogOpen(false)}
+        onCreateAccount={onCreateAccount}
+      />
     </div>
+  );
+}
+
+interface AccountDialogShellProps {
+  children: ReactNode;
+  closeLabel: string;
+  isOpen: boolean;
+  onClose: () => void;
+  statusBadge?: ReactNode;
+  title: string;
+}
+
+function AccountDialogShell({
+  children,
+  closeLabel,
+  isOpen,
+  onClose,
+  statusBadge,
+  title,
+}: AccountDialogShellProps) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/55 px-10 backdrop-blur-sm"
+      role="dialog"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[calc(100vh-64px)] w-full max-w-330 overflow-y-auto rounded-[30px] border border-border/20 bg-foreground p-6 shadow-[0_30px_90px_rgba(15,23,42,0.2)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex flex-col gap-4 border-b border-border/10 pb-2.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-3">
+              <h3 className="text-3xl font-semibold tracking-tight text-text">
+                {title}
+              </h3>
+              {statusBadge}
+            </div>
+          </div>
+
+          <button
+            aria-label={closeLabel}
+            className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-border/15 bg-secondary text-text transition-all duration-200 hover:border-border/35 hover:bg-secondary/80"
+            type="button"
+            onClick={onClose}
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {children}
+      </div>
+    </div>
+  );
+}
+
+interface AccountDetailsDialogProps {
+  account: AccountRow | null;
+  isOpen: boolean;
+  onClose: () => void;
+  onUpdateAccountField: (
+    accountId: string,
+    field: AccountEditableField,
+    value: string,
+  ) => void;
+  onAddTelegramChannel: (
+    accountId: string,
+    draft: TelegramChannelDraft,
+  ) => void;
+  onUpdateTelegramChannel: (
+    accountId: string,
+    channelId: string,
+    draft: TelegramChannelDraft,
+  ) => void;
+}
+
+function AccountDetailsDialog({
+  account,
+  isOpen,
+  onClose,
+  onUpdateAccountField,
+  onAddTelegramChannel,
+  onUpdateTelegramChannel,
+}: AccountDetailsDialogProps) {
+  if (!isOpen || !account) {
+    return null;
+  }
+
+  return (
+    <AccountDialogShell
+      closeLabel="Закрыть настройки аккаунта"
+      isOpen={isOpen}
+      onClose={onClose}
+      statusBadge={
+        <StatusPill tone={account.statusTone}>{account.statusLabel}</StatusPill>
+      }
+      title={account.name}
+    >
+      <div className="space-y-6 pt-6">
+        <AccountFormFields
+          values={account}
+          onFieldChange={(field, value) =>
+            onUpdateAccountField(account.id, field, value)
+          }
+        />
+
+        <TelegramChannelsPanel
+          accountId={account.id}
+          channels={account.telegramChannels}
+          onAddChannel={onAddTelegramChannel}
+          onUpdateChannel={onUpdateTelegramChannel}
+        />
+      </div>
+    </AccountDialogShell>
+  );
+}
+
+interface CreateAccountDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onCreateAccount: (draft: AccountDraft) => void;
+}
+
+function CreateAccountDialog({
+  isOpen,
+  onClose,
+  onCreateAccount,
+}: CreateAccountDialogProps) {
+  const [draft, setDraft] = useState<AccountDraft>(accountDraftInitialState);
+  const isSubmitDisabled = !isAccountDraftValid(draft);
+
+  useEffect(() => {
+    if (isOpen) {
+      return;
+    }
+
+    setDraft(accountDraftInitialState);
+  }, [isOpen]);
+
+  return (
+    <AccountDialogShell
+      closeLabel="Закрыть форму добавления аккаунта"
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Новый аккаунт"
+    >
+      <div className="space-y-6 pt-6">
+        <div className="space-y-1">
+          <p className="leading-6 text-text-muted">
+            Заполни базовые параметры аккаунта. Telegram-каналы можно будет
+            добавить сразу после сохранения через меню `...`.
+          </p>
+        </div>
+
+        <AccountFormFields
+          values={draft}
+          onFieldChange={(field, value) =>
+            setDraft((currentDraft) => ({
+              ...currentDraft,
+              [field]: value,
+            }))
+          }
+        />
+
+        <div className="rounded-[22px] border border-dashed border-border/25 bg-secondary/45 p-4">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-info">
+              <Link2 className="h-5 w-5" />
+            </div>
+            <div className="space-y-1">
+              <strong className="block text-text">Telegram-каналы</strong>
+              <p className="leading-6 text-text-muted">
+                После создания аккаунта открой меню `...`, чтобы добавить каналы
+                и настроить источник фото.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border/40 bg-secondary/75 px-3 py-2 text-text transition hover:border-border/70 hover:bg-secondary"
+            type="button"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+            Отмена
+          </button>
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+            disabled={isSubmitDisabled}
+            type="button"
+            onClick={() => {
+              if (isSubmitDisabled) {
+                return;
+              }
+
+              onCreateAccount(draft);
+              onClose();
+            }}
+          >
+            <Save className="h-4 w-4" />
+            Создать аккаунт
+          </button>
+        </div>
+      </div>
+    </AccountDialogShell>
   );
 }
 
@@ -816,7 +1641,7 @@ function TelegramChannelsPanel({
                     <div className="flex gap-4 items-center justify-between">
                       <div className="space-y-3">
                         <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-info shadow-[0_12px_30px_rgba(94,166,255,0.12)]">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-info">
                             <Link2 className="h-5 w-5" />
                           </div>
                           <div>
@@ -924,7 +1749,7 @@ function TelegramChannelComposer({
 
       <div className="flex flex-wrap justify-end gap-2">
         <button
-          className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-secondary/75 px-3 py-2 text-text transition hover:border-border/70 hover:bg-secondary"
+          className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border/40 bg-secondary/75 px-3 py-2 text-text transition hover:border-border/70 hover:bg-secondary"
           type="button"
           onClick={onCancel}
         >
@@ -932,7 +1757,7 @@ function TelegramChannelComposer({
           Отмена
         </button>
         <button
-          className="inline-flex items-center gap-2 rounded-xl border border-success/30 bg-success/12.5 px-3 py-2 text-text transition hover:border-success/45 hover:bg-success/20 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-success/30 bg-success/12.5 px-3 py-2 text-text transition hover:border-success/45 hover:bg-success/20 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-success/30 disabled:hover:bg-success/12.5"
           disabled={isSubmitDisabled}
           type="button"
           onClick={onSubmit}
@@ -941,86 +1766,6 @@ function TelegramChannelComposer({
           {submitLabel}
         </button>
       </div>
-    </div>
-  );
-}
-
-interface ParsingPageProps {
-  parserToggles: ParserToggle[];
-  onToggleParserOption: (label: string) => void;
-}
-
-function ParsingPage({
-  parserToggles,
-  onToggleParserOption,
-}: ParsingPageProps) {
-  return (
-    <div className="space-y-4">
-      <PageHeader
-        title="Парсинг"
-        actions={
-          <>
-            <ActionButton
-              icon={<Square className="h-4 w-4 text-text" />}
-              tone="danger"
-            >
-              Остановить
-            </ActionButton>
-            <ActionButton
-              icon={<Play className="h-4 w-4 text-text" />}
-              tone="info"
-            >
-              Стартовать
-            </ActionButton>
-          </>
-        }
-      />
-
-      <Panel title="Параметры запуска" subtitle="Базовая форма настройки">
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field label="Категория" value="Женская одежда" />
-          <Field label="Страниц" value="12" />
-          <Field label="Задержка" value="2.5 сек" />
-          <Field label="Прокси" value="proxy-batch-3.txt" />
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          {parserToggles.map((toggle) => (
-            <button
-              key={toggle.label}
-              aria-checked={toggle.enabled}
-              className={`${surfaceCardClassName} flex w-full items-center justify-between gap-3.5 text-left transition-all duration-200 hover:border-border/50 hover:bg-secondary/75 focus:border-info/50 focus:ring-2 focus:ring-info/25`}
-              role="switch"
-              type="button"
-              onClick={() => onToggleParserOption(toggle.label)}
-            >
-              <div>
-                <h1 className="font-medium text-text text-lg">
-                  {toggle.label}
-                </h1>
-                <span className="leading-6 text-text-muted">{toggle.copy}</span>
-              </div>
-              <ToggleSwitch checked={toggle.enabled} />
-            </button>
-          ))}
-        </div>
-      </Panel>
-
-      <Panel
-        title="Результаты"
-        subtitle="Пример того, как может выглядеть вывод парсинга"
-      >
-        <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
-          {parserResults.map((result) => (
-            <div key={result.id} className={surfaceCardClassName}>
-              <div className="mb-3.5 aspect-[1.2] rounded-2xl bg-[linear-gradient(135deg,rgba(94,166,255,0.25),rgba(69,214,195,0.08)),linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0))]" />
-              <strong className="block text-[1.05rem]">{result.title}</strong>
-              <span className="mt-2 block text-success">{result.price}</span>
-              <p className="mt-3 leading-7 text-text-muted">{result.meta}</p>
-            </div>
-          ))}
-        </div>
-      </Panel>
     </div>
   );
 }
@@ -1058,37 +1803,6 @@ function StatsPage() {
           subtitle="Серия items/errors для desktop-макета"
         >
           <LineChart data={statsSeries} height={320} />
-        </Panel>
-
-        <Panel
-          title="События и отклонения"
-          subtitle="Mock-аналитика по качеству потока"
-        >
-          <div className="flex flex-col gap-3">
-            <div className={surfaceCardClassName}>
-              <strong className="block text-[1.05rem]">
-                Средняя скорость выросла на 18%
-              </strong>
-              <p className="mt-3 leading-7 text-text-muted">
-                Пиковая нагрузка сместилась в окно 11:00-13:00.
-              </p>
-            </div>
-            <div className={surfaceCardClassName}>
-              <strong className="block text-[1.05rem]">
-                Ошибки остались в пределах нормы
-              </strong>
-              <p className="mt-3 leading-7 text-text-muted">
-                В шаблоне зафиксировано 3 технических сбоя на 412 публикаций.
-              </p>
-            </div>
-            <div className={surfaceCardClassName}>
-              <strong className="block">Нужен drill-down по аккаунтам</strong>
-              <p className="mt-3 leading-7 text-text-muted">
-                Следующий этап: отдельный разрез по веткам, каналам и причинам
-                фейлов.
-              </p>
-            </div>
-          </div>
         </Panel>
 
         <Panel
@@ -1138,49 +1852,41 @@ function StatsPage() {
   );
 }
 
-function SettingsPage() {
+interface SettingsPageProps {
+  toggles: SettingToggle[];
+  onToggleOption: (label: string) => void;
+}
+
+function SettingsPage({ toggles, onToggleOption }: SettingsPageProps) {
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="Настройки"
-        actions={
-          <>
-            <ActionButton
-              compact
-              icon={<RefreshCw className="h-4 w-4 text-text" />}
-              tone="neutral"
-            >
-              Обновить
-            </ActionButton>
-            <ActionButton
-              compact
-              icon={<Save className="h-4 w-4 text-text" />}
-              tone="success"
-            >
-              Сохранить
-            </ActionButton>
-          </>
-        }
-      />
+      <PageHeader title="Настройки" />
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        {settingsGroups.map((group) => (
-          <Panel
-            key={group.title}
-            title={group.title}
-            subtitle={group.subtitle}
-          >
-            <div className="grid gap-3 md:grid-cols-2">
-              {group.fields.map((field) => (
-                <Field
-                  key={field.label}
-                  label={field.label}
-                  value={field.value}
-                />
-              ))}
-            </div>
-          </Panel>
-        ))}
+      <div className="grid gap-4">
+        <Panel title="Общие параметры">
+          <div className="grid grid-cols-2 gap-3">
+            {toggles.map((toggle) => (
+              <button
+                key={toggle.label}
+                aria-checked={toggle.enabled}
+                className={`${surfaceCardClassName} flex w-full cursor-pointer items-center justify-between gap-3.5 text-left transition-all duration-200 hover:border-border/50 hover:bg-secondary/75 focus:border-info/50 focus:ring-2 focus:ring-info/25`}
+                role="switch"
+                type="button"
+                onClick={() => onToggleOption(toggle.label)}
+              >
+                <div>
+                  <h1 className="font-medium text-text text-lg">
+                    {toggle.label}
+                  </h1>
+                  <span className="leading-6 text-text-muted">
+                    {toggle.copy}
+                  </span>
+                </div>
+                <ToggleSwitch checked={toggle.enabled} />
+              </button>
+            ))}
+          </div>
+        </Panel>
       </div>
     </div>
   );
@@ -1200,6 +1906,11 @@ interface SelectFieldProps extends EditableFieldProps {
   options: string[];
 }
 
+interface AccountFormFieldsProps {
+  values: AccountDraft;
+  onFieldChange: (field: AccountEditableField, value: string) => void;
+}
+
 function Field({ label, value }: FieldProps) {
   return (
     <div className={`${surfaceCardClassName} min-h-24`}>
@@ -1207,6 +1918,55 @@ function Field({ label, value }: FieldProps) {
       <strong className="mt-2.5 block text-[18px] leading-7 text-text">
         {value}
       </strong>
+    </div>
+  );
+}
+
+function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <TextInputField
+        label="Имя аккаунта"
+        value={values.name}
+        icon={
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+            <User className="h-3.5 w-3.5 text-info/75" />
+          </div>
+        }
+        onChange={(value) => onFieldChange('name', value)}
+      />
+      <TextInputField
+        label="Корень проекта"
+        value={values.path}
+        icon={
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+            <FolderOpen className="h-3.5 w-3.5 text-warning/75" />
+          </div>
+        }
+        onChange={(value) => onFieldChange('path', value)}
+      />
+      <SelectField
+        label="Браузер"
+        value={values.browser}
+        options={browserOptions}
+        icon={
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+            <Eye className="h-3.5 w-3.5 text-success/75" />
+          </div>
+        }
+        onChange={(value) => onFieldChange('browser', value)}
+      />
+      <SelectField
+        label="Таймер"
+        value={values.timer}
+        options={timerOptions}
+        icon={
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+            <Clock3 className="h-3.5 w-3.5 text-info/75" />
+          </div>
+        }
+        onChange={(value) => onFieldChange('timer', value)}
+      />
     </div>
   );
 }
@@ -1302,7 +2062,7 @@ function SelectField({
                   <button
                     key={option}
                     aria-selected={isSelected}
-                    className={`flex w-full items-center justify-between gap-4 rounded-xl px-4 py-2 text-left transition-colors duration-200 ${
+                    className={`flex w-full cursor-pointer items-center justify-between gap-4 rounded-xl px-4 py-2 text-left transition-colors duration-200 ${
                       isSelected ? 'bg-foreground' : 'hover:bg-foreground/50'
                     } ${index < options.length - 1 ? 'mb-1' : ''}`}
                     role="option"

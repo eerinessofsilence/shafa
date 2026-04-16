@@ -33,10 +33,7 @@ export interface ChartPoint {
   errors: number;
 }
 
-export type TelegramPhotoSource =
-  | 'Сообщение'
-  | 'Комментарии'
-  | 'Два в одном';
+export type TelegramPhotoSource = 'Сообщение' | 'Комментарии' | 'Два в одном';
 
 export interface TelegramChannel {
   id: string;
@@ -76,7 +73,7 @@ export interface NoteItem {
   copy: string;
 }
 
-export interface ParserToggle {
+export interface SettingToggle {
   label: string;
   copy: string;
   enabled: boolean;
