@@ -67,6 +67,36 @@ def _make_fake_client_class(require_password: bool = False):
     return _FakeTelegramClient
 
 
+def _make_invalid_code_client_class():
+    class _FakeTelegramClient:
+        def __init__(self, session_path: str, *_args, **_kwargs) -> None:
+            self.session_path = Path(session_path)
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def send_code_request(self, phone: str) -> SimpleNamespace:
+            return SimpleNamespace(phone_code_hash="hash-123")
+
+        async def sign_in(
+            self,
+            *,
+            phone: str | None = None,
+            code: str | None = None,
+            phone_code_hash: str | None = None,
+            password: str | None = None,
+        ) -> None:
+            class PhoneCodeInvalidError(Exception):
+                pass
+
+            raise PhoneCodeInvalidError("The phone code entered was invalid")
+
+    return _FakeTelegramClient
+
+
 class TelegramAuthenticationTest(unittest.IsolatedAsyncioTestCase):
     async def test_complete_login_creates_session_and_persists_state(self) -> None:
         persisted_states: list[dict] = []
@@ -121,6 +151,28 @@ class TelegramAuthenticationTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(final_state["current_auth_step"], "SUCCESS")
                 self.assertEqual(final_state["telegram_password"], "secret-pass")
                 self.assertTrue(session_path.exists())
+
+    async def test_complete_login_keeps_wait_code_for_invalid_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "telegram_login_state.json"
+            session_path = Path(temp_dir) / "telegram.session"
+
+            with (
+                patch.object(telegram_auth, "TELEGRAM_LOGIN_STATE_PATH", state_path),
+                patch.object(telegram_auth, "TELEGRAM_SESSION_PATH", session_path),
+                patch.object(telegram_auth, "_require_telegram_credentials", return_value=(1, "hash")),
+                patch.object(telegram_auth, "_get_telegram_client_cls", return_value=_make_invalid_code_client_class()),
+            ):
+                await telegram_auth._send_code("+380501112233")
+
+                with self.assertRaisesRegex(RuntimeError, "Неверный код Telegram"):
+                    await telegram_auth._complete_login("+380501112233", "12 345")
+
+                state_after_failure = telegram_auth._read_login_state()
+                self.assertEqual(state_after_failure["current_auth_step"], "WAIT_CODE")
+                self.assertEqual(state_after_failure["phone_number"], "+380501112233")
+                self.assertEqual(state_after_failure["verification_code"], "")
+                self.assertEqual(state_after_failure["phone_code_hash"], "hash-123")
 
     async def test_send_code_reuses_session_path_in_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -291,7 +291,7 @@ class TelegramAuthService:
 
     @staticmethod
     def validate_code(code: str) -> TelegramAuthStatus:
-        clean_code = str(code or "").strip()
+        clean_code = re.sub(r"[\s-]+", "", str(code or "").strip())
         if not clean_code:
             return TelegramAuthStatus(False, "Verification code must be 5 or 6 digits.")
         if not CODE_PATTERN.fullmatch(clean_code):
@@ -348,4 +348,6 @@ class TelegramAuthService:
 
     @staticmethod
     def _command_error(result: subprocess.CompletedProcess) -> str:
-        return (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+        raw_output = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+        lines = [line.strip() for line in raw_output.splitlines() if line.strip()]
+        return lines[-1] if lines else raw_output

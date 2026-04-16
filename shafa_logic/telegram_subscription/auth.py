@@ -151,6 +151,28 @@ async def _complete_login(phone: str, code: str) -> None:
             )
             _log_step("Telegram requires a 2FA password")
             return
+        if _is_invalid_code_error(exc):
+            _persist_login_state(
+                phone_number=phone,
+                verification_code="",
+                telegram_password=str(payload.get("telegram_password") or ""),
+                current_auth_step=WAIT_CODE,
+                phone_code_hash=phone_code_hash,
+                session_path=str(session_path),
+                code_confirmed=False,
+            )
+            _log_step("Telegram sign-in failed: INVALID_CODE")
+            raise RuntimeError("Неверный код Telegram. Проверь код и попробуй ещё раз.") from None
+        if _is_expired_code_error(exc):
+            _persist_failed_state(
+                phone_number=phone,
+                verification_code="",
+                telegram_password=str(payload.get("telegram_password") or ""),
+                phone_code_hash=phone_code_hash,
+                session_path=session_path,
+            )
+            _log_step("Telegram sign-in failed: EXPIRED_CODE")
+            raise RuntimeError("Код Telegram истёк. Запроси новый код и попробуй снова.") from None
         _persist_failed_state(
             phone_number=phone,
             verification_code=code,
@@ -159,7 +181,7 @@ async def _complete_login(phone: str, code: str) -> None:
             session_path=session_path,
         )
         _log_step(f"Telegram sign-in failed: {_classify_auth_error(exc)}")
-        raise
+        raise RuntimeError(_humanize_auth_error(exc)) from None
 
     _mark_auth_success(
         phone_number=phone,
@@ -202,6 +224,18 @@ async def _submit_password(password: str) -> None:
         async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
             await client.sign_in(password=password)
     except Exception as exc:
+        if _is_invalid_password_error(exc):
+            _persist_login_state(
+                phone_number=phone,
+                verification_code=code,
+                telegram_password="",
+                current_auth_step=WAIT_PASSWORD,
+                phone_code_hash=phone_code_hash,
+                session_path=str(session_path),
+                code_confirmed=True,
+            )
+            _log_step("Telegram password sign-in failed: INVALID_PASSWORD")
+            raise RuntimeError("Неверный Telegram 2FA пароль. Попробуй ещё раз.") from None
         _persist_failed_state(
             phone_number=phone,
             verification_code=code,
@@ -210,7 +244,7 @@ async def _submit_password(password: str) -> None:
             session_path=session_path,
         )
         _log_step(f"Telegram password sign-in failed: {_classify_auth_error(exc)}")
-        raise
+        raise RuntimeError(_humanize_auth_error(exc)) from None
 
     _mark_auth_success(
         phone_number=phone,
@@ -343,7 +377,7 @@ def _validate_phone(phone: str) -> str:
 
 
 def _validate_code(code: str) -> str:
-    clean_code = str(code or "").strip()
+    clean_code = re.sub(r"[\s-]+", "", str(code or "").strip())
     if not CODE_PATTERN.fullmatch(clean_code):
         raise RuntimeError("Verification code must be 5 or 6 digits.")
     return clean_code
@@ -375,6 +409,30 @@ def _normalize_step(step: str | None) -> str:
 
 def _is_password_needed_error(exc: Exception) -> bool:
     return "SessionPasswordNeeded" in exc.__class__.__name__
+
+
+def _is_invalid_code_error(exc: Exception) -> bool:
+    return "PhoneCodeInvalid" in exc.__class__.__name__
+
+
+def _is_expired_code_error(exc: Exception) -> bool:
+    return "PhoneCodeExpired" in exc.__class__.__name__
+
+
+def _is_invalid_password_error(exc: Exception) -> bool:
+    return "PasswordHashInvalid" in exc.__class__.__name__
+
+
+def _humanize_auth_error(exc: Exception) -> str:
+    if _is_invalid_code_error(exc):
+        return "Неверный код Telegram. Проверь код и попробуй ещё раз."
+    if _is_expired_code_error(exc):
+        return "Код Telegram истёк. Запроси новый код и попробуй снова."
+    if _is_invalid_password_error(exc):
+        return "Неверный Telegram 2FA пароль. Попробуй ещё раз."
+    if _is_password_needed_error(exc):
+        return "Telegram требует пароль двухфакторной защиты."
+    return str(exc).strip() or exc.__class__.__name__
 
 
 def _classify_auth_error(exc: Exception) -> str:

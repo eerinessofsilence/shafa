@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -109,6 +111,100 @@ def test_telegram_auth_api_runs_separate_steps(tmp_path: Path) -> None:
     assert submit_password_response.status_code == 200
     assert submit_password_response.json()["connected"] is True
     assert submit_password_response.json()["current_step"] == "SUCCESS"
+
+
+def test_telegram_auth_api_uses_backend_env_credentials(tmp_path: Path) -> None:
+    client, _store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Env account", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+
+    with patch.dict(
+        os.environ,
+        {
+            "SHAFA_TELEGRAM_API_ID": "777000",
+            "SHAFA_TELEGRAM_API_HASH": "secret-hash",
+        },
+        clear=False,
+    ):
+        status_response = client.get(f"/accounts/{account_id}/auth/telegram")
+        assert status_response.status_code == 200
+        assert status_response.json()["has_api_credentials"] is True
+
+        request_code_response = client.post(
+            f"/accounts/{account_id}/auth/telegram/request-code",
+            json={"phone": "+380501112233"},
+        )
+        assert request_code_response.status_code == 200
+        assert request_code_response.json()["current_step"] == "WAIT_CODE"
+
+
+def test_telegram_status_keeps_code_step_when_old_session_exists(tmp_path: Path) -> None:
+    client, store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Test", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+    account = Account(id=account_id, name="Test", path="/tmp/project")
+
+    store.telegram_session_file(account).write_bytes(b"SQLite format 3\x00payload")
+
+    credentials_response = client.post(
+        f"/accounts/{account_id}/auth/telegram/credentials",
+        json={"api_id": "777000", "api_hash": "secret-hash"},
+    )
+    assert credentials_response.status_code == 200
+
+    request_code_response = client.post(
+        f"/accounts/{account_id}/auth/telegram/request-code",
+        json={"phone": "+380501112233"},
+    )
+    assert request_code_response.status_code == 200
+    assert request_code_response.json()["connected"] is False
+    assert request_code_response.json()["current_step"] == "WAIT_CODE"
+
+    status_response = client.get(f"/accounts/{account_id}/auth/telegram")
+    assert status_response.status_code == 200
+    assert status_response.json()["connected"] is False
+    assert status_response.json()["current_step"] == "WAIT_CODE"
+
+
+def test_telegram_logout_clears_session_and_returns_init_status(tmp_path: Path) -> None:
+    client, store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Test", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+    account = Account(id=account_id, name="Test", path="/tmp/project")
+
+    store.telegram_session_file(account).write_bytes(b"SQLite format 3\x00payload")
+    store.telegram_login_state_file(account).write_text(
+        json.dumps(
+            {
+                "phone_number": "+380501112233",
+                "current_auth_step": "SUCCESS",
+                "session_path": str(store.telegram_session_file(account)),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.post(f"/accounts/{account_id}/auth/telegram/logout")
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert response.json()["current_step"] == "INIT"
+    assert response.json()["phone_number"] == "+380501112233"
+    assert store.telegram_session_file(account).exists() is False
 
 
 def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:

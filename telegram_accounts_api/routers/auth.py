@@ -61,6 +61,14 @@ async def submit_telegram_password(
     return await service.submit_telegram_password(account_id, payload)
 
 
+@router.post("/telegram/logout", response_model=TelegramAuthStatusResponse)
+async def logout_telegram(
+    account_id: str,
+    service: AccountAuthService = Depends(get_auth_service),
+) -> TelegramAuthStatusResponse:
+    return await service.logout_telegram(account_id)
+
+
 @router.get("/shafa", response_model=ShafaAuthStatusResponse)
 async def get_shafa_status(
     account_id: str,

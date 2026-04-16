@@ -672,13 +672,17 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    main(
-        shafa=args.shafa,
-        login_shafa=args.login_shafa,
-        mode=args.mode,
-        telegram_send_code_phone=args.telegram_send_code,
-        telegram_login_phone=args.telegram_login_phone,
-        telegram_login_code=args.telegram_login_code,
-        telegram_login_password=args.telegram_login_password,
-    )
+    try:
+        main(
+            shafa=args.shafa,
+            login_shafa=args.login_shafa,
+            mode=args.mode,
+            telegram_send_code_phone=args.telegram_send_code,
+            telegram_login_phone=args.telegram_login_phone,
+            telegram_login_code=args.telegram_login_code,
+            telegram_login_password=args.telegram_login_password,
+        )
+    except Exception as exc:
+        print(str(exc) or exc.__class__.__name__, file=sys.stderr)
+        raise SystemExit(1) from None
 APP_MODE_ENV = "SHAFA_APP_MODE"

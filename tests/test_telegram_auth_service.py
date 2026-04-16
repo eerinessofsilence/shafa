@@ -273,6 +273,8 @@ def test_validate_code_requires_exactly_six_digits(tmp_path: Path) -> None:
 
     assert service.validate_code("").ok is False
     assert service.validate_code("12345").ok is True
+    assert service.validate_code("12 345").message == "12345"
+    assert service.validate_code("123-456").message == "123456"
     assert service.validate_code("12345a").ok is False
     assert service.validate_code("123456").ok is True
     assert service.validate_code("1234567").ok is False

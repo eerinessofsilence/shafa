@@ -53,13 +53,14 @@ class AccountAuthService:
         account = await self._get_account(account_id)
         state = self.telegram_auth.load_auth_state(account)
         current_step = self.telegram_auth.normalize_auth_step(state.get("current_auth_step"))
-        connected = self.store.is_valid_telegram_session(account)
+        has_active_login = current_step in {"WAIT_PHONE", "WAIT_CODE", "WAIT_PASSWORD"}
+        connected = self.store.is_valid_telegram_session(account) and not has_active_login
         if connected:
             current_step = "SUCCESS"
         return TelegramAuthStatusResponse(
             account_id=account.id,
             connected=connected,
-            has_api_credentials=self.store.has_telegram_credentials(account),
+            has_api_credentials=self._has_telegram_credentials(account),
             current_step=current_step,
             next_step=self._next_telegram_step(current_step, connected),
             phone_number=str(state.get("phone_number") or account.phone_number or "").strip(),
@@ -87,6 +88,11 @@ class AccountAuthService:
         payload: TelegramPhoneRequest,
     ) -> TelegramAuthStatusResponse:
         account = await self._get_account(account_id)
+        if not self._has_telegram_credentials(account):
+            raise BadRequestError(
+                "Telegram API credentials are missing on backend. "
+                "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH in .env or environment.",
+            )
         phone_status = self.telegram_auth.validate_phone(payload.phone)
         if not phone_status.ok:
             raise BadRequestError(phone_status.message)
@@ -129,6 +135,24 @@ class AccountAuthService:
         if not result.ok:
             raise TelegramOperationError(result.message)
         return await self.get_telegram_status(account_id)
+
+    async def logout_telegram(self, account_id: str) -> TelegramAuthStatusResponse:
+        account = await self._get_account(account_id)
+        state = self.telegram_auth.load_auth_state(account)
+        phone_number = str(state.get("phone_number") or account.phone_number or "").strip()
+        self.store.delete_telegram_session(account)
+        self.telegram_auth.persist_auth_state(
+            self._with_phone(account, phone_number) if phone_number else account,
+            phone_number=phone_number,
+            verification_code="",
+            telegram_password="",
+            current_auth_step="INIT",
+            session_path=str(self.store.telegram_session_file(account)),
+            code_confirmed=False,
+            extra={"phone_code_hash": ""},
+        )
+        status = await self.get_telegram_status(account_id)
+        return status.model_copy(update={"message": "Telegram session removed."})
 
     async def get_shafa_status(self, account_id: str) -> ShafaAuthStatusResponse:
         account = await self._get_account(account_id)
@@ -212,7 +236,7 @@ class AccountAuthService:
     def _account_env(self, account: Account) -> dict[str, str]:
         env = os.environ.copy()
         state_dir = self.store.account_dir(account)
-        telegram_credentials = self.store.load_telegram_credentials(account)
+        api_id, api_hash = self._resolve_telegram_credentials(account)
         env.setdefault("PYTHONUNBUFFERED", "1")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
@@ -220,8 +244,6 @@ class AccountAuthService:
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
-        api_id = telegram_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
-        api_hash = telegram_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
         if api_id:
             env["SHAFA_TELEGRAM_API_ID"] = api_id
         else:
@@ -256,6 +278,43 @@ class AccountAuthService:
             text=True,
             env=self._account_env(account),
         )
+
+    @staticmethod
+    def _read_env_file(path: Path) -> dict[str, str]:
+        result = {
+            "SHAFA_TELEGRAM_API_ID": "",
+            "SHAFA_TELEGRAM_API_HASH": "",
+        }
+        if not path.exists():
+            return result
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key in result:
+                result[key] = value.strip().strip("\"'")
+        return result
+
+    def _resolve_telegram_credentials(self, account: Account) -> tuple[str, str]:
+        account_credentials = self.store.load_telegram_credentials(account)
+        root_credentials = self._read_env_file(Path(__file__).resolve().parents[2] / ".env")
+        api_id = (
+            account_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
+            or root_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
+            or str(os.getenv("SHAFA_TELEGRAM_API_ID", "")).strip()
+        )
+        api_hash = (
+            account_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
+            or root_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
+            or str(os.getenv("SHAFA_TELEGRAM_API_HASH", "")).strip()
+        )
+        return api_id, api_hash
+
+    def _has_telegram_credentials(self, account: Account) -> bool:
+        api_id, api_hash = self._resolve_telegram_credentials(account)
+        return api_id.isdigit() and bool(api_hash)
 
     def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
         project_path = _preferred_project_dir(Path(account.path).expanduser())
