@@ -1,147 +1,148 @@
 import type { ChartPoint } from '../types';
-
-interface ProjectedPoint {
-  x: number;
-  y: number;
-  value: number;
-  label: string;
-}
-
-function buildPath(points: ProjectedPoint[]): string {
-  return points
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
-    .join(' ');
-}
-
-function projectSeries(
-  data: ChartPoint[],
-  key: 'items' | 'errors',
-  width: number,
-  height: number,
-  padding: number,
-  maxValue: number,
-): ProjectedPoint[] {
-  const drawableWidth = width - padding * 2;
-  const drawableHeight = height - padding * 2;
-
-  return data.map((item, index) => {
-    const x = padding + (drawableWidth / Math.max(data.length - 1, 1)) * index;
-    const y =
-      padding + drawableHeight - (item[key] / maxValue) * drawableHeight;
-    return { x, y, value: item[key], label: item.label };
-  });
-}
+import {
+  Area,
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 
 interface LineChartProps {
   data: ChartPoint[];
   height?: number;
 }
 
-export function LineChart({ data, height = 280 }: LineChartProps) {
-  const width = 900;
-  const padding = 36;
-  const maxValue = Math.max(
-    ...data.flatMap((item) => [item.items, item.errors]),
-    1,
-  );
-  const itemsPoints = projectSeries(
-    data,
-    'items',
-    width,
-    height,
-    padding,
-    maxValue,
-  );
-  const errorsPoints = projectSeries(
-    data,
-    'errors',
-    width,
-    height,
-    padding,
-    maxValue,
-  );
-  const gridLines = Array.from({ length: 4 }, (_, index) => {
-    const y = padding + ((height - padding * 2) / 3) * index;
-    return { y, key: index };
-  });
+function getItemsDomain(data: ChartPoint[]) {
+  const maxValue = Math.max(...data.map((item) => item.items), 1);
+  return [0, Math.ceil(maxValue * 1.2)];
+}
 
+function getErrorsDomain(data: ChartPoint[]) {
+  const maxValue = Math.max(...data.map((item) => item.errors), 1);
+  return [0, Math.max(maxValue + 1, 3)];
+}
+
+export function LineChart({ data, height = 280 }: LineChartProps) {
   return (
     <div className="flex flex-col gap-3.5">
       <div className="flex justify-center gap-4 text-text-muted/75">
         <span className="inline-flex items-center gap-2">
-          <i className="h-2 w-2 rounded-full bg-success/50" />
+          <i className="h-2 w-2 rounded-full bg-success/70" />
           Items
         </span>
         <span className="inline-flex items-center gap-2">
-          <i className="h-2 w-2 rounded-full bg-error/50" />
+          <i className="h-2 w-2 rounded-full bg-error/70" />
           Errors
         </span>
       </div>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="w-full overflow-hidden rounded-[20px] bg-[linear-gradient(180deg,rgba(15,23,33,0.95),rgba(9,15,23,0.98))]"
-        role="img"
-        aria-label="Статический график элементов и ошибок"
+
+      <div
+        className="overflow-hidden rounded-[20px] border border-border/20 bg-[radial-gradient(circle_at_top,rgba(69,214,195,0.14),transparent_32%),linear-gradient(180deg,rgba(15,23,33,0.95),rgba(9,15,23,0.98))] px-3 py-4"
+        style={{ height }}
       >
-        {gridLines.map((line) => (
-          <line
-            key={line.key}
-            x1={padding}
-            y1={line.y}
-            x2={width - padding}
-            y2={line.y}
-            className="stroke-[rgba(140,172,201,0.11)]"
-            strokeWidth={1}
-          />
-        ))}
-
-        <path
-          d={buildPath(itemsPoints)}
-          className="fill-none stroke-[#45d6c3]"
-          strokeWidth={4}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d={buildPath(errorsPoints)}
-          className="fill-none stroke-[#ff7e8a]"
-          strokeWidth={4}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-
-        {itemsPoints.map((point) => (
-          <circle
-            key={`items-${point.label}`}
-            cx={point.x}
-            cy={point.y}
-            r="5"
-            className="fill-[#45d6c3] stroke-[#45d6c3]"
-          />
-        ))}
-
-        {errorsPoints.map((point) => (
-          <circle
-            key={`errors-${point.label}`}
-            cx={point.x}
-            cy={point.y}
-            r="4"
-            className="fill-[#ff7e8a] stroke-[#ff7e8a]"
-          />
-        ))}
-
-        {itemsPoints.map((point) => (
-          <text
-            key={`label-${point.label}`}
-            x={point.x}
-            y={height - 8}
-            textAnchor="middle"
-            className="fill-[#8c9db4] text-[16px]"
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart
+            data={data}
+            margin={{ top: 10, right: 10, bottom: 6, left: -16 }}
           >
-            {point.label}
-          </text>
-        ))}
-      </svg>
+            <defs>
+              <linearGradient id="items-bar-fill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#45d6c3" stopOpacity={0.95} />
+                <stop offset="100%" stopColor="#2a8f83" stopOpacity={0.45} />
+              </linearGradient>
+              <linearGradient id="items-area-fill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#45d6c3" stopOpacity={0.2} />
+                <stop offset="100%" stopColor="#45d6c3" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+
+            <CartesianGrid
+              vertical={false}
+              stroke="rgba(140,172,201,0.12)"
+              strokeDasharray="4 8"
+            />
+            <XAxis
+              dataKey="label"
+              axisLine={false}
+              tickLine={false}
+              tick={{ fill: 'rgba(140,157,180,0.85)', fontSize: 13 }}
+            />
+            <YAxis
+              yAxisId="items"
+              axisLine={false}
+              tickLine={false}
+              tick={{ fill: 'rgba(140,157,180,0.7)', fontSize: 12 }}
+              tickMargin={10}
+              width={40}
+              domain={getItemsDomain(data)}
+            />
+            <YAxis
+              yAxisId="errors"
+              orientation="right"
+              allowDecimals={false}
+              axisLine={false}
+              tickLine={false}
+              tick={{ fill: 'rgba(255,126,138,0.72)', fontSize: 12 }}
+              tickMargin={10}
+              width={32}
+              domain={getErrorsDomain(data)}
+            />
+            <Tooltip
+              cursor={{ fill: 'rgba(140,172,201,0.08)' }}
+              contentStyle={{
+                border: '1px solid rgba(140,172,201,0.24)',
+                borderRadius: '14px',
+                background:
+                  'linear-gradient(180deg, rgba(13,20,29,0.98), rgba(9,15,23,0.98))',
+                boxShadow: '0 18px 40px rgba(0, 0, 0, 0.28)',
+              }}
+              labelStyle={{ color: '#f4f7fb', fontWeight: 600 }}
+              itemStyle={{ color: '#c5d2e1' }}
+              formatter={(value, name) => [
+                `${value ?? 0}`,
+                String(name) === 'items' ? 'Товары' : 'Ошибки',
+              ]}
+              labelFormatter={(label) => `Период: ${label}`}
+            />
+
+            <Area
+              yAxisId="items"
+              type="monotone"
+              dataKey="items"
+              fill="url(#items-area-fill)"
+              stroke="#6cf0df"
+              strokeOpacity={0.8}
+              strokeWidth={2}
+              activeDot={false}
+            />
+            <Bar
+              yAxisId="items"
+              dataKey="items"
+              fill="url(#items-bar-fill)"
+              radius={[10, 10, 4, 4]}
+              barSize={28}
+            />
+            <Line
+              yAxisId="errors"
+              type="monotone"
+              dataKey="errors"
+              stroke="#ff7e8a"
+              strokeWidth={3}
+              dot={{ r: 4, fill: '#ff7e8a', stroke: '#101821', strokeWidth: 2 }}
+              activeDot={{
+                r: 5,
+                fill: '#ff7e8a',
+                stroke: '#101821',
+                strokeWidth: 2,
+              }}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
