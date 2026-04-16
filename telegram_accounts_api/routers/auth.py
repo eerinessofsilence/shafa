@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
 from telegram_accounts_api.dependencies import get_auth_service
 from telegram_accounts_api.models.auth import (
@@ -76,3 +76,15 @@ async def save_shafa_cookies(
     service: AccountAuthService = Depends(get_auth_service),
 ) -> ShafaAuthStatusResponse:
     return await service.save_shafa_storage_state(account_id, payload)
+
+
+@router.post(
+    "/shafa/browser-login",
+    response_model=ShafaAuthStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_shafa_browser_login(
+    account_id: str,
+    service: AccountAuthService = Depends(get_auth_service),
+) -> ShafaAuthStatusResponse:
+    return await service.start_shafa_browser_login(account_id)

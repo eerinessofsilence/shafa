@@ -1,10 +1,27 @@
+import {
+  createAccount as createAccountRequest,
+  deleteAccount as deleteAccountRequest,
+  listAccounts,
+  startAccount as startAccountRequest,
+  stopAccount as stopAccountRequest,
+  updateAccount as updateAccountRequest,
+} from './api/accounts';
+import {
+  getShafaAuthStatus,
+  getTelegramAuthStatus,
+  requestTelegramCode,
+  saveShafaStorageState,
+  saveTelegramCredentials,
+  startShafaBrowserLogin,
+  submitTelegramCode,
+  submitTelegramPassword,
+} from './api/auth';
 import { LineChart } from './components/LineChart';
 import { MetricCard } from './components/MetricCard';
 import { PageHeader } from './components/PageHeader';
 import { Panel } from './components/Panel';
 import { StatusPill } from './components/StatusPill';
 import {
-  accountRows,
   dashboardMetrics,
   dashboardSeries,
   logRecords,
@@ -16,6 +33,12 @@ import {
 } from './data/mockData';
 import type {
   AccountRow,
+  ApiAccountCreate,
+  ApiAccountRead,
+  ApiShafaAuthStatus,
+  ApiShafaStorageStateRequest,
+  ApiTelegramAuthStatus,
+  ApiAccountUpdate,
   PageId,
   SettingToggle,
   StatusTone,
@@ -33,23 +56,38 @@ import {
   Download,
   Ellipsis,
   Eye,
+  FileJson,
   Filter,
   FolderOpen,
+  KeyRound,
   LayoutGrid,
   Link2,
+  LoaderCircle,
+  LockKeyhole,
+  LogIn,
   PencilLine,
+  Phone,
   Plus,
   Power,
+  RefreshCw,
   Save,
   Settings,
+  ShieldCheck,
   Star,
   Trash2,
+  Upload,
   TriangleAlert,
   User,
   Users,
   X,
 } from 'lucide-react';
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import {
+  type ChangeEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 
 const browserOptions = ['Да', 'Нет'];
 const timerOptions = Array.from(
@@ -58,6 +96,8 @@ const timerOptions = Array.from(
 );
 const accountControlClassName =
   'h-12 w-full rounded-xl border border-border/25 bg-secondary px-3 text-text outline-none transition focus:border-info/50 focus:ring-2 focus:ring-info/25';
+const accountTextareaClassName =
+  'min-h-36 w-full rounded-xl border border-border/25 bg-secondary px-3 py-3 text-text outline-none transition focus:border-info/50 focus:ring-2 focus:ring-info/25';
 const accountSelectButtonClassName =
   'flex h-12 w-full cursor-pointer items-center justify-between gap-4 rounded-xl border border-border/25 bg-secondary px-3 text-left text-text outline-none transition hover:border-border/50 focus:border-info/50 focus:ring-2 focus:ring-info/25';
 const telegramDraftInitialState = {
@@ -137,6 +177,143 @@ const accountDraftInitialState: AccountDraft = {
   timer: timerOptions[4] ?? '5 мин',
 };
 const accountPageSizeOptions = [5, 10, 20, 50] as const;
+
+function formatTimerLabel(minutes: number) {
+  return `${minutes} мин`;
+}
+
+function parseTimerLabel(value: string) {
+  const parsedValue = Number.parseInt(value, 10);
+
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+    return 5;
+  }
+
+  return parsedValue;
+}
+
+function getAccountStatusMeta(
+  status: ApiAccountRead['status'],
+): Pick<AccountRow, 'statusLabel' | 'statusTone'> {
+  return status === 'started'
+    ? { statusLabel: 'started', statusTone: 'success' }
+    : { statusLabel: 'stopped', statusTone: 'neutral' };
+}
+
+function mapApiAccountToRow(account: ApiAccountRead): AccountRow {
+  const { statusLabel, statusTone } = getAccountStatusMeta(account.status);
+
+  return {
+    id: account.id,
+    name: account.name,
+    path: account.path,
+    branch: account.branch || 'main',
+    browser: account.open_browser ? 'Да' : 'Нет',
+    timer: formatTimerLabel(account.timer_minutes),
+    errors: String(account.errors),
+    statusLabel,
+    statusTone,
+    telegramChannels: account.channel_links.map((link, index) => ({
+      id: `${account.id}-channel-${index}`,
+      title: link,
+      handle: link,
+      photoSource: 'Сообщение',
+    })),
+  };
+}
+
+function createAccountCreatePayload(draft: AccountDraft): ApiAccountCreate {
+  return {
+    name: draft.name.trim(),
+    phone: '',
+    path: draft.path.trim(),
+    open_browser: draft.browser === 'Да',
+    timer_minutes: parseTimerLabel(draft.timer),
+    channel_links: [],
+  };
+}
+
+function createAccountUpdatePayload(draft: AccountDraft): ApiAccountUpdate {
+  return {
+    name: draft.name.trim(),
+    path: draft.path.trim(),
+    open_browser: draft.browser === 'Да',
+    timer_minutes: parseTimerLabel(draft.timer),
+  };
+}
+
+function formatApiError(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseShafaImportInput(value: string): ApiShafaStorageStateRequest {
+  const parsed = JSON.parse(value) as unknown;
+
+  if (Array.isArray(parsed)) {
+    return { cookies: parsed };
+  }
+
+  if (isRecord(parsed)) {
+    if (isRecord(parsed.storage_state)) {
+      return { storage_state: parsed.storage_state };
+    }
+
+    if (Array.isArray(parsed.cookies)) {
+      return { storage_state: parsed };
+    }
+  }
+
+  throw new Error(
+    'Ожидается JSON storage state Playwright или массив cookies для Shafa.',
+  );
+}
+
+function getTelegramStepMeta(status: ApiTelegramAuthStatus | null): {
+  label: string;
+  tone: StatusTone;
+} {
+  if (!status) {
+    return { label: 'загрузка', tone: 'neutral' };
+  }
+
+  if (status.connected) {
+    return { label: 'подключен', tone: 'success' };
+  }
+
+  switch (status.current_step) {
+    case 'WAIT_CODE':
+      return { label: 'ждёт код', tone: 'info' };
+    case 'WAIT_PASSWORD':
+      return { label: 'ждёт пароль', tone: 'warning' };
+    case 'FAILED':
+      return { label: 'ошибка', tone: 'danger' };
+    case 'WAIT_PHONE':
+      return { label: 'код запрошен', tone: 'info' };
+    case 'INIT':
+      return { label: 'не начат', tone: 'neutral' };
+    case 'SUCCESS':
+      return { label: 'подключен', tone: 'success' };
+    default:
+      return { label: status.current_step.toLowerCase(), tone: 'neutral' };
+  }
+}
+
+function getShafaStatusMeta(status: ApiShafaAuthStatus | null): {
+  label: string;
+  tone: StatusTone;
+} {
+  if (!status) {
+    return { label: 'загрузка', tone: 'neutral' };
+  }
+
+  return status.connected
+    ? { label: 'подключен', tone: 'success' }
+    : { label: 'не подключен', tone: 'warning' };
+}
 
 function getAccountSortValue(account: AccountRow, field: AccountSortField) {
   switch (field) {
@@ -241,8 +418,17 @@ function createAccountFromDraft(draft: AccountDraft): AccountRow {
   };
 }
 
+function getAccountDraftFromRow(account: AccountRow): AccountDraft {
+  return {
+    name: account.name,
+    path: account.path,
+    browser: account.browser,
+    timer: account.timer,
+  };
+}
+
 function isAccountDraftValid(draft: AccountDraft) {
-  return Boolean(draft.name.trim() && draft.path.trim());
+  return Boolean(draft.name.trim());
 }
 
 function formatAccountCount(count: number) {
@@ -266,12 +452,14 @@ function formatAccountCount(count: number) {
 
 function App() {
   const [activePage, setActivePage] = useState<PageId>('dashboard');
-  const [accounts, setAccounts] = useState<AccountRow[]>(accountRows);
+  const [accounts, setAccounts] = useState<AccountRow[]>([]);
+  const [isAccountsLoading, setIsAccountsLoading] = useState(false);
+  const [accountsError, setAccountsError] = useState('');
+  const [isAccountMutationPending, setIsAccountMutationPending] =
+    useState(false);
   const [parsingToggles, setParsingToggles] =
     useState<SettingToggle[]>(settingToggles);
   const [selectedAccountId, setSelectedAccountId] = useState('');
-  const selectedAccount =
-    accounts.find((account) => account.id === selectedAccountId) ?? null;
 
   useEffect(() => {
     if (
@@ -282,82 +470,54 @@ function App() {
     }
   }, [accounts, selectedAccountId]);
 
-  const handleAccountFieldChange = (
-    accountId: string,
-    field: AccountEditableField,
-    value: string,
-  ) => {
-    setAccounts((currentAccounts) =>
-      currentAccounts.map((account) =>
-        account.id === accountId ? { ...account, [field]: value } : account,
-      ),
-    );
+  const loadAccounts = async () => {
+    setAccountsError('');
+    setIsAccountsLoading(true);
+
+    try {
+      const nextAccounts = await listAccounts();
+      setAccounts(nextAccounts.map(mapApiAccountToRow));
+    } catch (error) {
+      setAccountsError(
+        formatApiError(error, 'Не удалось загрузить аккаунты из API.'),
+      );
+    } finally {
+      setIsAccountsLoading(false);
+    }
   };
 
-  const handleCreateAccount = (draft: AccountDraft) => {
-    const nextAccount = createAccountFromDraft(draft);
-
-    setAccounts((currentAccounts) => [...currentAccounts, nextAccount]);
-    setSelectedAccountId(nextAccount.id);
-  };
-
-  const handleAddTelegramChannel = (
-    accountId: string,
-    draft: TelegramChannelDraft,
-  ) => {
-    const normalizedHandle = normalizeTelegramHandle(draft.handle);
-
-    if (!normalizedHandle) {
+  useEffect(() => {
+    if (activePage !== 'accounts') {
       return;
     }
 
-    setAccounts((currentAccounts) =>
-      currentAccounts.map((account) =>
-        account.id === accountId
-          ? {
-              ...account,
-              telegramChannels: [
-                ...account.telegramChannels,
-                createTelegramChannel({ ...draft, handle: normalizedHandle }),
-              ],
-            }
-          : account,
-      ),
-    );
+    void loadAccounts();
+  }, [activePage]);
+
+  const handleCreateAccount = async (draft: AccountDraft) => {
+    setIsAccountMutationPending(true);
+
+    try {
+      const nextAccount = await createAccountRequest(
+        createAccountCreatePayload(draft),
+      );
+      await loadAccounts();
+      setSelectedAccountId(nextAccount.id);
+    } finally {
+      setIsAccountMutationPending(false);
+    }
   };
 
-  const handleUpdateTelegramChannel = (
-    accountId: string,
-    channelId: string,
-    draft: TelegramChannelDraft,
-  ) => {
-    const normalizedHandle = normalizeTelegramHandle(draft.handle);
+  const handleSaveAccount = async (accountId: string, draft: AccountDraft) => {
+    setIsAccountMutationPending(true);
 
-    if (!normalizedHandle) {
-      return;
+    try {
+      await updateAccountRequest(accountId, createAccountUpdatePayload(draft));
+      await loadAccounts();
+      setSelectedAccountId(accountId);
+    } finally {
+      setIsAccountMutationPending(false);
     }
-
-    setAccounts((currentAccounts) =>
-      currentAccounts.map((account) =>
-        account.id === accountId
-          ? {
-              ...account,
-              telegramChannels: account.telegramChannels.map((channel) =>
-                channel.id === channelId
-                  ? {
-                      ...channel,
-                      title:
-                        draft.title.trim() ||
-                        formatChannelTitle(normalizedHandle),
-                      handle: normalizedHandle,
-                      photoSource: draft.photoSource,
-                    }
-                  : channel,
-              ),
-            }
-          : account,
-      ),
-    );
   };
 
   const handleToggleParsingOption = (label: string) => {
@@ -370,7 +530,7 @@ function App() {
     );
   };
 
-  const handleBulkAccountAction = (
+  const handleBulkAccountAction = async (
     action: AccountBulkActionId,
     accountIds: string[],
   ) => {
@@ -378,52 +538,45 @@ function App() {
       return '';
     }
 
-    const selectedIdSet = new Set(accountIds);
-    const selectedAccounts = accounts.filter((account) =>
-      selectedIdSet.has(account.id),
-    );
-    const selectedCount = selectedAccounts.length;
-    const firstSelectedAccount = selectedAccounts[0];
+    const accountRequests =
+      action === 'open'
+        ? accountIds.map((accountId) => startAccountRequest(accountId))
+        : action === 'close'
+          ? accountIds.map((accountId) => stopAccountRequest(accountId))
+          : accountIds.map((accountId) => deleteAccountRequest(accountId));
 
-    switch (action) {
-      case 'open':
-        setAccounts((currentAccounts) =>
-          currentAccounts.map((account) =>
-            selectedIdSet.has(account.id)
-              ? {
-                  ...account,
-                  browser: 'Да',
-                  statusLabel: 'running',
-                  statusTone: 'success',
-                }
-              : account,
-          ),
-        );
-        if (firstSelectedAccount) {
-          setSelectedAccountId(firstSelectedAccount.id);
-        }
-        return selectedCount === 1 && firstSelectedAccount
-          ? `Открыт аккаунт ${firstSelectedAccount.name}.`
-          : `Открыто ${formatAccountCount(selectedCount)}.`;
-      case 'close':
-        setAccounts((currentAccounts) =>
-          currentAccounts.map((account) =>
-            selectedIdSet.has(account.id)
-              ? {
-                  ...account,
-                  browser: 'Нет',
-                  statusLabel: 'stopped',
-                  statusTone: 'neutral',
-                }
-              : account,
-          ),
-        );
-        return `Остановлено ${formatAccountCount(selectedCount)}.`;
-      case 'delete':
-        setAccounts((currentAccounts) =>
-          currentAccounts.filter((account) => !selectedIdSet.has(account.id)),
-        );
-        return `Удалено ${formatAccountCount(selectedCount)}.`;
+    setIsAccountMutationPending(true);
+
+    try {
+      const results = await Promise.allSettled(accountRequests);
+      const successCount = results.filter(
+        (result) => result.status === 'fulfilled',
+      ).length;
+      const failureCount = results.length - successCount;
+
+      await loadAccounts();
+
+      if (action === 'open' && successCount > 0 && accountIds[0]) {
+        setSelectedAccountId(accountIds[0]);
+      }
+
+      if (successCount === 0) {
+        return `Не удалось выполнить действие для ${formatAccountCount(failureCount)}.`;
+      }
+
+      const actionVerb =
+        action === 'open'
+          ? 'Открыто'
+          : action === 'close'
+            ? 'Остановлено'
+            : 'Удалено';
+      const successMessage = `${actionVerb} ${formatAccountCount(successCount)}.`;
+
+      return failureCount > 0
+        ? `${successMessage} Ошибок: ${failureCount}.`
+        : successMessage;
+    } finally {
+      setIsAccountMutationPending(false);
     }
   };
 
@@ -470,14 +623,14 @@ function App() {
             {activePage === 'accounts' && (
               <AccountsPage
                 accounts={accounts}
-                selectedAccount={selectedAccount}
-                selectedAccountId={selectedAccountId}
+                isLoading={isAccountsLoading}
+                isMutationPending={isAccountMutationPending}
+                loadError={accountsError}
                 onBulkAction={handleBulkAccountAction}
                 onCreateAccount={handleCreateAccount}
+                onReload={loadAccounts}
                 onSelectAccount={setSelectedAccountId}
-                onUpdateAccountField={handleAccountFieldChange}
-                onAddTelegramChannel={handleAddTelegramChannel}
-                onUpdateTelegramChannel={handleUpdateTelegramChannel}
+                onUpdateAccount={handleSaveAccount}
               />
             )}
             {activePage === 'stats' && <StatsPage />}
@@ -746,37 +899,29 @@ function DashboardPage() {
 
 interface AccountsPageProps {
   accounts: AccountRow[];
-  selectedAccount: AccountRow | null;
-  selectedAccountId: string;
-  onBulkAction: (action: AccountBulkActionId, accountIds: string[]) => string;
-  onCreateAccount: (draft: AccountDraft) => void;
+  isLoading: boolean;
+  isMutationPending: boolean;
+  loadError: string;
+  onBulkAction: (
+    action: AccountBulkActionId,
+    accountIds: string[],
+  ) => Promise<string>;
+  onCreateAccount: (draft: AccountDraft) => Promise<void>;
+  onReload: () => Promise<void>;
   onSelectAccount: (accountId: string) => void;
-  onUpdateAccountField: (
-    accountId: string,
-    field: AccountEditableField,
-    value: string,
-  ) => void;
-  onAddTelegramChannel: (
-    accountId: string,
-    draft: TelegramChannelDraft,
-  ) => void;
-  onUpdateTelegramChannel: (
-    accountId: string,
-    channelId: string,
-    draft: TelegramChannelDraft,
-  ) => void;
+  onUpdateAccount: (accountId: string, draft: AccountDraft) => Promise<void>;
 }
 
 function AccountsPage({
   accounts,
-  selectedAccount,
-  selectedAccountId,
+  isLoading,
+  isMutationPending,
+  loadError,
   onBulkAction,
   onCreateAccount,
+  onReload,
   onSelectAccount,
-  onUpdateAccountField,
-  onAddTelegramChannel,
-  onUpdateTelegramChannel,
+  onUpdateAccount,
 }: AccountsPageProps) {
   const [sortState, setSortState] = useState<{
     field: AccountSortField;
@@ -891,24 +1036,30 @@ function AccountsPage({
     });
   };
 
-  const runBulkAction = (action: AccountBulkActionId) => {
-    if (selectedAccountIds.length === 0) {
+  const runBulkAction = async (action: AccountBulkActionId) => {
+    if (selectedAccountIds.length === 0 || isMutationPending) {
       return;
     }
 
-    const message = onBulkAction(action, selectedAccountIds);
+    try {
+      const message = await onBulkAction(action, selectedAccountIds);
 
-    if (message) {
-      setBulkFeedback(message);
-    }
+      if (message) {
+        setBulkFeedback(message);
+      }
 
-    if (action === 'delete') {
-      setSelectedAccountIds([]);
-      return;
-    }
+      if (action === 'delete') {
+        setSelectedAccountIds([]);
+        return;
+      }
 
-    if (action === 'open' && selectedAccountIds[0]) {
-      onSelectAccount(selectedAccountIds[0]);
+      if (action === 'open' && selectedAccountIds[0]) {
+        onSelectAccount(selectedAccountIds[0]);
+      }
+    } catch (error) {
+      setBulkFeedback(
+        formatApiError(error, 'Не удалось выполнить действие над аккаунтами.'),
+      );
     }
   };
 
@@ -958,6 +1109,32 @@ function AccountsPage({
     <div className="space-y-4">
       <PageHeader title="Аккаунты" />
 
+      {loadError ? (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
+          <span>{loadError}</span>
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-error/20 bg-error/10 px-3 py-2 text-error transition hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={isLoading || isMutationPending}
+            type="button"
+            onClick={() => void onReload()}
+          >
+            Повторить
+          </button>
+        </div>
+      ) : null}
+
+      {bulkFeedback ? (
+        <div className="rounded-2xl border border-border/15 bg-secondary/70 px-4 py-3 text-sm text-text">
+          {bulkFeedback}
+        </div>
+      ) : null}
+
+      {isMutationPending ? (
+        <div className="rounded-2xl border border-border/15 bg-secondary/60 px-4 py-3 text-sm text-text-muted">
+          Синхронизация с API...
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-5">
         <Panel
           title="Каталог аккаунтов"
@@ -965,7 +1142,9 @@ function AccountsPage({
             <div className="flex items-center justify-between gap-4 rounded-[20px] border border-border/10 bg-secondary/95 p-1.5">
               <div className="flex flex-wrap items-center gap-2">
                 <BulkActionButton
-                  disabled={selectedAccountIds.length === 0}
+                  disabled={
+                    selectedAccountIds.length === 0 || isMutationPending
+                  }
                   icon={
                     shouldShowCloseAction ? (
                       <X className="h-4 w-4" />
@@ -975,7 +1154,7 @@ function AccountsPage({
                   }
                   tone={shouldShowCloseAction ? 'danger' : 'primary'}
                   onClick={() =>
-                    runBulkAction(shouldShowCloseAction ? 'close' : 'open')
+                    void runBulkAction(shouldShowCloseAction ? 'close' : 'open')
                   }
                 >
                   {shouldShowCloseAction ? 'Остановить' : 'Открыть'}
@@ -983,16 +1162,18 @@ function AccountsPage({
                 <button
                   aria-label="Удалить отмеченные аккаунты"
                   className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-error/15 bg-error/8 text-error transition-all duration-200 hover:border-error/30 hover:bg-error/12 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-error/15 disabled:hover:bg-error/8"
-                  disabled={selectedAccountIds.length === 0}
+                  disabled={
+                    selectedAccountIds.length === 0 || isMutationPending
+                  }
                   type="button"
-                  onClick={() => runBulkAction('delete')}
+                  onClick={() => void runBulkAction('delete')}
                 >
                   <Trash2 className="h-4.5 w-4.5" />
                 </button>
                 <button
                   aria-label="Открыть настройки аккаунта"
                   className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-border/15 bg-secondary/95 text-text transition-all duration-200 hover:border-border/35 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-border/15 disabled:hover:bg-secondary/95"
-                  disabled={!detailsAccount}
+                  disabled={!detailsAccount || isMutationPending}
                   type="button"
                   onClick={() => setIsDetailsDialogOpen(true)}
                 >
@@ -1001,6 +1182,7 @@ function AccountsPage({
                 <button
                   aria-label="Добавить аккаунт"
                   className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl bg-info text-white transition-all duration-200 hover:bg-info/90 active:scale-[0.98]"
+                  disabled={isMutationPending}
                   type="button"
                   onClick={() => setIsCreateDialogOpen(true)}
                 >
@@ -1062,7 +1244,20 @@ function AccountsPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedAccounts.length === 0 ? (
+                  {isLoading && accounts.length === 0 ? (
+                    <tr>
+                      <td colSpan={accountTableHeaders.length + 1}>
+                        <div className="rounded-2xl border border-dashed border-border/20 bg-secondary/45 px-6 py-10 text-center">
+                          <strong className="block text-base text-text">
+                            Загружаем аккаунты
+                          </strong>
+                          <p className="mt-2 text-sm leading-6 text-text-muted">
+                            Получаем данные со страницы API.
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : sortedAccounts.length === 0 ? (
                     <tr>
                       <td colSpan={accountTableHeaders.length + 1}>
                         <div className="rounded-2xl border border-dashed border-border/20 bg-secondary/45 px-6 py-10 text-center">
@@ -1233,13 +1428,14 @@ function AccountsPage({
       <AccountDetailsDialog
         account={detailsAccount}
         isOpen={isDetailsDialogOpen}
-        onAddTelegramChannel={onAddTelegramChannel}
+        isSubmitting={isMutationPending}
         onClose={() => setIsDetailsDialogOpen(false)}
-        onUpdateAccountField={onUpdateAccountField}
-        onUpdateTelegramChannel={onUpdateTelegramChannel}
+        onReloadAccounts={onReload}
+        onUpdateAccount={onUpdateAccount}
       />
       <CreateAccountDialog
         isOpen={isCreateDialogOpen}
+        isSubmitting={isMutationPending}
         onClose={() => setIsCreateDialogOpen(false)}
         onCreateAccount={onCreateAccount}
       />
@@ -1323,37 +1519,713 @@ function AccountDialogShell({
   );
 }
 
+function AccountTemplatesNotice() {
+  return (
+    <div className="rounded-[22px] border border-dashed border-border/25 bg-secondary/45 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-info">
+          <Link2 className="h-5 w-5" />
+        </div>
+        <div className="space-y-1">
+          <strong className="block text-text">Telegram-каналы</strong>
+          <p className="leading-6 text-text-muted">
+            Этот блок будет подключён отдельно через API `channel-templates`.
+            Сейчас страница аккаунтов работает только с основными данными
+            аккаунта.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreateAccountAccessNotice() {
+  return (
+    <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-info">
+          <ShieldCheck className="h-5 w-5" />
+        </div>
+        <div className="space-y-1">
+          <strong className="block text-text">
+            Shafa и Telegram авторизация
+          </strong>
+          <p className="leading-6 text-text-muted">
+            После создания аккаунта здесь появятся рабочие сценарии импорта
+            Shafa-сессии и пошагового входа в Telegram.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface AuthInputFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  icon?: ReactNode;
+  type?: 'text' | 'tel' | 'password';
+  placeholder?: string;
+  disabled?: boolean;
+}
+
+function AuthInputField({
+  label,
+  value,
+  onChange,
+  icon,
+  type = 'text',
+  placeholder,
+  disabled = false,
+}: AuthInputFieldProps) {
+  return (
+    <label className="flex flex-col gap-2.5">
+      <span className="flex items-center gap-2 text-sm font-medium text-text">
+        {icon}
+        {label}
+      </span>
+      <input
+        className={`${accountControlClassName} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+        disabled={disabled}
+        placeholder={placeholder}
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+interface AuthTextareaFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  icon?: ReactNode;
+  placeholder?: string;
+  disabled?: boolean;
+}
+
+function AuthTextareaField({
+  label,
+  value,
+  onChange,
+  icon,
+  placeholder,
+  disabled = false,
+}: AuthTextareaFieldProps) {
+  return (
+    <label className="flex flex-col gap-2.5">
+      <span className="flex items-center gap-2 text-sm font-medium text-text">
+        {icon}
+        {label}
+      </span>
+      <textarea
+        className={`${accountTextareaClassName} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+        disabled={disabled}
+        placeholder={placeholder}
+        spellCheck={false}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+interface AccountAuthPanelProps {
+  account: AccountRow;
+  onReloadAccounts: () => Promise<void>;
+}
+
+function AccountAuthPanel({
+  account,
+  onReloadAccounts,
+}: AccountAuthPanelProps) {
+  const [telegramStatus, setTelegramStatus] =
+    useState<ApiTelegramAuthStatus | null>(null);
+  const [shafaStatus, setShafaStatus] = useState<ApiShafaAuthStatus | null>(
+    null,
+  );
+  const [isStatusLoading, setIsStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState('');
+
+  const loadStatuses = async () => {
+    setIsStatusLoading(true);
+    setStatusError('');
+
+    const [telegramResult, shafaResult] = await Promise.allSettled([
+      getTelegramAuthStatus(account.id),
+      getShafaAuthStatus(account.id),
+    ]);
+
+    const nextErrors: string[] = [];
+
+    if (telegramResult.status === 'fulfilled') {
+      setTelegramStatus(telegramResult.value);
+    } else {
+      nextErrors.push(
+        formatApiError(
+          telegramResult.reason,
+          'Не удалось загрузить статус Telegram.',
+        ),
+      );
+    }
+
+    if (shafaResult.status === 'fulfilled') {
+      setShafaStatus(shafaResult.value);
+    } else {
+      nextErrors.push(
+        formatApiError(
+          shafaResult.reason,
+          'Не удалось загрузить статус Shafa.',
+        ),
+      );
+    }
+
+    setStatusError(nextErrors.join(' '));
+    setIsStatusLoading(false);
+  };
+
+  useEffect(() => {
+    void loadStatuses();
+  }, [account.id]);
+
+  return (
+    <div className="space-y-4">
+      {statusError ? (
+        <div className="rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
+          {statusError}
+        </div>
+      ) : null}
+
+      <ShafaSessionCard
+        accountId={account.id}
+        isStatusLoading={isStatusLoading}
+        status={shafaStatus}
+        onRefreshStatuses={loadStatuses}
+        onReloadAccounts={onReloadAccounts}
+      />
+
+      <TelegramAuthCard
+        accountId={account.id}
+        isStatusLoading={isStatusLoading}
+        status={telegramStatus}
+        onRefreshStatuses={loadStatuses}
+        onReloadAccounts={onReloadAccounts}
+      />
+    </div>
+  );
+}
+
+interface ShafaSessionCardProps {
+  accountId: string;
+  status: ApiShafaAuthStatus | null;
+  isStatusLoading: boolean;
+  onRefreshStatuses: () => Promise<void>;
+  onReloadAccounts: () => Promise<void>;
+}
+
+function ShafaSessionCard({
+  accountId,
+  status,
+  isStatusLoading,
+  onRefreshStatuses,
+  onReloadAccounts,
+}: ShafaSessionCardProps) {
+  const [importValue, setImportValue] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isBrowserLoginPending, setIsBrowserLoginPending] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const statusMeta = getShafaStatusMeta(status);
+
+  useEffect(() => {
+    setImportValue('');
+    setFeedback('');
+    setError('');
+    setIsBrowserLoginPending(false);
+  }, [accountId]);
+
+  useEffect(() => {
+    if (!isBrowserLoginPending) {
+      return;
+    }
+
+    if (status?.connected) {
+      setIsBrowserLoginPending(false);
+      setFeedback('Shafa cookies сохранены. Аккаунт подключён.');
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void onRefreshStatuses();
+    }, 2500);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isBrowserLoginPending, onRefreshStatuses, status?.connected]);
+
+  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const nextValue = await file.text();
+      setImportValue(nextValue);
+      setFeedback(`JSON загружен из файла ${file.name}.`);
+      setError('');
+    } catch {
+      setError('Не удалось прочитать выбранный JSON файл.');
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const handleImport = async () => {
+    if (!importValue.trim()) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError('');
+    setFeedback('');
+
+    try {
+      const payload = parseShafaImportInput(importValue);
+      const nextStatus = await saveShafaStorageState(accountId, payload);
+      setFeedback(nextStatus.message);
+      setImportValue('');
+      await Promise.all([onRefreshStatuses(), onReloadAccounts()]);
+    } catch (nextError) {
+      setError(
+        formatApiError(
+          nextError,
+          'Не удалось импортировать storage state или cookies для Shafa.',
+        ),
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleBrowserLogin = async () => {
+    setIsSubmitting(true);
+    setError('');
+    setFeedback('');
+
+    try {
+      const nextStatus = await startShafaBrowserLogin(accountId);
+      setFeedback(nextStatus.message);
+      setIsBrowserLoginPending(true);
+      await onRefreshStatuses();
+    } catch (nextError) {
+      setError(
+        formatApiError(
+          nextError,
+          'Не удалось запустить Shafa login flow через браузер.',
+        ),
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const isImportDisabled =
+    !importValue.trim() || isSubmitting || isStatusLoading;
+  const isBrowserLoginDisabled = isSubmitting || isStatusLoading;
+
+  return (
+    <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-secondary text-info">
+              <ShieldCheck className="h-6 w-6" />
+            </div>
+
+            <div className="space-y-1">
+              <p className="font-medium text-text">Доступ к аккаунту Shafa</p>
+              <div className="flex gap-2">
+                <StatusPill tone={statusMeta.tone}>
+                  {statusMeta.label}
+                </StatusPill>
+                <StatusPill
+                  tone={status && status.cookies_count > 0 ? 'info' : 'neutral'}
+                >
+                  cookies: {status?.cookies_count ?? 0}
+                </StatusPill>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+            disabled={isBrowserLoginDisabled}
+            type="button"
+            onClick={() => void handleBrowserLogin()}
+          >
+            {isSubmitting && isBrowserLoginPending ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <LogIn className="h-4 w-4" />
+            )}
+            Войти через браузер
+          </button>
+          <input
+            ref={fileInputRef}
+            accept=".json,application/json"
+            className="hidden"
+            type="file"
+            onChange={(event) => void handleFileChange(event)}
+          />
+          <button
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
+            disabled={isSubmitting}
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <FileJson className="h-4 w-4" />
+            Загрузить JSON
+          </button>
+        </div>
+      </div>
+      {error ? (
+        <p className="mt-3 text-sm leading-6 text-error">{error}</p>
+      ) : null}
+      {feedback ? (
+        <p className="mt-3 text-sm leading-6 text-text-muted">{feedback}</p>
+      ) : null}
+    </div>
+  );
+}
+
+interface TelegramAuthCardProps {
+  accountId: string;
+  status: ApiTelegramAuthStatus | null;
+  isStatusLoading: boolean;
+  onRefreshStatuses: () => Promise<void>;
+  onReloadAccounts: () => Promise<void>;
+}
+
+function TelegramAuthCard({
+  accountId,
+  status,
+  isStatusLoading,
+  onRefreshStatuses,
+  onReloadAccounts,
+}: TelegramAuthCardProps) {
+  const [apiId, setApiId] = useState('');
+  const [apiHash, setApiHash] = useState('');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const stepMeta = getTelegramStepMeta(status);
+
+  useEffect(() => {
+    setApiId('');
+    setApiHash('');
+    setPhone(status?.phone_number ?? '');
+    setCode('');
+    setPassword('');
+    setFeedback('');
+    setError('');
+  }, [accountId]);
+
+  useEffect(() => {
+    if (status?.phone_number) {
+      setPhone(status.phone_number);
+    }
+  }, [status?.phone_number]);
+
+  const runTelegramAction = async (
+    action: () => Promise<ApiTelegramAuthStatus>,
+    fallbackMessage: string,
+  ) => {
+    setIsSubmitting(true);
+    setError('');
+    setFeedback('');
+
+    try {
+      const nextStatus = await action();
+
+      setFeedback(nextStatus.message);
+      if (nextStatus.phone_number) {
+        setPhone(nextStatus.phone_number);
+      }
+      if (nextStatus.current_step !== 'WAIT_CODE') {
+        setCode('');
+      }
+      if (nextStatus.current_step !== 'WAIT_PASSWORD') {
+        setPassword('');
+      }
+
+      await Promise.all([onRefreshStatuses(), onReloadAccounts()]);
+    } catch (nextError) {
+      setError(formatApiError(nextError, fallbackMessage));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const showCodeField = status?.current_step === 'WAIT_CODE';
+  const showPasswordField = status?.current_step === 'WAIT_PASSWORD';
+  const isCredentialsDisabled =
+    isSubmitting || isStatusLoading || !apiId.trim() || !apiHash.trim();
+  const isPhoneDisabled =
+    isSubmitting ||
+    isStatusLoading ||
+    !phone.trim() ||
+    !status?.has_api_credentials;
+  const isCodeDisabled =
+    isSubmitting || isStatusLoading || !code.trim() || !showCodeField;
+  const isPasswordDisabled =
+    isSubmitting || isStatusLoading || !password.trim() || !showPasswordField;
+
+  return (
+    <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-secondary text-info">
+              <LogIn className="h-6 w-6" />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <p className="font-medium text-text">Telegram авторизация</p>
+              <div className="flex gap-2">
+                <StatusPill tone={stepMeta.tone}>{stepMeta.label}</StatusPill>
+                <StatusPill
+                  tone={status?.has_api_credentials ? 'success' : 'warning'}
+                >
+                  {status?.has_api_credentials ? 'API настроен' : 'Нет API'}
+                </StatusPill>
+                <StatusPill tone={status?.connected ? 'success' : 'neutral'}>
+                  {status?.connected ? 'Сессия готова' : 'Нет сессии'}
+                </StatusPill>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
+          disabled={isStatusLoading || isSubmitting}
+          type="button"
+          onClick={() => void onRefreshStatuses()}
+        >
+          <RefreshCw
+            className={`h-4 w-4 ${isStatusLoading ? 'animate-spin' : ''}`}
+          />
+          Обновить
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+        <AuthInputField
+          label="Telegram API ID"
+          value={apiId}
+          placeholder="Например 777000"
+          icon={<KeyRound className="h-4 w-4 text-info/80" />}
+          disabled={isSubmitting}
+          onChange={setApiId}
+        />
+        <AuthInputField
+          label="Telegram API Hash"
+          value={apiHash}
+          placeholder="Вставь API hash"
+          icon={<LockKeyhole className="h-4 w-4 text-info/80" />}
+          disabled={isSubmitting}
+          onChange={setApiHash}
+        />
+        <button
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
+          disabled={isCredentialsDisabled}
+          type="button"
+          onClick={() =>
+            void runTelegramAction(
+              () =>
+                saveTelegramCredentials(accountId, {
+                  api_hash: apiHash.trim(),
+                  api_id: apiId.trim(),
+                }),
+              'Не удалось сохранить Telegram API ключи.',
+            )
+          }
+        >
+          {isSubmitting ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="h-4 w-4" />
+          )}
+          Сохранить API
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <AuthInputField
+          label="Телефон Telegram"
+          value={phone}
+          type="tel"
+          placeholder="+380501112233"
+          icon={<Phone className="h-4 w-4 text-info/80" />}
+          disabled={isSubmitting}
+          onChange={setPhone}
+        />
+        <button
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+          disabled={isPhoneDisabled}
+          type="button"
+          onClick={() =>
+            void runTelegramAction(
+              () =>
+                requestTelegramCode(accountId, {
+                  phone: phone.trim(),
+                }),
+              'Не удалось запросить код Telegram.',
+            )
+          }
+        >
+          {isSubmitting ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          ) : (
+            <Phone className="h-4 w-4" />
+          )}
+          Запросить код
+        </button>
+      </div>
+
+      {showCodeField ? (
+        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+          <AuthInputField
+            label="Код из Telegram"
+            value={code}
+            placeholder="Введи код подтверждения"
+            icon={<LogIn className="h-4 w-4 text-info/80" />}
+            disabled={isSubmitting}
+            onChange={setCode}
+          />
+          <button
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+            disabled={isCodeDisabled}
+            type="button"
+            onClick={() =>
+              void runTelegramAction(
+                () =>
+                  submitTelegramCode(accountId, {
+                    code: code.trim(),
+                  }),
+                'Не удалось подтвердить Telegram код.',
+              )
+            }
+          >
+            {isSubmitting ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <Check className="h-4 w-4" />
+            )}
+            Подтвердить код
+          </button>
+        </div>
+      ) : null}
+
+      {showPasswordField ? (
+        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+          <AuthInputField
+            label="Telegram 2FA пароль"
+            value={password}
+            type="password"
+            placeholder="Введи пароль двухфакторной защиты"
+            icon={<LockKeyhole className="h-4 w-4 text-info/80" />}
+            disabled={isSubmitting}
+            onChange={setPassword}
+          />
+          <button
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+            disabled={isPasswordDisabled}
+            type="button"
+            onClick={() =>
+              void runTelegramAction(
+                () =>
+                  submitTelegramPassword(accountId, {
+                    password,
+                  }),
+                'Не удалось отправить Telegram 2FA пароль.',
+              )
+            }
+          >
+            {isSubmitting ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <ShieldCheck className="h-4 w-4" />
+            )}
+            Завершить вход
+          </button>
+        </div>
+      ) : null}
+
+      {!status?.has_api_credentials ? (
+        <p className="mt-3 text-sm leading-6 text-text-muted">
+          Сначала сохрани Telegram API ID и API hash, после этого можно
+          запрашивать код.
+        </p>
+      ) : null}
+
+      {error ? (
+        <p className="mt-3 text-sm leading-6 text-error">{error}</p>
+      ) : null}
+      {feedback ? (
+        <p className="mt-3 text-sm leading-6 text-text-muted">{feedback}</p>
+      ) : null}
+    </div>
+  );
+}
+
 interface AccountDetailsDialogProps {
   account: AccountRow | null;
   isOpen: boolean;
+  isSubmitting: boolean;
   onClose: () => void;
-  onUpdateAccountField: (
-    accountId: string,
-    field: AccountEditableField,
-    value: string,
-  ) => void;
-  onAddTelegramChannel: (
-    accountId: string,
-    draft: TelegramChannelDraft,
-  ) => void;
-  onUpdateTelegramChannel: (
-    accountId: string,
-    channelId: string,
-    draft: TelegramChannelDraft,
-  ) => void;
+  onUpdateAccount: (accountId: string, draft: AccountDraft) => Promise<void>;
+  onReloadAccounts: () => Promise<void>;
 }
 
 function AccountDetailsDialog({
   account,
   isOpen,
+  isSubmitting,
   onClose,
-  onUpdateAccountField,
-  onAddTelegramChannel,
-  onUpdateTelegramChannel,
+  onUpdateAccount,
+  onReloadAccounts,
 }: AccountDetailsDialogProps) {
+  const [draft, setDraft] = useState<AccountDraft>(accountDraftInitialState);
+  const [submitError, setSubmitError] = useState('');
+
+  useEffect(() => {
+    if (!isOpen || !account) {
+      setDraft(accountDraftInitialState);
+      setSubmitError('');
+      return;
+    }
+
+    setDraft(getAccountDraftFromRow(account));
+    setSubmitError('');
+  }, [account, isOpen]);
+
   if (!isOpen || !account) {
     return null;
   }
+
+  const isSubmitDisabled = !isAccountDraftValid(draft) || isSubmitting;
 
   return (
     <AccountDialogShell
@@ -1367,18 +2239,59 @@ function AccountDetailsDialog({
     >
       <div className="space-y-6 pt-6">
         <AccountFormFields
-          values={account}
+          values={draft}
           onFieldChange={(field, value) =>
-            onUpdateAccountField(account.id, field, value)
+            setDraft((currentDraft) => ({
+              ...currentDraft,
+              [field]: value,
+            }))
           }
         />
 
-        <TelegramChannelsPanel
-          accountId={account.id}
-          channels={account.telegramChannels}
-          onAddChannel={onAddTelegramChannel}
-          onUpdateChannel={onUpdateTelegramChannel}
+        <AccountAuthPanel
+          account={account}
+          onReloadAccounts={onReloadAccounts}
         />
+
+        <AccountTemplatesNotice />
+
+        {submitError ? (
+          <p className="text-sm text-error">{submitError}</p>
+        ) : null}
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border/40 bg-secondary/75 px-3 py-2 text-text transition hover:border-border/70 hover:bg-secondary"
+            type="button"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+            Отмена
+          </button>
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+            disabled={isSubmitDisabled}
+            type="button"
+            onClick={async () => {
+              setSubmitError('');
+
+              try {
+                await onUpdateAccount(account.id, draft);
+                onClose();
+              } catch (error) {
+                setSubmitError(
+                  formatApiError(
+                    error,
+                    'Не удалось сохранить изменения аккаунта.',
+                  ),
+                );
+              }
+            }}
+          >
+            <Save className="h-4 w-4" />
+            Сохранить
+          </button>
+        </div>
       </div>
     </AccountDialogShell>
   );
@@ -1386,17 +2299,20 @@ function AccountDetailsDialog({
 
 interface CreateAccountDialogProps {
   isOpen: boolean;
+  isSubmitting: boolean;
   onClose: () => void;
-  onCreateAccount: (draft: AccountDraft) => void;
+  onCreateAccount: (draft: AccountDraft) => Promise<void>;
 }
 
 function CreateAccountDialog({
   isOpen,
+  isSubmitting,
   onClose,
   onCreateAccount,
 }: CreateAccountDialogProps) {
   const [draft, setDraft] = useState<AccountDraft>(accountDraftInitialState);
-  const isSubmitDisabled = !isAccountDraftValid(draft);
+  const [submitError, setSubmitError] = useState('');
+  const isSubmitDisabled = !isAccountDraftValid(draft) || isSubmitting;
 
   useEffect(() => {
     if (isOpen) {
@@ -1404,6 +2320,7 @@ function CreateAccountDialog({
     }
 
     setDraft(accountDraftInitialState);
+    setSubmitError('');
   }, [isOpen]);
 
   return (
@@ -1431,20 +2348,13 @@ function CreateAccountDialog({
           }
         />
 
-        <div className="rounded-[22px] border border-dashed border-border/25 bg-secondary/45 p-4">
-          <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-info">
-              <Link2 className="h-5 w-5" />
-            </div>
-            <div className="space-y-1">
-              <strong className="block text-text">Telegram-каналы</strong>
-              <p className="leading-6 text-text-muted">
-                После создания аккаунта открой меню `...`, чтобы добавить каналы
-                и настроить источник фото.
-              </p>
-            </div>
-          </div>
-        </div>
+        <CreateAccountAccessNotice />
+
+        <AccountTemplatesNotice />
+
+        {submitError ? (
+          <p className="text-sm text-error">{submitError}</p>
+        ) : null}
 
         <div className="flex flex-wrap justify-end gap-2">
           <button
@@ -1459,13 +2369,21 @@ function CreateAccountDialog({
             className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
             disabled={isSubmitDisabled}
             type="button"
-            onClick={() => {
+            onClick={async () => {
               if (isSubmitDisabled) {
                 return;
               }
 
-              onCreateAccount(draft);
-              onClose();
+              setSubmitError('');
+
+              try {
+                await onCreateAccount(draft);
+                onClose();
+              } catch (error) {
+                setSubmitError(
+                  formatApiError(error, 'Не удалось создать аккаунт.'),
+                );
+              }
             }}
           >
             <Save className="h-4 w-4" />
@@ -1924,7 +2842,7 @@ function Field({ label, value }: FieldProps) {
 
 function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
   return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-3 md:grid-cols-3">
       <TextInputField
         label="Имя аккаунта"
         value={values.name}
@@ -1934,16 +2852,6 @@ function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
           </div>
         }
         onChange={(value) => onFieldChange('name', value)}
-      />
-      <TextInputField
-        label="Корень проекта"
-        value={values.path}
-        icon={
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
-            <FolderOpen className="h-3.5 w-3.5 text-warning/75" />
-          </div>
-        }
-        onChange={(value) => onFieldChange('path', value)}
       />
       <SelectField
         label="Браузер"

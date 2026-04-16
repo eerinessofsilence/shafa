@@ -42,6 +42,109 @@ export interface TelegramChannel {
   photoSource: TelegramPhotoSource;
 }
 
+export type ApiAccountStatus = 'started' | 'stopped';
+
+export interface ApiResolvedTelegramChannel {
+  channel_id: number;
+  title: string;
+  alias: string;
+}
+
+export interface ApiChannelTemplateSummary {
+  id: string;
+  name: string;
+  links: string[];
+  resolved_channels: ApiResolvedTelegramChannel[];
+}
+
+export interface ApiAccountRead {
+  id: string;
+  name: string;
+  phone: string;
+  path: string;
+  branch: string;
+  open_browser: boolean;
+  timer_minutes: number;
+  channel_links: string[];
+  status: ApiAccountStatus;
+  last_run: string | null;
+  errors: number;
+  telegram_session_exists: boolean;
+  api_credentials_configured: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  channel_templates: ApiChannelTemplateSummary[];
+  extra: Record<string, unknown>;
+}
+
+export interface ApiAccountCreate {
+  name: string;
+  phone: string;
+  path: string;
+  open_browser: boolean;
+  timer_minutes: number;
+  channel_links: string[];
+  branch?: string;
+}
+
+export interface ApiAccountUpdate {
+  name?: string;
+  path?: string;
+  open_browser?: boolean;
+  timer_minutes?: number;
+}
+
+export interface ApiTelegramCredentialsRequest {
+  api_id: string;
+  api_hash: string;
+}
+
+export interface ApiTelegramPhoneRequest {
+  phone: string;
+}
+
+export interface ApiTelegramCodeRequest {
+  code: string;
+}
+
+export interface ApiTelegramPasswordRequest {
+  password: string;
+}
+
+export interface ApiTelegramAuthStatus {
+  account_id: string;
+  connected: boolean;
+  has_api_credentials: boolean;
+  current_step: string;
+  next_step: string | null;
+  phone_number: string;
+  message: string;
+}
+
+export interface ApiShafaCookieInput {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  expires?: number | null;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: string | null;
+}
+
+export interface ApiShafaStorageStateRequest {
+  cookies?: ApiShafaCookieInput[];
+  origins?: Array<Record<string, unknown>>;
+  storage_state?: Record<string, unknown> | null;
+}
+
+export interface ApiShafaAuthStatus {
+  account_id: string;
+  connected: boolean;
+  cookies_count: number;
+  message: string;
+}
+
 export interface AccountRow {
   id: string;
   name: string;

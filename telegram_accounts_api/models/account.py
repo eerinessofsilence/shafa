@@ -37,6 +37,18 @@ class AccountCreate(AccountBase):
     pass
 
 
+class AccountUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    path: str | None = Field(default=None)
+    open_browser: bool | None = None
+    timer_minutes: int | None = Field(default=None, ge=1, le=1440)
+
+    @field_validator("name", "path", mode="before")
+    @classmethod
+    def strip_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
 class AccountUpdateStatus(BaseModel):
     status: AccountStatus
 

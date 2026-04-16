@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from telegram_accounts_api.routers import accounts, auth, channel_templates, health, telegram, templates
 from telegram_accounts_api.utils.config import settings
@@ -15,6 +16,13 @@ app = FastAPI(
     description="REST API for managing Telegram accounts stored in a JSON file.",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["null"],
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 register_exception_handlers(app)
 app.include_router(health.router)

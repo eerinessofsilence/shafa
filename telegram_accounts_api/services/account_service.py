@@ -6,8 +6,8 @@ from datetime import datetime, UTC
 from pathlib import Path
 from uuid import uuid4
 
-from telegram_accounts_api.models.account import AccountCreate, AccountRead
-from telegram_accounts_api.utils.exceptions import ConflictError, NotFoundError
+from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
+from telegram_accounts_api.utils.exceptions import NotFoundError
 from telegram_accounts_api.utils.storage import JsonListStorage
 
 LOGGER = logging.getLogger(__name__)
@@ -73,6 +73,34 @@ class AccountService:
         self._ensure_account_dir(account_id)
         LOGGER.info("Created account %s", account_id)
         return await self._to_model(record)
+
+    async def update_account(self, account_id: str, data: AccountUpdate) -> AccountRead:
+        payload = await self.storage.read()
+        updated_record: dict | None = None
+
+        for item in payload:
+            if str(item.get("id")) != account_id:
+                continue
+
+            if data.name is not None:
+                item["name"] = data.name
+            if data.path is not None:
+                item["path"] = data.path
+            if data.open_browser is not None:
+                item["open_browser"] = data.open_browser
+            if data.timer_minutes is not None:
+                item["timer_minutes"] = data.timer_minutes
+
+            item["updated_at"] = datetime.now(UTC).isoformat()
+            updated_record = item
+            break
+
+        if updated_record is None:
+            raise NotFoundError(f"Account '{account_id}' not found.")
+
+        await self.storage.write(payload)
+        LOGGER.info("Updated account %s", account_id)
+        return await self._to_model(updated_record)
 
     async def delete_account(self, account_id: str) -> None:
         payload = await self.storage.read()

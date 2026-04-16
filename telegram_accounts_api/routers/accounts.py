@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, status
 
 from telegram_accounts_api.dependencies import get_account_service
-from telegram_accounts_api.models.account import AccountCreate, AccountRead
+from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
 from telegram_accounts_api.models.common import ActionResponse
 from telegram_accounts_api.services.account_service import AccountService
 
@@ -26,6 +26,15 @@ async def create_account(
     service: AccountService = Depends(get_account_service),
 ) -> AccountRead:
     return await service.create_account(payload)
+
+
+@router.patch("/{account_id}", response_model=AccountRead)
+async def update_account(
+    account_id: str,
+    payload: AccountUpdate,
+    service: AccountService = Depends(get_account_service),
+) -> AccountRead:
+    return await service.update_account(account_id, payload)
 
 
 @router.delete("/{account_id}", response_model=ActionResponse)

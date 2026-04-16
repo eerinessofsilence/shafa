@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +40,12 @@ class AccountAuthService:
         account_service: AccountService,
         store: AccountSessionStore,
         runner=None,
+        shafa_login_launcher=None,
     ) -> None:
         self.account_service = account_service
         self.store = store
         self.runner = runner or self._run_account_command
+        self.shafa_login_launcher = shafa_login_launcher or self._launch_shafa_login
         self.telegram_auth = TelegramAuthService(store, self.runner)
         self.shafa_auth = ShafaAuthService(store)
 
@@ -163,6 +166,16 @@ class AccountAuthService:
         self.store.write_account_manifest(account)
         return await self.get_shafa_status(account_id)
 
+    async def start_shafa_browser_login(self, account_id: str) -> ShafaAuthStatusResponse:
+        account = await self._get_account(account_id)
+        self.shafa_login_launcher(account, ["main.py", "--login-shafa"])
+        status = await self.get_shafa_status(account_id)
+        return status.model_copy(
+            update={
+                "message": "Shafa login flow started. Complete login in the opened browser window.",
+            }
+        )
+
     async def _get_account(self, account_id: str) -> Account:
         account = await self.account_service.get_account(account_id)
         return Account(
@@ -243,6 +256,48 @@ class AccountAuthService:
             text=True,
             env=self._account_env(account),
         )
+
+    def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
+        project_path = _preferred_project_dir(Path(account.path).expanduser())
+        if not _project_main_path(project_path).is_file():
+            raise BadRequestError(f"main.py not found at {project_path}")
+
+        account_dir = self.store.account_dir(account)
+        account_dir.mkdir(parents=True, exist_ok=True)
+        log_file = account_dir / "shafa_login.log"
+        log_file.write_text("", encoding="utf-8")
+
+        try:
+            with log_file.open("a", encoding="utf-8") as stream:
+                process = subprocess.Popen(
+                    [self._account_python(account), *args],
+                    cwd=str(project_path),
+                    stdin=subprocess.DEVNULL,
+                    stdout=stream,
+                    stderr=stream,
+                    env=self._account_env(account),
+                    start_new_session=True,
+                )
+        except OSError as exc:
+            raise BadRequestError(f"Failed to start Shafa login flow: {exc}") from exc
+
+        time.sleep(1)
+        exit_code = process.poll()
+        if exit_code is None:
+            return
+
+        log_tail = ""
+        try:
+            log_lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+            if log_lines:
+                log_tail = log_lines[-1]
+        except OSError:
+            log_tail = ""
+
+        detail = f" Shafa login exited immediately with code {exit_code}."
+        if log_tail:
+            detail += f" {log_tail}"
+        raise BadRequestError(f"Failed to start Shafa login flow.{detail}")
 
     @staticmethod
     def _normalize_storage_state(payload: ShafaStorageStateRequest) -> dict[str, Any]:
