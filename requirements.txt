@@ -1,4 +1,9 @@
-pyinstaller
-PySide6
-nuitka
 appimage-builder
+fastapi
+nuitka
+PySide6
+pydantic
+pyinstaller
+python-dotenv
+telethon
+uvicorn[standard]
