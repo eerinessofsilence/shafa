@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from shafa_control import AccountSessionStore
+
 from telegram_accounts_api.services.account_service import AccountService
+from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.services.channel_template_service import ChannelTemplateService
 from telegram_accounts_api.services.telegram_service import TelegramService
 from telegram_accounts_api.services.template_service import TemplateService
@@ -46,4 +49,17 @@ def get_telegram_service() -> TelegramService:
         account_service=get_account_service(),
         template_service=get_template_service(),
         base_dir=settings.base_dir,
+    )
+
+
+@lru_cache
+def get_auth_service() -> AccountAuthService:
+    store = AccountSessionStore(
+        base_dir=settings.base_dir,
+        accounts_dir=settings.accounts_dir,
+        legacy_state_file=settings.accounts_file,
+    )
+    return AccountAuthService(
+        account_service=get_account_service(),
+        store=store,
     )
