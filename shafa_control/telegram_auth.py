@@ -134,11 +134,32 @@ class TelegramAuthService:
         phone_status = self.validate_phone(account.phone_number)
         if not phone_status.ok:
             return phone_status
+        state = self.load_auth_state(account)
+        current_step = state.get("current_auth_step", "INIT")
+        pending_phone = self.normalize_phone(str(state.get("phone_number") or account.phone_number or ""))
+        if current_step == "WAIT_CODE" and pending_phone == phone_status.message:
+            return TelegramAuthStatus(
+                True,
+                "Telegram code was already requested. Enter the latest verification code.",
+                pending_code=True,
+            )
+        if current_step == "WAIT_PASSWORD" and pending_phone == phone_status.message:
+            return TelegramAuthStatus(
+                True,
+                "Telegram is already waiting for the 2FA password.",
+                pending_code=True,
+            )
 
         result = self.runner(account, ["main.py", "--telegram-send-code", phone_status.message])
         if result.returncode != 0:
             return TelegramAuthStatus(False, self._command_error(result))
-        return TelegramAuthStatus(True, "Telegram code requested.", pending_code=True)
+        refreshed_state = self.load_auth_state(account)
+        if self._state_waits_for_code(refreshed_state, phone_status.message):
+            return TelegramAuthStatus(True, "Telegram code requested.", pending_code=True)
+        return TelegramAuthStatus(
+            False,
+            "Telegram did not confirm the verification-code request. Check API credentials and app logs.",
+        )
 
     def submit_code(self, account: Account, code: str) -> TelegramAuthStatus:
         phone_status = self.validate_phone(account.phone_number)
@@ -181,6 +202,13 @@ class TelegramAuthService:
         if result.returncode != 0:
             return TelegramAuthStatus(False, self._command_error(result))
         return TelegramAuthStatus(True, "Telegram session saved.", pending_code=False)
+
+    @classmethod
+    def _state_waits_for_code(cls, state: dict, phone_number: str) -> bool:
+        current_step = cls.normalize_auth_step(state.get("current_auth_step"))
+        pending_phone = cls.normalize_phone(str(state.get("phone_number") or ""))
+        phone_code_hash = str(state.get("phone_code_hash") or "").strip()
+        return current_step == "WAIT_CODE" and pending_phone == phone_number and bool(phone_code_hash)
 
     def has_pending_code(self, account: Account) -> bool:
         return self.store.has_pending_telegram_code(account)

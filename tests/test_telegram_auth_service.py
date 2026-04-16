@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from shafa_control import Account, AccountSessionStore, TelegramAuthRuntime, TelegramAuthService
+from ui import AccountsPage, _preferred_project_dir
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -20,7 +21,10 @@ def test_request_code_uses_account_phone(tmp_path: Path) -> None:
     def runner(_account: Account, args: list[str]) -> subprocess.CompletedProcess:
         captured.append(args)
         login_state = store.telegram_login_state_file(account)
-        login_state.write_text('{"current_auth_step":"WAITING_FOR_CODE"}', encoding="utf-8")
+        login_state.write_text(
+            '{"phone_number":"+380501112233","current_auth_step":"WAITING_FOR_CODE","phone_code_hash":"hash-123"}',
+            encoding="utf-8",
+        )
         return _completed(0, stdout="ok")
 
     service = TelegramAuthService(store, runner)
@@ -31,6 +35,44 @@ def test_request_code_uses_account_phone(tmp_path: Path) -> None:
     assert result.pending_code is True
     assert captured == [["main.py", "--telegram-send-code", "+380501112233"]]
     assert service.has_pending_code(account) is True
+
+
+def test_request_code_fails_when_state_was_not_confirmed(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project", phone_number="+380501112233")
+
+    service = TelegramAuthService(store, lambda *_args, **_kwargs: _completed(0, stdout="ok"))
+
+    result = service.request_code(account)
+
+    assert result.ok is False
+    assert "did not confirm" in result.message
+
+
+def test_request_code_requires_phone_code_hash_in_state(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project", phone_number="+380501112233")
+
+    def runner(_account: Account, _args: list[str]) -> subprocess.CompletedProcess:
+        login_state = store.telegram_login_state_file(account)
+        login_state.write_text(
+            (
+                '{'
+                '"phone_number":"+380501112233",'
+                '"current_auth_step":"WAITING_FOR_CODE",'
+                '"phone_code_hash":"hash-123"'
+                '}'
+            ),
+            encoding="utf-8",
+        )
+        return _completed(0, stdout="ok")
+
+    service = TelegramAuthService(store, runner)
+
+    result = service.request_code(account)
+
+    assert result.ok is True
+    assert result.pending_code is True
 
 
 def test_submit_code_returns_error_for_empty_code(tmp_path: Path) -> None:
@@ -113,6 +155,56 @@ def test_request_code_fails_without_phone(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert result.message == "Phone number is required for Telegram login"
+
+
+def test_request_code_does_not_resend_when_waiting_for_code(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project", phone_number="+380501112233")
+    calls: list[list[str]] = []
+
+    def runner(_account: Account, args: list[str]) -> subprocess.CompletedProcess:
+        calls.append(args)
+        return _completed(0, stdout="ok")
+
+    service = TelegramAuthService(store, runner)
+    service.persist_auth_state(
+        account,
+        phone_number="+380501112233",
+        current_auth_step="WAIT_CODE",
+        code_confirmed=False,
+    )
+
+    result = service.request_code(account)
+
+    assert result.ok is True
+    assert result.pending_code is True
+    assert "already requested" in result.message
+    assert calls == []
+
+
+def test_request_code_does_not_resend_when_waiting_for_password(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project", phone_number="+380501112233")
+    calls: list[list[str]] = []
+
+    def runner(_account: Account, args: list[str]) -> subprocess.CompletedProcess:
+        calls.append(args)
+        return _completed(0, stdout="ok")
+
+    service = TelegramAuthService(store, runner)
+    service.persist_auth_state(
+        account,
+        phone_number="+380501112233",
+        current_auth_step="WAIT_PASSWORD",
+        code_confirmed=True,
+    )
+
+    result = service.request_code(account)
+
+    assert result.ok is True
+    assert result.pending_code is True
+    assert "waiting for the 2FA password" in result.message
+    assert calls == []
 
 
 def test_reuse_status_detects_existing_session(tmp_path: Path) -> None:
@@ -209,3 +301,50 @@ def test_auth_state_persists_phone_code_and_step(tmp_path: Path) -> None:
     assert state["phone_code_hash"] == "hash"
     assert state["session_path"] == "/tmp/telegram.session"
     assert state["code_confirmed"] is True
+
+
+def test_request_code_button_stays_clickable_for_selected_account_without_credentials() -> None:
+    class _FakeInput:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def text(self) -> str:
+            return self._value
+
+    class _FakeButton:
+        def __init__(self) -> None:
+            self.enabled: bool | None = None
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+    class _FakePage:
+        def __init__(self) -> None:
+            self.telegram_auth_in_progress = False
+            self.telegram_credentials_ready = False
+            self.phone_input = _FakeInput("")
+            self.telegram_code_input = _FakeInput("")
+            self.telegram_password_input = _FakeInput("")
+            self.telegram_auth_btn = _FakeButton()
+            self.telegram_submit_code_btn = _FakeButton()
+            self.telegram_submit_password_btn = _FakeButton()
+
+        def selected_row(self) -> int:
+            return 0
+
+    page = _FakePage()
+
+    AccountsPage._sync_telegram_button_state(page)
+
+    assert page.telegram_auth_btn.enabled is True
+    assert page.telegram_submit_code_btn.enabled is False
+    assert page.telegram_submit_password_btn.enabled is False
+
+
+def test_preferred_project_dir_uses_shafa_logic_subproject_when_available(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text("from telegram_accounts_api.main import app\n", encoding="utf-8")
+    shafa_logic_dir = tmp_path / "shafa_logic"
+    shafa_logic_dir.mkdir()
+    (shafa_logic_dir / "main.py").write_text("print('cli')\n", encoding="utf-8")
+
+    assert _preferred_project_dir(tmp_path) == shafa_logic_dir

@@ -75,14 +75,22 @@ def _project_main_path(project_dir: Path) -> Path:
     return project_dir / "main.py"
 
 
+def _preferred_project_dir(project_dir: Path) -> Path:
+    shafa_logic_dir = project_dir / "shafa_logic"
+    if _is_runnable_project_dir(shafa_logic_dir):
+        return shafa_logic_dir
+    return project_dir
+
+
 def _is_runnable_project_dir(project_dir: Path) -> bool:
     return project_dir.is_dir() and _project_main_path(project_dir).is_file()
 
 
 def _default_account_project_dir() -> str:
     for candidate in (DEFAULT_PROJECT_DIR, BASE_DIR):
-        if _is_runnable_project_dir(candidate):
-            return str(candidate)
+        preferred = _preferred_project_dir(candidate)
+        if _is_runnable_project_dir(preferred):
+            return str(preferred)
         nested = _nested_runnable_project_dir(candidate)
         if nested is not None:
             return str(nested)
@@ -584,6 +592,7 @@ class AccountsPage(QWidget):
         self.telegram_submit_password_btn = QPushButton("OK")
         self.telegram_credentials_btn = QPushButton("Добавить данные Telegram API")
         self.telegram_credentials_ready = False
+        self.telegram_auth_in_progress = False
 
         self.browser_toggle = QCheckBox("Открывать с браузером")
         self.browser_toggle.setCursor(Qt.PointingHandCursor)
@@ -1025,14 +1034,31 @@ class AccountsPage(QWidget):
         self._sync_telegram_button_state()
 
     def _sync_telegram_button_state(self) -> None:
+        has_selected_account = self.selected_row() >= 0
         phone_status = TelegramAuthService.validate_phone(self.phone_input.text())
         code_status = TelegramAuthService.validate_code(self.telegram_code_input.text())
         password_status = TelegramAuthService.validate_password(self.telegram_password_input.text())
-        self.telegram_auth_btn.setEnabled(self.telegram_credentials_ready and phone_status.ok)
-        self.telegram_submit_code_btn.setEnabled(self.telegram_credentials_ready and phone_status.ok and code_status.ok)
-        self.telegram_submit_password_btn.setEnabled(
-            self.telegram_credentials_ready and phone_status.ok and password_status.ok
+        self.telegram_auth_btn.setEnabled(
+            has_selected_account and not self.telegram_auth_in_progress
         )
+        self.telegram_submit_code_btn.setEnabled(
+            has_selected_account
+            and not self.telegram_auth_in_progress
+            and self.telegram_credentials_ready
+            and phone_status.ok
+            and code_status.ok
+        )
+        self.telegram_submit_password_btn.setEnabled(
+            has_selected_account
+            and not self.telegram_auth_in_progress
+            and self.telegram_credentials_ready
+            and phone_status.ok
+            and password_status.ok
+        )
+
+    def set_telegram_auth_in_progress(self, in_progress: bool) -> None:
+        self.telegram_auth_in_progress = in_progress
+        self._sync_telegram_button_state()
 
     def _request_shafa_auth(self) -> None:
         row = self.selected_row()
@@ -1716,7 +1742,7 @@ class MainWindow(QMainWindow):
             account.path = default_path
             self.log(f"[WARN] Project path was empty. Using default project folder {default_path}.", account=account)
 
-        project_path = Path(raw_path).expanduser()
+        project_path = _preferred_project_dir(Path(raw_path).expanduser())
         if not project_path.exists():
             self.log(f"[ERROR] Project path does not exist: {project_path}", account=account)
             return None
@@ -1739,7 +1765,7 @@ class MainWindow(QMainWindow):
                 )
                 return None
 
-        project_path = self._normalize_project_path(raw_path)
+        project_path = self._normalize_project_path(str(project_path))
         account.path = str(project_path)
         project_key = str(project_path)
         conflicting_account = self._shared_project_conflict(row, project_key, account.branch)
@@ -2057,6 +2083,8 @@ class MainWindow(QMainWindow):
         self.telegram_auth_tasks.pop(row, None)
         if thread is not None:
             thread.quit()
+        if self.accounts_page.selected_row() == row:
+            self.accounts_page.set_telegram_auth_in_progress(False)
 
     def _start_account_process(self, row: int, account: Account, py_bin: str) -> None:
         project_path = self._normalize_project_path(account.path)
@@ -2158,8 +2186,7 @@ class MainWindow(QMainWindow):
         code: str = "",
         password: str = "",
     ) -> None:
-        existing_thread = self.telegram_auth_threads.get(row)
-        if existing_thread is not None and existing_thread.isRunning():
+        if row in self.telegram_auth_tasks:
             self.log("[AUTH] Telegram auth already in progress", account=account)
             return
 
@@ -2181,6 +2208,8 @@ class MainWindow(QMainWindow):
 
         self.telegram_auth_tasks[row] = task
         self.telegram_auth_threads[row] = thread
+        if self.accounts_page.selected_row() == row:
+            self.accounts_page.set_telegram_auth_in_progress(True)
         thread.start()
 
     @Slot(int, bool, str)
@@ -2353,9 +2382,11 @@ class MainWindow(QMainWindow):
 
     def _sync_account_auth_status(self, row: int) -> None:
         if row < 0 or row >= len(self.accounts):
+            self.accounts_page.set_telegram_auth_in_progress(False)
             self.accounts_page.update_auth_status(False, False, False, False)
             return
         account = self.accounts[row]
+        self.accounts_page.set_telegram_auth_in_progress(row in self.telegram_auth_tasks)
         self.accounts_page.update_auth_status(
             shafa_ready=self.session_store.is_valid_shafa_session(account),
             telegram_ready=self.session_store.is_valid_telegram_session(account),
@@ -2840,7 +2871,7 @@ class MainWindow(QMainWindow):
         return env
 
     def _account_python(self, account: Account) -> str:
-        project_path = Path(account.path).expanduser()
+        project_path = _preferred_project_dir(Path(account.path).expanduser())
         if os.name == "nt":
             candidate = project_path / ".venv" / "Scripts" / "python.exe"
         else:
@@ -2848,7 +2879,7 @@ class MainWindow(QMainWindow):
         return str(candidate if candidate.exists() else Path(sys.executable))
 
     def _run_account_command(self, account: Account, args: list[str]) -> subprocess.CompletedProcess:
-        project_path = str(Path(account.path).expanduser())
+        project_path = str(_preferred_project_dir(Path(account.path).expanduser()))
         return subprocess.run(
             [self._account_python(account), *args],
             cwd=project_path,
