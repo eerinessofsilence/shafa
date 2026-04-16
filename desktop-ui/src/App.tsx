@@ -9,9 +9,9 @@ import {
 import {
   getShafaAuthStatus,
   getTelegramAuthStatus,
+  logoutTelegram,
   requestTelegramCode,
   saveShafaStorageState,
-  saveTelegramCredentials,
   startShafaBrowserLogin,
   submitTelegramCode,
   submitTelegramPassword,
@@ -59,12 +59,12 @@ import {
   FileJson,
   Filter,
   FolderOpen,
-  KeyRound,
   LayoutGrid,
   Link2,
   LoaderCircle,
   LockKeyhole,
   LogIn,
+  LogOut,
   PencilLine,
   Phone,
   Plus,
@@ -1921,8 +1921,6 @@ function TelegramAuthCard({
   onRefreshStatuses,
   onReloadAccounts,
 }: TelegramAuthCardProps) {
-  const [apiId, setApiId] = useState('');
-  const [apiHash, setApiHash] = useState('');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
@@ -1930,10 +1928,9 @@ function TelegramAuthCard({
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const stepMeta = getTelegramStepMeta(status);
+  const isConnected = Boolean(status?.connected);
 
   useEffect(() => {
-    setApiId('');
-    setApiHash('');
     setPhone(status?.phone_number ?? '');
     setCode('');
     setPassword('');
@@ -1979,17 +1976,17 @@ function TelegramAuthCard({
 
   const showCodeField = status?.current_step === 'WAIT_CODE';
   const showPasswordField = status?.current_step === 'WAIT_PASSWORD';
-  const isCredentialsDisabled =
-    isSubmitting || isStatusLoading || !apiId.trim() || !apiHash.trim();
   const isPhoneDisabled =
     isSubmitting ||
     isStatusLoading ||
     !phone.trim() ||
-    !status?.has_api_credentials;
+    !status?.has_api_credentials ||
+    isConnected;
   const isCodeDisabled =
     isSubmitting || isStatusLoading || !code.trim() || !showCodeField;
   const isPasswordDisabled =
     isSubmitting || isStatusLoading || !password.trim() || !showPasswordField;
+  const isLogoutDisabled = isSubmitting || isStatusLoading || !isConnected;
 
   return (
     <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
@@ -2016,167 +2013,145 @@ function TelegramAuthCard({
             </div>
           </div>
         </div>
-
-        <button
-          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
-          disabled={isStatusLoading || isSubmitting}
-          type="button"
-          onClick={() => void onRefreshStatuses()}
-        >
-          <RefreshCw
-            className={`h-4 w-4 ${isStatusLoading ? 'animate-spin' : ''}`}
-          />
-          Обновить
-        </button>
-      </div>
-
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
-        <AuthInputField
-          label="Telegram API ID"
-          value={apiId}
-          placeholder="Например 777000"
-          icon={<KeyRound className="h-4 w-4 text-info/80" />}
-          disabled={isSubmitting}
-          onChange={setApiId}
-        />
-        <AuthInputField
-          label="Telegram API Hash"
-          value={apiHash}
-          placeholder="Вставь API hash"
-          icon={<LockKeyhole className="h-4 w-4 text-info/80" />}
-          disabled={isSubmitting}
-          onChange={setApiHash}
-        />
-        <button
-          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
-          disabled={isCredentialsDisabled}
-          type="button"
-          onClick={() =>
-            void runTelegramAction(
-              () =>
-                saveTelegramCredentials(accountId, {
-                  api_hash: apiHash.trim(),
-                  api_id: apiId.trim(),
-                }),
-              'Не удалось сохранить Telegram API ключи.',
-            )
-          }
-        >
-          {isSubmitting ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-          ) : (
-            <Save className="h-4 w-4" />
-          )}
-          Сохранить API
-        </button>
-      </div>
-
-      <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-        <AuthInputField
-          label="Телефон Telegram"
-          value={phone}
-          type="tel"
-          placeholder="+380501112233"
-          icon={<Phone className="h-4 w-4 text-info/80" />}
-          disabled={isSubmitting}
-          onChange={setPhone}
-        />
-        <button
-          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
-          disabled={isPhoneDisabled}
-          type="button"
-          onClick={() =>
-            void runTelegramAction(
-              () =>
-                requestTelegramCode(accountId, {
-                  phone: phone.trim(),
-                }),
-              'Не удалось запросить код Telegram.',
-            )
-          }
-        >
-          {isSubmitting ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-          ) : (
-            <Phone className="h-4 w-4" />
-          )}
-          Запросить код
-        </button>
-      </div>
-
-      {showCodeField ? (
-        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-          <AuthInputField
-            label="Код из Telegram"
-            value={code}
-            placeholder="Введи код подтверждения"
-            icon={<LogIn className="h-4 w-4 text-info/80" />}
-            disabled={isSubmitting}
-            onChange={setCode}
-          />
+        {isConnected ? (
           <button
-            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
-            disabled={isCodeDisabled}
+            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
+            disabled={isLogoutDisabled}
             type="button"
             onClick={() =>
               void runTelegramAction(
-                () =>
-                  submitTelegramCode(accountId, {
-                    code: code.trim(),
-                  }),
-                'Не удалось подтвердить Telegram код.',
+                () => logoutTelegram(accountId),
+                'Не удалось выйти из Telegram.',
               )
             }
           >
             {isSubmitting ? (
               <LoaderCircle className="h-4 w-4 animate-spin" />
             ) : (
-              <Check className="h-4 w-4" />
+              <LogOut className="h-4 w-4" />
             )}
-            Подтвердить код
+            Выйти
           </button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
-      {showPasswordField ? (
-        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-          <AuthInputField
-            label="Telegram 2FA пароль"
-            value={password}
-            type="password"
-            placeholder="Введи пароль двухфакторной защиты"
-            icon={<LockKeyhole className="h-4 w-4 text-info/80" />}
-            disabled={isSubmitting}
-            onChange={setPassword}
-          />
-          <button
-            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
-            disabled={isPasswordDisabled}
-            type="button"
-            onClick={() =>
-              void runTelegramAction(
-                () =>
-                  submitTelegramPassword(accountId, {
-                    password,
-                  }),
-                'Не удалось отправить Telegram 2FA пароль.',
-              )
-            }
-          >
-            {isSubmitting ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-            ) : (
-              <ShieldCheck className="h-4 w-4" />
-            )}
-            Завершить вход
-          </button>
+      {isConnected ? (
+        <div className="mt-4 rounded-2xl border border-border/20 bg-secondary/70 px-4 py-3">
+          <p className="text-sm text-text-muted">Телефон Telegram</p>
+          <p className="mt-1 text-base font-medium text-text">
+            {status?.phone_number || 'Номер не найден'}
+          </p>
         </div>
-      ) : null}
+      ) : (
+        <>
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <AuthInputField
+              label="Телефон Telegram"
+              value={phone}
+              type="tel"
+              placeholder="+380501112233"
+              icon={<Phone className="h-4 w-4 text-info/80" />}
+              disabled={isSubmitting}
+              onChange={setPhone}
+            />
+            <button
+              className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+              disabled={isPhoneDisabled}
+              type="button"
+              onClick={() =>
+                void runTelegramAction(
+                  () =>
+                    requestTelegramCode(accountId, {
+                      phone: phone.trim(),
+                    }),
+                  'Не удалось запросить код Telegram.',
+                )
+              }
+            >
+              {isSubmitting ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Phone className="h-4 w-4" />
+              )}
+              {showCodeField ? 'Запросить новый код' : 'Запросить код'}
+            </button>
+          </div>
+
+          {showCodeField ? (
+            <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+              <AuthInputField
+                label="Код из Telegram"
+                value={code}
+                placeholder="Введи код подтверждения"
+                icon={<LogIn className="h-4 w-4 text-info/80" />}
+                disabled={isSubmitting}
+                onChange={setCode}
+              />
+              <button
+                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+                disabled={isCodeDisabled}
+                type="button"
+                onClick={() =>
+                  void runTelegramAction(
+                    () =>
+                      submitTelegramCode(accountId, {
+                        code: code.trim(),
+                      }),
+                    'Не удалось подтвердить Telegram код.',
+                  )
+                }
+              >
+                {isSubmitting ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Check className="h-4 w-4" />
+                )}
+                Подтвердить код
+              </button>
+            </div>
+          ) : null}
+
+          {showPasswordField ? (
+            <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+              <AuthInputField
+                label="Telegram 2FA пароль"
+                value={password}
+                type="password"
+                placeholder="Введи пароль двухфакторной защиты"
+                icon={<LockKeyhole className="h-4 w-4 text-info/80" />}
+                disabled={isSubmitting}
+                onChange={setPassword}
+              />
+              <button
+                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+                disabled={isPasswordDisabled}
+                type="button"
+                onClick={() =>
+                  void runTelegramAction(
+                    () =>
+                      submitTelegramPassword(accountId, {
+                        password,
+                      }),
+                    'Не удалось отправить Telegram 2FA пароль.',
+                  )
+                }
+              >
+                {isSubmitting ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-4 w-4" />
+                )}
+                Завершить вход
+              </button>
+            </div>
+          ) : null}
+        </>
+      )}
 
       {!status?.has_api_credentials ? (
         <p className="mt-3 text-sm leading-6 text-text-muted">
-          Сначала сохрани Telegram API ID и API hash, после этого можно
-          запрашивать код.
+          Telegram API ID и API hash должны быть заданы на backend через `.env`
+          или env variables.
         </p>
       ) : null}
 

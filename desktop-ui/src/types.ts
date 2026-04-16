@@ -94,11 +94,6 @@ export interface ApiAccountUpdate {
   timer_minutes?: number;
 }
 
-export interface ApiTelegramCredentialsRequest {
-  api_id: string;
-  api_hash: string;
-}
-
 export interface ApiTelegramPhoneRequest {
   phone: string;
 }

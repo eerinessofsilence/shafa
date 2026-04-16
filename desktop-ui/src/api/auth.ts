@@ -4,7 +4,6 @@ import type {
   ApiShafaStorageStateRequest,
   ApiTelegramAuthStatus,
   ApiTelegramCodeRequest,
-  ApiTelegramCredentialsRequest,
   ApiTelegramPasswordRequest,
   ApiTelegramPhoneRequest,
 } from '../types';
@@ -13,19 +12,6 @@ export async function getTelegramAuthStatus(
   accountId: string,
 ): Promise<ApiTelegramAuthStatus> {
   return request<ApiTelegramAuthStatus>(`/accounts/${accountId}/auth/telegram`);
-}
-
-export async function saveTelegramCredentials(
-  accountId: string,
-  payload: ApiTelegramCredentialsRequest,
-): Promise<ApiTelegramAuthStatus> {
-  return request<ApiTelegramAuthStatus>(
-    `/accounts/${accountId}/auth/telegram/credentials`,
-    {
-      body: JSON.stringify(payload),
-      method: 'POST',
-    },
-  );
 }
 
 export async function requestTelegramCode(
@@ -65,6 +51,14 @@ export async function submitTelegramPassword(
       method: 'POST',
     },
   );
+}
+
+export async function logoutTelegram(
+  accountId: string,
+): Promise<ApiTelegramAuthStatus> {
+  return request<ApiTelegramAuthStatus>(`/accounts/${accountId}/auth/telegram/logout`, {
+    method: 'POST',
+  });
 }
 
 export async function getShafaAuthStatus(
