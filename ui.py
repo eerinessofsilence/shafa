@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 import json
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -51,14 +50,19 @@ from shafa_control import (
     AppConfig,
     AppConfigStore,
     Account,
+    AccountRuntimeService,
     AccountSessionStore,
     ChannelTemplateStore,
     LogRecord,
     LogStore,
     ShafaAuthService,
     TelegramAuthService,
+    is_runnable_project_dir,
+    nested_runnable_project_dir,
+    preferred_project_dir,
+    project_main_path,
 )
-from telegram_channels import export_runtime_config, sanitize_channel_links
+from telegram_channels import sanitize_channel_links
 
 APP_NAME = "Shafa Control"
 BRANCHES = ["main", "clothes-feature"]
@@ -71,39 +75,31 @@ APP_CONFIG_FILE = BASE_DIR / "app_config.json"
 CHANNEL_TEMPLATES_FILE = BASE_DIR / "channel_templates.json"
 
 
-def _project_main_path(project_dir: Path) -> Path:
-    return project_dir / "main.py"
-
-
-def _preferred_project_dir(project_dir: Path) -> Path:
-    shafa_logic_dir = project_dir / "shafa_logic"
-    if _is_runnable_project_dir(shafa_logic_dir):
-        return shafa_logic_dir
-    return project_dir
-
-
-def _is_runnable_project_dir(project_dir: Path) -> bool:
-    return project_dir.is_dir() and _project_main_path(project_dir).is_file()
-
-
 def _default_account_project_dir() -> str:
     for candidate in (DEFAULT_PROJECT_DIR, BASE_DIR):
-        preferred = _preferred_project_dir(candidate)
-        if _is_runnable_project_dir(preferred):
+        preferred = preferred_project_dir(candidate)
+        if is_runnable_project_dir(preferred):
             return str(preferred)
-        nested = _nested_runnable_project_dir(candidate)
+        nested = nested_runnable_project_dir(candidate)
         if nested is not None:
             return str(nested)
     return ""
 
 
+def _project_main_path(project_dir: Path) -> Path:
+    return project_main_path(project_dir)
+
+
+def _preferred_project_dir(project_dir: Path) -> Path:
+    return preferred_project_dir(project_dir)
+
+
+def _is_runnable_project_dir(project_dir: Path) -> bool:
+    return is_runnable_project_dir(project_dir)
+
+
 def _nested_runnable_project_dir(project_dir: Path) -> Path | None:
-    if not project_dir.is_dir():
-        return None
-    candidates = [child for child in project_dir.iterdir() if child.is_dir() and _is_runnable_project_dir(child)]
-    if len(candidates) == 1:
-        return candidates[0]
-    return None
+    return nested_runnable_project_dir(project_dir)
 
 
 class Worker(QObject):
@@ -140,72 +136,6 @@ class Worker(QObject):
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "git rev-parse HEAD failed")
         return result.stdout.strip()
 
-    def _git_remote_commit(self) -> str:
-        result = self._run_cmd(["git", "fetch", "origin", self.branch], self.account_path)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "git fetch failed")
-
-        remote_ref = f"origin/{self.branch}"
-        result = self._run_cmd(["git", "rev-parse", remote_ref], self.account_path)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"git rev-parse {remote_ref} failed")
-        return result.stdout.strip()
-
-    def _switch_to_branch(self) -> None:
-        """Switch to the target branch, handling local changes and branch creation"""
-        # First, fetch latest changes to ensure we have all branches
-        self.log.emit(f"[{self.row}] Fetching latest changes...")
-        fetch = self._run_cmd(["git", "fetch", "--all"], self.account_path)
-        if fetch.returncode != 0:
-            self.log.emit(f"[{self.row}] Warning: git fetch failed: {fetch.stderr.strip()}")
-
-        # Check if branch exists
-        branch_check = self._run_cmd(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{self.branch}"], self.account_path)
-        if branch_check.returncode != 0:
-            # Try remote branch
-            remote_branch_check = self._run_cmd(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{self.branch}"], self.account_path)
-            if remote_branch_check.returncode != 0:
-                raise RuntimeError(f"Branch '{self.branch}' does not exist locally or remotely")
-            # Create local branch tracking remote
-            self.log.emit(f"[{self.row}] Creating local branch {self.branch}...")
-            create_branch = self._run_cmd(["git", "checkout", "-b", self.branch, f"origin/{self.branch}"], self.account_path)
-            if create_branch.returncode != 0:
-                raise RuntimeError(f"Failed to create local branch {self.branch}: {create_branch.stderr.strip()}")
-            self.log.emit(f"[{self.row}] Local branch {self.branch} created")
-        else:
-            # Check for local changes and stash them if needed
-            status = self._run_cmd(["git", "status", "--porcelain"], self.account_path)
-            has_changes = bool(status.stdout.strip())
-            self.log.emit(f"[{self.row}] Git status result: {status.stdout.strip()[:100]}... has_changes={has_changes}")
-            
-            if has_changes:
-                self.log.emit(f"[{self.row}] Stashing local changes...")
-                stash = self._run_cmd(["git", "stash", "push", "--include-untracked", "-m", "auto-stash-before-branch-switch"], self.account_path)
-                if stash.returncode != 0:
-                    self.log.emit(f"[{self.row}] Stash failed: {stash.stderr.strip()}")
-                    raise RuntimeError(stash.stderr.strip() or stash.stdout.strip() or "git stash failed")
-                self.log.emit(f"[{self.row}] Stash successful")
-
-            checkout = self._run_cmd(["git", "checkout", self.branch], self.account_path)
-            if checkout.returncode != 0:
-                self.log.emit(f"[{self.row}] Checkout failed: {checkout.stderr.strip()}")
-                # If checkout failed and we stashed changes, we need to restore them
-                if has_changes:
-                    self.log.emit(f"[{self.row}] Restoring stashed changes...")
-                    pop = self._run_cmd(["git", "stash", "pop"], self.account_path)
-                    if pop.returncode != 0:
-                        self.log.emit(f"[{self.row}] Failed to restore stash: {pop.stderr.strip()}")
-                raise RuntimeError(checkout.stderr.strip() or checkout.stdout.strip() or "git checkout failed")
-
-            # Restore stashed changes after successful checkout
-            if has_changes:
-                self.log.emit(f"[{self.row}] Restoring local changes...")
-                pop = self._run_cmd(["git", "stash", "pop"], self.account_path)
-                if pop.returncode != 0:
-                    self.log.emit(f"[{self.row}] Warning: failed to restore stashed changes: {pop.stderr.strip()}")
-                else:
-                    self.log.emit(f"[{self.row}] Stashed changes restored")
-
     def _venv_bins(self, venv_dir: Path) -> tuple[Path, Path | None]:
         if os.name == "nt":
             py_bin = venv_dir / "Scripts" / "python.exe"
@@ -217,23 +147,13 @@ class Worker(QObject):
 
     def _prepare_project_runtime(self) -> Path:
         local_commit = self._git_current_commit()
-        remote_commit = self._git_remote_commit()
-        repo_changed = local_commit != remote_commit
-        self.log.emit(f"[{self.row}] local={local_commit[:7]} remote={remote_commit[:7]} changed={repo_changed}")
-
-        if repo_changed:
-            self.status.emit(self.row, "updating")
-            pull = self._run_cmd(["git", "pull", "--ff-only"], self.account_path)
-            if pull.returncode != 0:
-                raise RuntimeError(pull.stderr.strip() or pull.stdout.strip() or "git pull failed")
-        else:
-            self.log.emit(f"[{self.row}] No git changes detected, skipping pull and venv rebuild")
+        self.log.emit(f"[{self.row}] Using local commit {local_commit[:7]} without remote sync")
 
         if self._stop_requested:
             raise RuntimeError("Stopped by user")
 
         venv_dir = self.account_path / ".venv"
-        need_recreate_venv = repo_changed or not venv_dir.exists()
+        need_recreate_venv = not venv_dir.exists()
 
         if need_recreate_venv:
             self.status.emit(self.row, "creating venv")
@@ -282,7 +202,7 @@ class Worker(QObject):
                 raise FileNotFoundError(f"Path not found: {self.account_path}")
 
             self.status.emit(self.row, "checking")
-            self.log.emit(f"[{self.row}] Checking branch {self.branch} for updates...")
+            self.log.emit(f"[{self.row}] Preparing local project runtime...")
 
             if self.skip_project_prep:
                 py_bin = self._reuse_existing_runtime()
@@ -293,19 +213,6 @@ class Worker(QObject):
                 with lock_context:
                     if self.project_lock is not None:
                         self.log.emit(f"[{self.row}] Project lock acquired")
-
-                    current_branch_cmd = self._run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], self.account_path)
-                    if current_branch_cmd.returncode == 0:
-                        current_branch = current_branch_cmd.stdout.strip()
-                        self.log.emit(f"[{self.row}] Current branch: {current_branch}, target branch: {self.branch}")
-                        if current_branch == self.branch:
-                            self.log.emit(f"[{self.row}] Already on branch {self.branch}, skipping checkout")
-                        else:
-                            self._switch_to_branch()
-                    else:
-                        self.log.emit(f"[{self.row}] Failed to get current branch, proceeding with checkout")
-                        self._switch_to_branch()
-
                     py_bin = self._prepare_project_runtime()
 
             if self._stop_requested:
@@ -1634,6 +1541,7 @@ class MainWindow(QMainWindow):
 
             self.account_store = AccountStore(STATE_FILE, Account.from_json)
             self.session_store = AccountSessionStore(BASE_DIR, ACCOUNTS_DIR, STATE_FILE)
+            self.account_runtime = AccountRuntimeService(self.session_store)
             self.app_config_store = AppConfigStore(APP_CONFIG_FILE)
             self.channel_template_store = ChannelTemplateStore(CHANNEL_TEMPLATES_FILE)
             self.app_config = self.app_config_store.load()
@@ -1742,14 +1650,14 @@ class MainWindow(QMainWindow):
             account.path = default_path
             self.log(f"[WARN] Project path was empty. Using default project folder {default_path}.", account=account)
 
-        project_path = _preferred_project_dir(Path(raw_path).expanduser())
+        project_path = preferred_project_dir(Path(raw_path).expanduser())
         if not project_path.exists():
             self.log(f"[ERROR] Project path does not exist: {project_path}", account=account)
             return None
 
-        main_py_path = _project_main_path(project_path)
+        main_py_path = project_main_path(project_path)
         if not main_py_path.is_file():
-            nested_project = _nested_runnable_project_dir(project_path)
+            nested_project = nested_runnable_project_dir(project_path)
             if nested_project is not None:
                 self.log(
                     f"[WARN] main.py not found at {main_py_path}. Using nested project folder {nested_project} instead.",
@@ -1757,7 +1665,7 @@ class MainWindow(QMainWindow):
                 )
                 project_path = nested_project
                 raw_path = str(nested_project)
-                main_py_path = _project_main_path(project_path)
+                main_py_path = project_main_path(project_path)
             else:
                 self.log(
                     f"[ERROR] main.py not found at {main_py_path}. Configure the correct project folder before launch.",
@@ -2089,15 +1997,10 @@ class MainWindow(QMainWindow):
     def _start_account_process(self, row: int, account: Account, py_bin: str) -> None:
         project_path = self._normalize_project_path(account.path)
         env = self._account_env(account)
-        channels_file = export_runtime_config(
-            account_name=account.name,
-            account_path=str(project_path),
-            links=account.channel_links,
-            output_dir=self._account_state_dir(account),
-        )
+        channels_file = self.account_runtime.export_channel_runtime_config(account)
         env["SHAFA_TELEGRAM_CHANNEL_LINKS_FILE"] = str(channels_file)
 
-        main_py_path = _project_main_path(project_path)
+        main_py_path = project_main_path(project_path)
         if not main_py_path.is_file():
             raise FileNotFoundError(f"main.py not found at {main_py_path}")
 
@@ -2493,6 +2396,23 @@ class MainWindow(QMainWindow):
         if self._account_telegram_session_file(acc).exists() and not self.session_store.is_valid_telegram_session(acc):
             self.log("[ERROR] Telegram session is corrupted. Re-authentication is required.", account=acc)
             return
+        if acc.channel_links:
+            telegram_session_path = self._account_telegram_session_file(acc)
+            self.log(f"[AUTH] Checking Telegram session for channels via {telegram_session_path}", account=acc)
+            telegram_status = self._run_account_command(acc, ["main.py", "--telegram-session-status"])
+            if telegram_status.returncode != 0:
+                stdout_message = (telegram_status.stdout or "").strip()
+                stderr_message = (telegram_status.stderr or "").strip()
+                error_message = "\n".join(part for part in [stdout_message, stderr_message] if part).strip()
+                if not error_message:
+                    error_message = self._command_error(telegram_status)
+                self.log(
+                    "[ERROR] Telegram session is missing or unauthorized for channel sync. "
+                    f"Session path: {telegram_session_path}. {error_message}",
+                    account=acc,
+                )
+                self._sync_account_auth_status(row)
+                return
 
         launch_context = self._validate_account_launch(row, acc)
         if launch_context is None:
@@ -2570,40 +2490,43 @@ class MainWindow(QMainWindow):
             self.log("[AUTH] Reusing existing Shafa session", account=account)
             self._sync_account_auth_status(row)
             return
-        env, context = self.shafa_auth_service.create_login_context(account, self._account_env(account))
-        project_path = str(Path(account.path).expanduser())
+        raw_project_path = account.path.strip()
+        if not raw_project_path:
+            QMessageBox.warning(self, "Shafa auth", "Сначала укажите корень проекта с main.py.")
+            self.log("[ERROR] Shafa auth failed: project path is empty", account=account)
+            return
+        project_path = preferred_project_dir(Path(raw_project_path).expanduser())
+        main_py_path = project_main_path(project_path)
+        if not main_py_path.is_file():
+            nested_project = nested_runnable_project_dir(project_path)
+            if nested_project is not None:
+                project_path = nested_project
+                main_py_path = project_main_path(project_path)
+            if not main_py_path.is_file():
+                QMessageBox.warning(
+                    self,
+                    "Shafa auth",
+                    f"Не найден main.py в проекте: {project_path}",
+                )
+                self.log(f"[ERROR] Shafa auth failed: main.py not found at {project_path}", account=account)
+                return
+        account.path = str(project_path)
+        env = self._account_env(account)
+        self.log("[AUTH] Starting automatic Shafa login flow", account=account)
         proc = subprocess.Popen(
             [self._account_python(account), "main.py", "--login-shafa"],
-            cwd=project_path,
+            cwd=str(project_path),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             text=True,
             env=env,
         )
-        prompt = QMessageBox(self)
-        prompt.setWindowTitle("Shafa auth")
-        prompt.setText("Выполните вход в открывшемся окне Shafa, затем нажмите OK для сохранения сессии.")
-        prompt.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        choice = prompt.exec()
-        if choice != QMessageBox.Ok:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
-            self.shafa_auth_service.cancel_login(context)
-            self.log("[AUTH] Shafa auth cancelled", account=account)
-            self._sync_account_auth_status(row)
-            return
-
-        self.shafa_auth_service.confirm_login(context)
         try:
-            output, _ = proc.communicate(timeout=120)
+            output, _ = proc.communicate(timeout=180)
         except subprocess.TimeoutExpired:
             proc.kill()
             output, _ = proc.communicate()
-        self.shafa_auth_service.clear_context(context)
         if proc.returncode == 0 and self.session_store.is_valid_shafa_session(account):
             self.log("[AUTH] Shafa auth saved", account=account)
         else:
@@ -2847,58 +2770,20 @@ class MainWindow(QMainWindow):
         return self.session_store.channels_file(account)
 
     def _account_env(self, account: Account) -> dict[str, str]:
-        env = os.environ.copy()
-        state_dir = self._account_state_dir(account)
-        telegram_credentials = self.session_store.load_telegram_credentials(account)
-        env.setdefault("PYTHONUNBUFFERED", "1")
-        env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
-        env["SHAFA_STORAGE_STATE_PATH"] = str(self._account_auth_file(account))
-        env["SHAFA_DB_PATH"] = str(self._account_db_file(account))
-        env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self._account_telegram_session_file(account))
-        env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self._account_telegram_login_state_file(account))
-        env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self._account_channels_file(account))
-        api_id = telegram_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
-        api_hash = telegram_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
-        if api_id:
-            env["SHAFA_TELEGRAM_API_ID"] = api_id
-        else:
-            env.pop("SHAFA_TELEGRAM_API_ID", None)
-        if api_hash:
-            env["SHAFA_TELEGRAM_API_HASH"] = api_hash
-        else:
-            env.pop("SHAFA_TELEGRAM_API_HASH", None)
-        env["SHAFA_APP_MODE"] = self.app_config.mode
-        return env
+        return self.account_runtime.account_env(account, app_mode=self.app_config.mode)
 
     def _account_python(self, account: Account) -> str:
-        project_path = _preferred_project_dir(Path(account.path).expanduser())
-        if os.name == "nt":
-            candidate = project_path / ".venv" / "Scripts" / "python.exe"
-        else:
-            candidate = project_path / ".venv" / "bin" / "python"
-        return str(candidate if candidate.exists() else Path(sys.executable))
+        return self.account_runtime.account_python(account)
 
     def _run_account_command(self, account: Account, args: list[str]) -> subprocess.CompletedProcess:
-        project_path = str(_preferred_project_dir(Path(account.path).expanduser()))
-        return subprocess.run(
-            [self._account_python(account), *args],
-            cwd=project_path,
-            capture_output=True,
-            text=True,
-            env=self._account_env(account),
+        return self.account_runtime.run_account_command(
+            account,
+            args,
+            app_mode=self.app_config.mode,
         )
 
     def _command_error(self, result: subprocess.CompletedProcess) -> str:
         return (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
-
-    def _copy_telegram_session(self, source: Account, target: Account) -> None:
-        source_file = self._account_telegram_session_file(source)
-        target_file = self._account_telegram_session_file(target)
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_file, target_file)
-        source_journal = Path(f"{source_file}-journal")
-        if source_journal.exists():
-            shutil.copy2(source_journal, Path(f"{target_file}-journal"))
 
     def _refresh_all(self) -> None:
         self.accounts_page.refresh()

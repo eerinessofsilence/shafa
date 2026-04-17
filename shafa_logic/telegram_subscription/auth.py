@@ -59,9 +59,13 @@ def submit_password(password: str) -> None:
     asyncio.run(_run_auth_step(_submit_password(password)))
 
 
-async def _run_auth_step(coro) -> None:
+def session_status() -> bool:
+    return asyncio.run(_run_auth_step(_session_status()))
+
+
+async def _run_auth_step(coro):
     try:
-        await coro
+        return await coro
     except Exception:
         raise
 
@@ -253,6 +257,34 @@ async def _submit_password(password: str) -> None:
         phone_code_hash=phone_code_hash,
         session_path=session_path,
     )
+
+
+async def _session_status() -> bool:
+    session_path = _resolve_session_path()
+    if not session_path.exists():
+        _log_step("Telegram session file does not exist")
+        return False
+
+    telegram_client_cls = _get_telegram_client_cls()
+    api_id, api_hash = _require_telegram_credentials()
+    try:
+        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
+            authorized = await client.is_user_authorized()
+    except Exception as exc:
+        _log_step(f"Telegram session check failed: {_classify_auth_error(exc)}")
+        return False
+
+    if not authorized:
+        _log_step("Telegram session is unauthorized")
+        return False
+
+    _persist_login_state(
+        current_auth_step=SUCCESS,
+        session_path=str(session_path),
+        code_confirmed=False,
+    )
+    _log_step(f"Telegram session is authorized: {session_path}")
+    return True
 
 
 def _mark_auth_success(

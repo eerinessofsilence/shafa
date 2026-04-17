@@ -211,13 +211,66 @@ def test_reuse_status_detects_existing_session(tmp_path: Path) -> None:
     store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
     account = Account(id="acc", name="Test", path="/tmp/project")
     store.telegram_session_file(account).write_bytes(b"SQLite format 3\x00payload")
-    service = TelegramAuthService(store, lambda *_args, **_kwargs: _completed(0))
+    captured: list[list[str]] = []
+
+    def runner(_account: Account, args: list[str]) -> subprocess.CompletedProcess:
+        captured.append(args)
+        return _completed(0, stdout="Telegram session is authorized.")
+
+    service = TelegramAuthService(store, runner)
 
     status = service.reuse_status(account)
 
     assert status is not None
     assert status.ok is True
     assert "Reusing existing Telegram session" in status.message
+    assert captured == [["main.py", "--telegram-session-status"]]
+
+
+def test_reuse_status_restores_session_from_login_state_path(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project")
+    external_session = tmp_path / "legacy" / "telegram.session"
+    external_session.parent.mkdir(parents=True, exist_ok=True)
+    external_session.write_bytes(b"SQLite format 3\x00payload")
+    store.telegram_login_state_file(account).write_text(
+        (
+            "{"
+            f"\"session_path\":\"{external_session}\","
+            "\"current_auth_step\":\"WAIT_CODE\""
+            "}"
+        ),
+        encoding="utf-8",
+    )
+    captured: list[list[str]] = []
+
+    def runner(_account: Account, args: list[str]) -> subprocess.CompletedProcess:
+        captured.append(args)
+        return _completed(0, stdout="Telegram session is authorized.")
+
+    service = TelegramAuthService(store, runner)
+
+    status = service.reuse_status(account)
+
+    assert status is not None
+    assert status.ok is True
+    assert store.is_valid_telegram_session(account) is True
+    assert store.telegram_session_file(account).read_bytes() == external_session.read_bytes()
+    assert captured == [["main.py", "--telegram-session-status"]]
+
+
+def test_reuse_status_rejects_unauthorized_existing_session(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    account = Account(id="acc", name="Test", path="/tmp/project")
+    store.telegram_session_file(account).write_bytes(b"SQLite format 3\x00payload")
+    service = TelegramAuthService(
+        store,
+        lambda *_args, **_kwargs: _completed(1, stderr="Telegram session is missing or unauthorized."),
+    )
+
+    status = service.reuse_status(account)
+
+    assert status is None
 
 
 def test_runtime_state_machine_completes_sequentially() -> None:

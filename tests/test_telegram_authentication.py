@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shafa_logic"))
 from telegram_subscription import auth as telegram_auth
 
 
-def _make_fake_client_class(require_password: bool = False):
+def _make_fake_client_class(require_password: bool = False, authorized: bool = True):
     class _FakeTelegramClient:
         def __init__(self, session_path: str, *_args, **_kwargs) -> None:
             self.session_path = Path(session_path)
@@ -20,6 +20,7 @@ def _make_fake_client_class(require_password: bool = False):
             self.sign_in_calls: list[tuple[str, str, str]] = []
             self.password_calls: list[str] = []
             self.require_password = require_password
+            self.authorized = authorized
             self.connect_calls = 0
             self.disconnect_calls = 0
             self.enter_calls = 0
@@ -36,6 +37,9 @@ def _make_fake_client_class(require_password: bool = False):
 
         async def disconnect(self) -> None:
             self.disconnect_calls += 1
+
+        async def is_user_authorized(self) -> bool:
+            return self.authorized
 
         async def send_code_request(self, phone: str) -> SimpleNamespace:
             self.send_code_calls.append(phone)
@@ -217,6 +221,44 @@ class TelegramAuthenticationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(client.connect_calls, 1)
             self.assertEqual(client.disconnect_calls, 1)
             self.assertEqual(client.enter_calls, 0)
+
+    async def test_session_status_returns_true_for_authorized_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "telegram_login_state.json"
+            session_path = Path(temp_dir) / "telegram.session"
+            session_path.write_bytes(b"SQLite format 3\x00payload")
+
+            with (
+                patch.object(telegram_auth, "TELEGRAM_LOGIN_STATE_PATH", state_path),
+                patch.object(telegram_auth, "TELEGRAM_SESSION_PATH", session_path),
+                patch.object(telegram_auth, "_require_telegram_credentials", return_value=(1, "hash")),
+                patch.object(telegram_auth, "_get_telegram_client_cls", return_value=_make_fake_client_class()),
+            ):
+                result = await telegram_auth._session_status()
+                persisted_state = telegram_auth._read_login_state()
+
+            self.assertTrue(result)
+            self.assertEqual(persisted_state["current_auth_step"], "SUCCESS")
+
+    async def test_session_status_returns_false_for_unauthorized_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "telegram_login_state.json"
+            session_path = Path(temp_dir) / "telegram.session"
+            session_path.write_bytes(b"SQLite format 3\x00payload")
+
+            with (
+                patch.object(telegram_auth, "TELEGRAM_LOGIN_STATE_PATH", state_path),
+                patch.object(telegram_auth, "TELEGRAM_SESSION_PATH", session_path),
+                patch.object(telegram_auth, "_require_telegram_credentials", return_value=(1, "hash")),
+                patch.object(
+                    telegram_auth,
+                    "_get_telegram_client_cls",
+                    return_value=_make_fake_client_class(authorized=False),
+                ),
+            ):
+                result = await telegram_auth._session_status()
+
+            self.assertFalse(result)
 
 
 if __name__ == "__main__":

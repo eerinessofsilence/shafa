@@ -27,7 +27,17 @@ def sync_channels_from_runtime_config() -> list[tuple[int, str, str]]:
     if not links:
         return []
 
-    channels = asyncio.run(_resolve_channel_tuples(links))
+    try:
+        channels = asyncio.run(_resolve_channel_tuples(links))
+    except RuntimeError as exc:
+        fallback_channels = get_telegram_channels()
+        if fallback_channels:
+            _log(
+                "channel sync skipped because Telegram session is unavailable; "
+                f"reusing {len(fallback_channels)} saved channel(s): {exc}"
+            )
+            return fallback_channels
+        raise
     if not channels:
         _log("no channels resolved, runtime storage was not updated")
         return []
@@ -96,7 +106,11 @@ def load_channel_links(path: Path) -> list[str]:
 async def _resolve_channel_tuples(links: list[str]) -> list[tuple[int, str, str]]:
     api_id, api_hash = _require_telegram_credentials()
     telegram_client_cls = _get_telegram_client_cls()
-    async with telegram_client_cls(str(_telegram_session_path()), api_id, api_hash) as client:
+    async with _connected_client(telegram_client_cls(str(_telegram_session_path()), api_id, api_hash)) as client:
+        if not await client.is_user_authorized():
+            raise RuntimeError(
+                "Telegram session is missing or unauthorized. Re-authenticate the account in the UI."
+            )
         channels: list[tuple[int, str, str]] = []
         for link in links:
             resolved = await _resolve_single_channel(client, link)
@@ -271,6 +285,18 @@ def _get_telegram_client_cls():
     from telethon import TelegramClient
 
     return TelegramClient
+
+
+class _connected_client:
+    def __init__(self, client) -> None:
+        self.client = client
+
+    async def __aenter__(self):
+        await self.client.connect()
+        return self.client
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.client.disconnect()
 
 
 def _runtime_channels_path() -> Path:

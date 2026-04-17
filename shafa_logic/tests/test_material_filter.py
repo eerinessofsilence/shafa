@@ -1,4 +1,4 @@
-import _test_path  # noqa: F401
+import _test_path
 import unittest
 
 from controller.material_filter import MATERIALS_PATH, extract_fabric_ids_from_description

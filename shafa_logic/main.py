@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 import argparse
 
 import inquirer
-from telegram_subscription import complete_login, send_code, submit_password, sync_channels_from_runtime_config
+from telegram_subscription import complete_login, send_code, session_status, submit_password, sync_channels_from_runtime_config
 
 _ADD_CHANNEL = object()
 
@@ -257,21 +257,37 @@ def _login_account() -> None:
 
             print("Выполни вход в аккаунт в окне браузера. Ожидание сохранения сессии...")
             deadline = time.time() + 600
+            last_seen_url = page.url
+            redirect_detected_at: float | None = None
+            login_detected_at: float | None = None
             while time.time() < deadline:
+                current_url = page.url
+                if current_url != last_seen_url:
+                    last_seen_url = current_url
+                    redirect_detected_at = time.time()
+                    print(f"Обнаружен переход: {current_url}")
+
+                waiting_for_auth_page = any(
+                    token in current_url.lower() for token in ("login", "register")
+                )
                 csrftoken = get_csrftoken_from_context(ctx)
-                if csrftoken:
-                    if confirmation_file:
-                        print("Вход обнаружен. Подтвердите сохранение сессии в приложении.")
-                        while time.time() < deadline:
-                            if confirmation_file.exists():
-                                break
-                            time.sleep(1)
-                        if not confirmation_file.exists():
-                            print("Подтверждение сохранения не получено.")
-                            return
+                if csrftoken and not waiting_for_auth_page:
+                    if login_detected_at is None:
+                        login_detected_at = time.time()
+                        print("Вход обнаружен. Жду 3 секунды, чтобы завершился редирект и обновились cookies...")
+                    wait_from = redirect_detected_at or login_detected_at
+                    if wait_from is not None and time.time() - wait_from < 3:
+                        time.sleep(0.5)
+                        continue
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=3000)
+                    except PlaywrightTimeoutError:
+                        pass
                     ctx.storage_state(path=str(STORAGE_STATE_PATH))
                     cookies = ctx.cookies()
                     save_cookies(cookies)
+                    if confirmation_file:
+                        confirmation_file.write_text("ok\n", encoding="utf-8")
                     print(f"Вход сохранен. Cookies: {len(cookies)}.")
                     return
                 time.sleep(2)
@@ -619,6 +635,7 @@ def main(
     telegram_login_phone: Optional[str] = None,
     telegram_login_code: Optional[str] = None,
     telegram_login_password: Optional[str] = None,
+    telegram_session_status: bool = False,
 ) -> None:
     if mode:
         os.environ[APP_MODE_ENV] = mode
@@ -633,6 +650,11 @@ def main(
         submit_password(telegram_login_password)
         print("Telegram password accepted.")
         return
+    if telegram_session_status:
+        if session_status():
+            print("Telegram session is authorized.")
+            return
+        raise RuntimeError("Telegram session is missing or unauthorized.")
     if telegram_login_phone and telegram_login_code:
         complete_login(telegram_login_phone, telegram_login_code)
         print("Telegram login completed.")
@@ -667,6 +689,7 @@ def parse_args():
     parser.add_argument("--telegram-login-phone")
     parser.add_argument("--telegram-login-code")
     parser.add_argument("--telegram-login-password")
+    parser.add_argument("--telegram-session-status", action="store_true")
     return parser.parse_args()
 
 
@@ -681,6 +704,7 @@ if __name__ == "__main__":
             telegram_login_phone=args.telegram_login_phone,
             telegram_login_code=args.telegram_login_code,
             telegram_login_password=args.telegram_login_password,
+            telegram_session_status=args.telegram_session_status,
         )
     except Exception as exc:
         print(str(exc) or exc.__class__.__name__, file=sys.stderr)

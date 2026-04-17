@@ -214,9 +214,35 @@ class TelegramAuthService:
         return self.store.has_pending_telegram_code(account)
 
     def reuse_status(self, account: Account) -> TelegramAuthStatus | None:
-        if self.store.is_valid_telegram_session(account):
-            return TelegramAuthStatus(True, "Reusing existing Telegram session.", pending_code=False)
-        return None
+        state = self.load_auth_state(account)
+        raw_session_path = str(state.get("session_path") or "").strip()
+        if raw_session_path:
+            session_path = Path(raw_session_path).expanduser()
+            if self.store.is_valid_telegram_session_path(session_path):
+                target_path = self.store.telegram_session_file(account)
+                if session_path != target_path:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    target_path.write_bytes(session_path.read_bytes())
+                self.persist_auth_state(
+                    account,
+                    current_auth_step="SUCCESS",
+                    session_path=str(target_path),
+                    code_confirmed=False,
+                )
+                self.store.write_account_manifest(account)
+        if not self.store.is_valid_telegram_session(account):
+            return None
+        result = self.runner(account, ["main.py", "--telegram-session-status"])
+        if result.returncode != 0:
+            return None
+        self.persist_auth_state(
+            account,
+            current_auth_step="SUCCESS",
+            session_path=str(self.store.telegram_session_file(account)),
+            code_confirmed=False,
+        )
+        self.store.write_account_manifest(account)
+        return TelegramAuthStatus(True, "Reusing existing Telegram session.", pending_code=False)
 
     def create_runtime(self, account: Account, attempt: int = 1) -> TelegramAuthRuntime:
         runtime = TelegramAuthRuntime(account_id=account.id, attempt=attempt)

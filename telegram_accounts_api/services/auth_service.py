@@ -8,7 +8,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from shafa_control import Account, AccountSessionStore, ShafaAuthService, TelegramAuthService
+from shafa_control import (
+    Account,
+    AccountRuntimeService,
+    AccountSessionStore,
+    ShafaAuthService,
+    TelegramAuthService,
+    preferred_project_dir,
+    project_main_path,
+)
 
 from telegram_accounts_api.models.auth import (
     ShafaAuthStatusResponse,
@@ -48,6 +56,8 @@ class AccountAuthService:
         self.shafa_login_launcher = shafa_login_launcher or self._launch_shafa_login
         self.telegram_auth = TelegramAuthService(store, self.runner)
         self.shafa_auth = ShafaAuthService(store)
+        self.runtime = AccountRuntimeService(store)
+
 
     async def get_telegram_status(self, account_id: str) -> TelegramAuthStatusResponse:
         account = await self._get_account(account_id)
@@ -93,6 +103,9 @@ class AccountAuthService:
                 "Telegram API credentials are missing on backend. "
                 "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH in .env or environment.",
             )
+        reuse_status = self.telegram_auth.reuse_status(account)
+        if reuse_status is not None:
+            return await self.get_telegram_status(account_id)
         phone_status = self.telegram_auth.validate_phone(payload.phone)
         if not phone_status.ok:
             raise BadRequestError(phone_status.message)
@@ -320,6 +333,13 @@ class AccountAuthService:
         project_path = _preferred_project_dir(Path(account.path).expanduser())
         if not _project_main_path(project_path).is_file():
             raise BadRequestError(f"main.py not found at {project_path}")
+    def _run_account_command(self, account: Account, args: list[str]):
+        return self.runtime.run_account_command(account, args)
+
+    def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
+        project_path = preferred_project_dir(Path(account.path).expanduser())
+        if not project_main_path(project_path).is_file():
+            raise BadRequestError(f"main.py not found at {project_path}")
 
         account_dir = self.store.account_dir(account)
         account_dir.mkdir(parents=True, exist_ok=True)
@@ -329,12 +349,12 @@ class AccountAuthService:
         try:
             with log_file.open("a", encoding="utf-8") as stream:
                 process = subprocess.Popen(
-                    [self._account_python(account), *args],
+                    [self.runtime.account_python(account), *args],
                     cwd=str(project_path),
                     stdin=subprocess.DEVNULL,
                     stdout=stream,
                     stderr=stream,
-                    env=self._account_env(account),
+                    env=self.runtime.account_env(account),
                     start_new_session=True,
                 )
         except OSError as exc:
