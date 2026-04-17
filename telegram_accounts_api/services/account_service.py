@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-<<<<<<< HEAD
 import asyncio
 import json
 import logging
 import os
-=======
->>>>>>> fa5ceaf (feat: add log api)
 import shutil
 import signal
 import subprocess
@@ -27,13 +24,11 @@ from shafa_control import (
     project_main_path,
 )
 from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
-<<<<<<< HEAD
-from telegram_accounts_api.utils.exceptions import BadRequestError, NotFoundError, StorageError
-=======
 from telegram_accounts_api.utils.account_logging import log
-from telegram_accounts_api.utils.exceptions import NotFoundError
->>>>>>> fa5ceaf (feat: add log api)
+from telegram_accounts_api.utils.exceptions import BadRequestError, NotFoundError, StorageError
 from telegram_accounts_api.utils.storage import JsonListStorage
+
+LOGGER = logging.getLogger(__name__)
 
 ACCOUNT_KNOWN_FIELDS = {
     "id",
@@ -146,13 +141,9 @@ class AccountService:
         if updated_record is None:
             raise NotFoundError(f"Account '{account_id}' not found.")
 
-<<<<<<< HEAD
         await self._write_payload(payload)
         LOGGER.info("Updated account %s", account_id)
-=======
-        await self.storage.write(payload)
         log(account_id, "INFO", "Account settings updated.")
->>>>>>> fa5ceaf (feat: add log api)
         return await self._to_model(updated_record)
 
     async def delete_account(self, account_id: str) -> None:
@@ -167,7 +158,6 @@ class AccountService:
             shutil.rmtree(account_dir)
         log(account_id, "INFO", "Account deleted.")
 
-<<<<<<< HEAD
     async def start_account(self, account_id: str) -> AccountRead:
         record = await self._get_record(account_id)
         account = self._record_to_account(record)
@@ -213,24 +203,7 @@ class AccountService:
                 f"[CHANNELS] exported {len(account.channel_links)} link(s)",
             )
         LOGGER.info("Started account %s with pid %s", account_id, process.pid)
-=======
-    async def set_status(self, account_id: str, status: str) -> AccountRead:
-        payload = await self.storage.read()
-        updated_record: dict | None = None
-        for item in payload:
-            if str(item.get("id")) != account_id:
-                continue
-            item["status"] = status
-            item["updated_at"] = datetime.now(UTC).isoformat()
-            if status == "started":
-                item["last_run"] = datetime.now().isoformat(timespec="seconds")
-            updated_record = item
-            break
-        if updated_record is None:
-            raise NotFoundError(f"Account '{account_id}' not found.")
-        await self.storage.write(payload)
-        log(account_id, "INFO", f"Account status changed to {status}.")
->>>>>>> fa5ceaf (feat: add log api)
+        log(account_id, "INFO", f"Account status changed to started (pid={process.pid}).")
         return await self._to_model(updated_record)
 
     async def stop_account(self, account_id: str) -> AccountRead:
@@ -254,6 +227,7 @@ class AccountService:
         )
         self._append_log(account, "[STOP] stop requested from API")
         LOGGER.info("Stopped account %s", account_id)
+        log(account_id, "INFO", "Account status changed to stopped.")
         return await self._to_model(updated_record)
 
     async def set_status(self, account_id: str, status: str) -> AccountRead:
