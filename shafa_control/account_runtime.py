@@ -36,9 +36,35 @@ def nested_runnable_project_dir(project_dir: Path) -> Path | None:
     return None
 
 
+def read_env_file(path: Path) -> dict[str, str]:
+    credentials = {
+        "SHAFA_TELEGRAM_API_ID": "",
+        "SHAFA_TELEGRAM_API_HASH": "",
+    }
+    if not path.exists():
+        return credentials
+    try:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return credentials
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in credentials:
+            credentials[key] = value.strip().strip("\"'")
+    return credentials
+
+
 class AccountRuntimeService:
     def __init__(self, store: AccountSessionStore) -> None:
         self.store = store
+
+    @staticmethod
+    def root_env_path() -> Path:
+        return Path(__file__).resolve().parents[1] / ".env"
 
     def state_dir(self, account: Account) -> Path:
         return self.store.account_dir(account)
@@ -53,6 +79,7 @@ class AccountRuntimeService:
         env = dict(base_env) if base_env is not None else os.environ.copy()
         state_dir = self.state_dir(account)
         telegram_credentials = self.store.load_telegram_credentials(account)
+        root_credentials = read_env_file(self.root_env_path())
         env.setdefault("PYTHONUNBUFFERED", "1")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
@@ -60,8 +87,16 @@ class AccountRuntimeService:
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
-        api_id = telegram_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
-        api_hash = telegram_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
+        api_id = (
+            telegram_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
+            or root_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
+            or str(env.get("SHAFA_TELEGRAM_API_ID", "")).strip()
+        )
+        api_hash = (
+            telegram_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
+            or root_credentials.get("SHAFA_TELEGRAM_API_HASH", "").strip()
+            or str(env.get("SHAFA_TELEGRAM_API_HASH", "")).strip()
+        )
         if api_id:
             env["SHAFA_TELEGRAM_API_ID"] = api_id
         else:

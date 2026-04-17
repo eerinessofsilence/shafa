@@ -13,6 +13,7 @@ export interface DesktopShellInfo {
   platform: string;
   electronVersion: string;
   chromeVersion: string;
+  cwd: string;
 }
 
 export interface NavItem {
@@ -33,13 +34,13 @@ export interface ChartPoint {
   errors: number;
 }
 
-export type TelegramPhotoSource = 'Сообщение' | 'Комментарии' | 'Два в одном';
-
 export interface TelegramChannel {
   id: string;
   title: string;
   handle: string;
-  photoSource: TelegramPhotoSource;
+  photoSource?: string;
+  channelId?: number;
+  alias?: string;
 }
 
 export type ApiAccountStatus = 'started' | 'stopped';
@@ -93,6 +94,17 @@ export interface ApiAccountUpdate {
   path?: string;
   open_browser?: boolean;
   timer_minutes?: number;
+  channel_links?: string[];
+}
+
+export interface ApiChannelTemplateCreate {
+  name: string;
+  links: string[];
+}
+
+export interface ApiChannelTemplateUpdate {
+  name?: string;
+  links?: string[];
 }
 
 export interface ApiTelegramPhoneRequest {
@@ -154,6 +166,7 @@ export interface AccountRow {
   shafaSessionExists?: boolean;
   telegramSessionExists?: boolean;
   telegramChannels: TelegramChannel[];
+  channelTemplates?: ApiChannelTemplateSummary[];
 }
 
 export interface StatusItem {

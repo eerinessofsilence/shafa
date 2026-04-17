@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
+from telegram_channels import sanitize_channel_links
 from telegram_accounts_api.models.channel_template import ChannelTemplateSummary
 
 AccountStatus = Literal["started", "stopped"]
@@ -30,7 +31,7 @@ class AccountBase(BaseModel):
             return []
         if not isinstance(value, list):
             raise ValueError("channel_links must be a list")
-        return [str(item).strip() for item in value if str(item).strip()]
+        return sanitize_channel_links(str(item).strip() for item in value if str(item).strip())
 
 
 class AccountCreate(AccountBase):
@@ -42,11 +43,21 @@ class AccountUpdate(BaseModel):
     path: str | None = Field(default=None)
     open_browser: bool | None = None
     timer_minutes: int | None = Field(default=None, ge=1, le=1440)
+    channel_links: list[str] | None = None
 
     @field_validator("name", "path", mode="before")
     @classmethod
     def strip_text(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("channel_links", mode="before")
+    @classmethod
+    def normalize_links(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("channel_links must be a list")
+        return sanitize_channel_links(str(item).strip() for item in value if str(item).strip())
 
 
 class AccountUpdateStatus(BaseModel):

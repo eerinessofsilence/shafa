@@ -22,6 +22,24 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
 
 
+def test_account_runtime_uses_root_env_credentials(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    runtime = AccountRuntimeService(store)
+    runtime.root_env_path = lambda: tmp_path / ".env"  # type: ignore[method-assign]
+    (tmp_path / ".env").write_text(
+        "SHAFA_TELEGRAM_API_ID=33979811\n"
+        "SHAFA_TELEGRAM_API_HASH=secret-root-hash\n",
+        encoding="utf-8",
+    )
+    account = Account(id="acc-3", name="Fallback", path=str(tmp_path / "project"))
+
+    env = runtime.account_env(account, base_env={"BASE": "1"})
+
+    assert env["BASE"] == "1"
+    assert env["SHAFA_TELEGRAM_API_ID"] == "33979811"
+    assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-root-hash"
+
+
 def test_account_runtime_exports_channel_runtime_config(tmp_path: Path) -> None:
     store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
     runtime = AccountRuntimeService(store)

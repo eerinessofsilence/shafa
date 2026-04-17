@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -277,12 +278,30 @@ def test_shafa_logout_clears_cookies_and_returns_disconnected_status(tmp_path: P
         ),
         encoding="utf-8",
     )
+    with sqlite3.connect(store.db_file(account)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE cookies (
+                id INTEGER PRIMARY KEY,
+                domain TEXT,
+                name TEXT,
+                value TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO cookies(domain, name, value) VALUES (?, ?, ?)",
+            (".shafa.ua", "csrftoken", "token-123"),
+        )
 
     response = client.post(f"/accounts/{account_id}/auth/shafa/logout")
     assert response.status_code == 200
     assert response.json()["connected"] is False
     assert response.json()["cookies_count"] == 0
     assert store.auth_file(account).exists() is False
+    with sqlite3.connect(store.db_file(account)) as conn:
+        cookies_count = conn.execute("SELECT COUNT(*) FROM cookies").fetchone()[0]
+    assert cookies_count == 0
 
     account_payload = client.get(f"/accounts/{account_id}").json()
     assert account_payload["shafa_session_exists"] is False

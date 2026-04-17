@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import shutil
 from pathlib import Path
 from typing import Iterable
@@ -239,6 +240,7 @@ class AccountSessionStore:
 
     def delete_shafa_session(self, account: Account) -> None:
         self.auth_file(account).unlink(missing_ok=True)
+        self._clear_shafa_db_cookies(account)
         self.write_account_manifest(account)
 
     def delete_account_data(self, account: Account) -> None:
@@ -332,3 +334,25 @@ class AccountSessionStore:
     @staticmethod
     def _is_allowed_shafa_domain(domain: str) -> bool:
         return domain == "shafa.ua" or domain.endswith(".shafa.ua")
+
+    def _clear_shafa_db_cookies(self, account: Account) -> None:
+        path = self.db_file(account)
+        if not path.exists():
+            return
+        try:
+            with sqlite3.connect(path) as conn:
+                cookies_table_exists = conn.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = 'cookies'
+                    """
+                ).fetchone()
+                if cookies_table_exists is None:
+                    return
+                conn.execute("DELETE FROM cookies")
+        except sqlite3.Error:
+            path.unlink(missing_ok=True)
+            Path(f"{path}-journal").unlink(missing_ok=True)
+            Path(f"{path}-wal").unlink(missing_ok=True)
+            Path(f"{path}-shm").unlink(missing_ok=True)

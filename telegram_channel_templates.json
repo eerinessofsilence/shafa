@@ -1,0 +1,19 @@
+[
+  {
+    "id": "0db5aaa51b4146068e693e13f0df79e9",
+    "account_id": "80089ed8e5484ad6b6cc828c4d053bb3",
+    "name": "default",
+    "links": [
+      "https://t.me/brooklyn_drop"
+    ],
+    "resolved_channels": [
+      {
+        "channel_id": -1002287669953,
+        "title": "Brooklyn • Dropshipping",
+        "alias": "main"
+      }
+    ],
+    "created_at": "2026-04-17T12:31:46.848910+00:00",
+    "updated_at": "2026-04-17T12:49:30.257987+00:00"
+  }
+]

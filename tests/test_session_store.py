@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from shafa_control import Account, AccountSessionStore
@@ -188,3 +189,45 @@ def test_session_store_persists_telegram_credentials_in_env_file(tmp_path: Path)
         "SHAFA_TELEGRAM_API_ID": "777000",
         "SHAFA_TELEGRAM_API_HASH": "secret-hash",
     }
+
+
+def test_delete_shafa_session_clears_runtime_cookie_store(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    account = Account(id="acc-5", name="Cookie DB", path="/tmp/project")
+
+    store.auth_file(account).write_text(
+        '{"cookies":[{"name":"csrftoken","value":"token","domain":".shafa.ua"}]}',
+        encoding="utf-8",
+    )
+    db_path = store.db_file(account)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE cookies (
+                id INTEGER PRIMARY KEY,
+                domain TEXT,
+                name TEXT,
+                value TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO cookies(domain, name, value) VALUES (?, ?, ?)",
+            (".shafa.ua", "csrftoken", "token"),
+        )
+        conn.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("INSERT INTO products(name) VALUES (?)", ("kept-row",))
+
+    store.delete_shafa_session(account)
+
+    assert store.auth_file(account).exists() is False
+    with sqlite3.connect(db_path) as conn:
+        cookies_count = conn.execute("SELECT COUNT(*) FROM cookies").fetchone()[0]
+        products_count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    assert cookies_count == 0
+    assert products_count == 1

@@ -45,9 +45,9 @@ async def delete_account(account_id: str, service: AccountService = Depends(get_
 
 @router.post("/{account_id}/start", response_model=AccountRead)
 async def start_account(account_id: str, service: AccountService = Depends(get_account_service)) -> AccountRead:
-    return await service.set_status(account_id, "started")
+    return await service.start_account(account_id)
 
 
 @router.post("/{account_id}/stop", response_model=AccountRead)
 async def stop_account(account_id: str, service: AccountService = Depends(get_account_service)) -> AccountRead:
-    return await service.set_status(account_id, "stopped")
+    return await service.stop_account(account_id)

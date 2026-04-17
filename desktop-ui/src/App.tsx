@@ -17,6 +17,11 @@ import {
   submitTelegramCode,
   submitTelegramPassword,
 } from './api/auth';
+import {
+  createChannelTemplate as createChannelTemplateRequest,
+  deleteChannelTemplate as deleteChannelTemplateRequest,
+  updateChannelTemplate as updateChannelTemplateRequest,
+} from './api/channelTemplates';
 import { LineChart } from './components/LineChart';
 import { MetricCard } from './components/MetricCard';
 import { PageHeader } from './components/PageHeader';
@@ -36,6 +41,7 @@ import type {
   AccountRow,
   ApiAccountCreate,
   ApiAccountRead,
+  ApiChannelTemplateSummary,
   ApiShafaAuthStatus,
   ApiShafaStorageStateRequest,
   ApiTelegramAuthStatus,
@@ -44,7 +50,6 @@ import type {
   SettingToggle,
   StatusTone,
   TelegramChannel,
-  TelegramPhotoSource,
 } from './types';
 import {
   BarChart3,
@@ -81,6 +86,7 @@ import {
   User,
   Users,
   X,
+  Send,
 } from 'lucide-react';
 import {
   type ChangeEvent,
@@ -102,15 +108,8 @@ const accountTextareaClassName =
 const accountSelectButtonClassName =
   'flex h-12 w-full cursor-pointer items-center justify-between gap-4 rounded-xl border border-border/25 bg-secondary px-3 text-left text-text outline-none transition hover:border-border/50 focus:border-info/50 focus:ring-2 focus:ring-info/25';
 const telegramDraftInitialState = {
-  title: '',
   handle: '',
-  photoSource: 'Сообщение' as TelegramPhotoSource,
 };
-const telegramPhotoSourceOptions: TelegramPhotoSource[] = [
-  'Сообщение',
-  'Комментарии',
-  'Два в одном',
-];
 const actionButtonClassNames = {
   success:
     'border inline-flex items-center gap-3 rounded-xl border-border/50 bg-success/12.5 cursor-pointer duration-200 transition-all active:scale-[0.975] hover:bg-success/25 hover:border-border/75 px-4 py-2',
@@ -143,10 +142,7 @@ const navItemIcons: Record<PageId, ReactNode> = {
   settings: <Settings className="h-5 w-5" />,
 };
 
-type TelegramChannelDraft = Pick<
-  TelegramChannel,
-  'title' | 'handle' | 'photoSource'
->;
+type TelegramChannelDraft = Pick<TelegramChannel, 'handle'>;
 type ActionTone = keyof typeof actionButtonClassNames;
 type AccountEditableField = 'name' | 'path' | 'browser' | 'timer';
 type AccountDraft = Pick<AccountRow, AccountEditableField>;
@@ -171,9 +167,13 @@ const accountTableHeaders: Array<{
   { id: 'status', label: 'Статус' },
   { id: 'errors', label: 'Ошибки' },
 ];
+const defaultAccountProjectPath =
+  window.desktopShell?.cwd?.trim() ||
+  '/Users/eeri/coding/python/projects/scripts/shafa';
+const defaultChannelTemplateName = 'default';
 const accountDraftInitialState: AccountDraft = {
   name: '',
-  path: '',
+  path: defaultAccountProjectPath,
   browser: browserOptions[1] ?? 'Нет',
   timer: timerOptions[4] ?? '5 мин',
 };
@@ -201,8 +201,46 @@ function getAccountStatusMeta(
     : { statusLabel: 'stopped', statusTone: 'neutral' };
 }
 
+function getPrimaryChannelTemplate(
+  templates: ApiChannelTemplateSummary[],
+): ApiChannelTemplateSummary | null {
+  return (
+    templates.find(
+      (template) => template.name === defaultChannelTemplateName,
+    ) ??
+    templates[0] ??
+    null
+  );
+}
+
+function mapLinksToTelegramChannels(
+  accountId: string,
+  links: string[],
+  template: ApiChannelTemplateSummary | null,
+): TelegramChannel[] {
+  const resolvedChannels = template?.resolved_channels ?? [];
+
+  return links.map((link, index) => {
+    const resolvedChannel = resolvedChannels[index];
+
+    return {
+      id: `${template?.id ?? accountId}-channel-${index}`,
+      title: resolvedChannel?.title || formatChannelTitle(link),
+      handle: link,
+      channelId: resolvedChannel?.channel_id,
+      alias: resolvedChannel?.alias,
+    };
+  });
+}
+
 function mapApiAccountToRow(account: ApiAccountRead): AccountRow {
   const { statusLabel, statusTone } = getAccountStatusMeta(account.status);
+  const primaryChannelTemplate = getPrimaryChannelTemplate(
+    account.channel_templates,
+  );
+  const channelLinks = primaryChannelTemplate?.links.length
+    ? primaryChannelTemplate.links
+    : account.channel_links;
 
   return {
     id: account.id,
@@ -216,12 +254,12 @@ function mapApiAccountToRow(account: ApiAccountRead): AccountRow {
     statusTone,
     shafaSessionExists: account.shafa_session_exists,
     telegramSessionExists: account.telegram_session_exists,
-    telegramChannels: account.channel_links.map((link, index) => ({
-      id: `${account.id}-channel-${index}`,
-      title: link,
-      handle: link,
-      photoSource: 'Сообщение',
-    })),
+    telegramChannels: mapLinksToTelegramChannels(
+      account.id,
+      channelLinks,
+      primaryChannelTemplate,
+    ),
+    channelTemplates: account.channel_templates,
   };
 }
 
@@ -229,7 +267,7 @@ function createAccountCreatePayload(draft: AccountDraft): ApiAccountCreate {
   return {
     name: draft.name.trim(),
     phone: '',
-    path: draft.path.trim(),
+    path: draft.path.trim() || defaultAccountProjectPath,
     open_browser: draft.browser === 'Да',
     timer_minutes: parseTimerLabel(draft.timer),
     channel_links: [],
@@ -378,15 +416,18 @@ function formatChannelBadge(handle: string) {
   return `@${normalizedHandle.replace(/^t\.me\//, '')}`;
 }
 
-function createTelegramChannel(draft: TelegramChannelDraft): TelegramChannel {
-  const normalizedHandle = normalizeTelegramHandle(draft.handle);
+function normalizeTelegramLinks(links: string[]) {
+  const uniqueLinks = new Set<string>();
 
-  return {
-    id: createEntityId('telegram'),
-    title: draft.title.trim() || formatChannelTitle(normalizedHandle),
-    handle: normalizedHandle,
-    photoSource: draft.photoSource,
-  };
+  links.forEach((link) => {
+    const normalizedHandle = normalizeTelegramHandle(link);
+
+    if (normalizedHandle) {
+      uniqueLinks.add(`https://${normalizedHandle}`);
+    }
+  });
+
+  return [...uniqueLinks];
 }
 
 function createEntityId(prefix: string) {
@@ -410,7 +451,7 @@ function createAccountFromDraft(draft: AccountDraft): AccountRow {
   return {
     id: createEntityId('account'),
     name: draft.name.trim(),
-    path: draft.path.trim(),
+    path: draft.path.trim() || defaultAccountProjectPath,
     branch: deriveAccountBranch(draft.path),
     browser: draft.browser,
     timer: draft.timer,
@@ -420,6 +461,7 @@ function createAccountFromDraft(draft: AccountDraft): AccountRow {
     shafaSessionExists: false,
     telegramSessionExists: false,
     telegramChannels: [],
+    channelTemplates: [],
   };
 }
 
@@ -518,6 +560,23 @@ function App() {
 
     try {
       await updateAccountRequest(accountId, createAccountUpdatePayload(draft));
+      await loadAccounts();
+      setSelectedAccountId(accountId);
+    } finally {
+      setIsAccountMutationPending(false);
+    }
+  };
+
+  const handleSyncAccountChannels = async (
+    accountId: string,
+    channelLinks: string[],
+  ) => {
+    setIsAccountMutationPending(true);
+
+    try {
+      await updateAccountRequest(accountId, {
+        channel_links: normalizeTelegramLinks(channelLinks),
+      });
       await loadAccounts();
       setSelectedAccountId(accountId);
     } finally {
@@ -635,6 +694,7 @@ function App() {
                 onCreateAccount={handleCreateAccount}
                 onReload={loadAccounts}
                 onSelectAccount={setSelectedAccountId}
+                onSyncAccountChannels={handleSyncAccountChannels}
                 onUpdateAccount={handleSaveAccount}
               />
             )}
@@ -914,6 +974,10 @@ interface AccountsPageProps {
   onCreateAccount: (draft: AccountDraft) => Promise<void>;
   onReload: () => Promise<void>;
   onSelectAccount: (accountId: string) => void;
+  onSyncAccountChannels: (
+    accountId: string,
+    channelLinks: string[],
+  ) => Promise<void>;
   onUpdateAccount: (accountId: string, draft: AccountDraft) => Promise<void>;
 }
 
@@ -926,6 +990,7 @@ function AccountsPage({
   onCreateAccount,
   onReload,
   onSelectAccount,
+  onSyncAccountChannels,
   onUpdateAccount,
 }: AccountsPageProps) {
   const [sortState, setSortState] = useState<{
@@ -1434,6 +1499,7 @@ function AccountsPage({
         isSubmitting={isMutationPending}
         onClose={() => setIsDetailsDialogOpen(false)}
         onReloadAccounts={onReload}
+        onSyncAccountChannels={onSyncAccountChannels}
         onUpdateAccount={onUpdateAccount}
       />
       <CreateAccountDialog
@@ -1532,8 +1598,8 @@ function AccountTemplatesNotice() {
         <div className="space-y-1">
           <strong className="block text-text">Telegram-каналы</strong>
           <p className="leading-6 text-text-muted">
-            Этот блок будет подключён отдельно через API `channel-templates`.
-            Сейчас страница аккаунтов работает только с основными данными
+            После создания аккаунта каналы настраиваются через API
+            `channel-templates` и синхронизируются с рабочим runtime-списком
             аккаунта.
           </p>
         </div>
@@ -2261,6 +2327,10 @@ interface AccountDetailsDialogProps {
   isOpen: boolean;
   isSubmitting: boolean;
   onClose: () => void;
+  onSyncAccountChannels: (
+    accountId: string,
+    channelLinks: string[],
+  ) => Promise<void>;
   onUpdateAccount: (accountId: string, draft: AccountDraft) => Promise<void>;
   onReloadAccounts: () => Promise<void>;
 }
@@ -2270,6 +2340,7 @@ function AccountDetailsDialog({
   isOpen,
   isSubmitting,
   onClose,
+  onSyncAccountChannels,
   onUpdateAccount,
   onReloadAccounts,
 }: AccountDetailsDialogProps) {
@@ -2331,7 +2402,11 @@ function AccountDetailsDialog({
           onReloadAccounts={onReloadAccounts}
         />
 
-        <AccountTemplatesNotice />
+        <TelegramChannelsPanel
+          account={account}
+          isSubmittingAccount={isSubmitting}
+          onSyncAccountChannels={onSyncAccountChannels}
+        />
 
         {submitError ? (
           <p className="text-sm text-error">{submitError}</p>
@@ -2474,21 +2549,22 @@ function CreateAccountDialog({
 }
 
 interface TelegramChannelsPanelProps {
-  accountId: string;
-  channels: TelegramChannel[];
-  onAddChannel: (accountId: string, draft: TelegramChannelDraft) => void;
-  onUpdateChannel: (
+  account: AccountRow;
+  isSubmittingAccount: boolean;
+  onSyncAccountChannels: (
     accountId: string,
-    channelId: string,
-    draft: TelegramChannelDraft,
-  ) => void;
+    channelLinks: string[],
+  ) => Promise<void>;
 }
 
 interface TelegramChannelComposerProps {
   draft: TelegramChannelDraft;
+  isSubmitting?: boolean;
+  deleteLabel?: string;
   submitLabel: string;
   title: string;
   onCancel: () => void;
+  onDelete?: () => void;
   onDraftChange: (
     field: keyof TelegramChannelDraft,
     value: TelegramChannelDraft[keyof TelegramChannelDraft],
@@ -2497,10 +2573,9 @@ interface TelegramChannelComposerProps {
 }
 
 function TelegramChannelsPanel({
-  accountId,
-  channels,
-  onAddChannel,
-  onUpdateChannel,
+  account,
+  isSubmittingAccount,
+  onSyncAccountChannels,
 }: TelegramChannelsPanelProps) {
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [composerDraft, setComposerDraft] = useState<TelegramChannelDraft>(
@@ -2510,20 +2585,30 @@ function TelegramChannelsPanel({
   const [editingDraft, setEditingDraft] = useState<TelegramChannelDraft>(
     telegramDraftInitialState,
   );
+  const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const accountChannelTemplates = account.channelTemplates ?? [];
+  const activeTemplate = getPrimaryChannelTemplate(accountChannelTemplates);
+  const activeTemplateName = activeTemplate?.name ?? defaultChannelTemplateName;
+  const channels = account.telegramChannels;
+  const channelHandles = channels.map((channel) => channel.handle);
+  const hasAdditionalTemplates = accountChannelTemplates.length > 1;
+  const isActionDisabled = isSubmitting || isSubmittingAccount;
 
   useEffect(() => {
     setIsComposerOpen(false);
     setComposerDraft(telegramDraftInitialState);
     setEditingChannelId(null);
     setEditingDraft(telegramDraftInitialState);
-  }, [accountId]);
+    setFeedback('');
+    setError('');
+  }, [account.id]);
 
   const startEditing = (channel: TelegramChannel) => {
     setEditingChannelId(channel.id);
     setEditingDraft({
-      title: channel.title,
       handle: channel.handle,
-      photoSource: channel.photoSource,
     });
   };
 
@@ -2532,39 +2617,123 @@ function TelegramChannelsPanel({
     setEditingDraft(telegramDraftInitialState);
   };
 
-  const submitNewChannel = () => {
-    if (!normalizeTelegramHandle(composerDraft.handle)) {
+  const persistChannels = async (
+    nextLinks: string[],
+    successMessage: string,
+  ) => {
+    const normalizedLinks = normalizeTelegramLinks(nextLinks);
+
+    setIsSubmitting(true);
+    setError('');
+    setFeedback('');
+
+    try {
+      if (activeTemplate) {
+        if (normalizedLinks.length === 0) {
+          await deleteChannelTemplateRequest(account.id, activeTemplate.name);
+        } else {
+          await updateChannelTemplateRequest(account.id, activeTemplate.name, {
+            links: normalizedLinks,
+          });
+        }
+      } else if (normalizedLinks.length > 0) {
+        await createChannelTemplateRequest(account.id, {
+          name: activeTemplateName,
+          links: normalizedLinks,
+        });
+      }
+
+      await onSyncAccountChannels(account.id, normalizedLinks);
+      setFeedback(successMessage);
+      return true;
+    } catch (nextError) {
+      setError(
+        formatApiError(
+          nextError,
+          'Не удалось синхронизировать Telegram-каналы через API.',
+        ),
+      );
+      return false;
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const submitNewChannel = async () => {
+    const normalizedHandle = normalizeTelegramHandle(composerDraft.handle);
+
+    if (!normalizedHandle) {
       return;
     }
 
-    onAddChannel(accountId, composerDraft);
+    const saved = await persistChannels(
+      [...channelHandles, normalizedHandle],
+      'Канал добавлен и синхронизирован с аккаунтом.',
+    );
+
+    if (!saved) {
+      return;
+    }
+
     setComposerDraft(telegramDraftInitialState);
     setIsComposerOpen(false);
   };
 
-  const submitEditedChannel = () => {
-    if (!editingChannelId || !normalizeTelegramHandle(editingDraft.handle)) {
+  const submitEditedChannel = async () => {
+    if (!editingChannelId) {
       return;
     }
 
-    onUpdateChannel(accountId, editingChannelId, editingDraft);
+    const normalizedHandle = normalizeTelegramHandle(editingDraft.handle);
+
+    if (!normalizedHandle) {
+      return;
+    }
+
+    const targetIndex = channels.findIndex(
+      (channel) => channel.id === editingChannelId,
+    );
+
+    if (targetIndex < 0) {
+      return;
+    }
+
+    const nextLinks = [...channelHandles];
+    nextLinks[targetIndex] = normalizedHandle;
+
+    const saved = await persistChannels(
+      nextLinks,
+      'Канал обновлён и синхронизирован с аккаунтом.',
+    );
+
+    if (!saved) {
+      return;
+    }
+
     resetEditing();
+  };
+
+  const deleteChannel = async (channelId: string) => {
+    const nextLinks = channels
+      .filter((channel) => channel.id !== channelId)
+      .map((channel) => channel.handle);
+
+    await persistChannels(
+      nextLinks,
+      nextLinks.length === 0
+        ? 'Все каналы удалены из аккаунта.'
+        : 'Канал удалён и синхронизирован с аккаунтом.',
+    );
   };
 
   return (
     <section className="space-y-4 border-t border-border/20 pt-2">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <h3 className="text-[22px] font-semibold text-text">
-            Telegram-каналы
-          </h3>
-          <p className="text-text-muted">
-            Управление каналами внутри карточки аккаунта
-          </p>
-        </div>
+        <h3 className="text-[22px] font-semibold text-text">Telegram-каналы</h3>
 
         <button
           className="border inline-flex items-center gap-2 rounded-xl border-border/50 bg-success/12.5 cursor-pointer duration-200 transition-all active:scale-[0.975] hover:bg-success/25 hover:border-border/75 px-3 py-1"
+          disabled={isActionDisabled}
           type="button"
           onClick={() => setIsComposerOpen((current) => !current)}
         >
@@ -2573,11 +2742,38 @@ function TelegramChannelsPanel({
         </button>
       </div>
 
+      {hasAdditionalTemplates ? (
+        <div className="rounded-2xl border border-warning/15 bg-warning/8 px-4 py-3 text-sm text-text">
+          UI редактирует шаблон `{activeTemplateName}`. Остальные шаблоны этого
+          аккаунта пока доступны только через API.
+        </div>
+      ) : null}
+
+      {!activeTemplate && channels.length > 0 ? (
+        <div className="rounded-2xl border border-border/15 bg-secondary/65 px-4 py-3 text-sm text-text-muted">
+          Для этого аккаунта уже есть рабочие `channel_links`. При первом
+          сохранении UI создаст шаблон `{defaultChannelTemplateName}`.
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
+          {error}
+        </div>
+      ) : null}
+
+      {feedback ? (
+        <div className="rounded-2xl border border-border/15 bg-secondary/70 px-4 py-3 text-sm text-text">
+          {feedback}
+        </div>
+      ) : null}
+
       <div className="space-y-4">
         {isComposerOpen ? (
           <div className="rounded-[22px] border border-border/25 bg-secondary/60 p-4">
             <TelegramChannelComposer
               draft={composerDraft}
+              isSubmitting={isActionDisabled}
               submitLabel="Сохранить канал"
               title="Новый Telegram-канал"
               onCancel={() => {
@@ -2587,7 +2783,7 @@ function TelegramChannelsPanel({
               onDraftChange={(field, value) =>
                 setComposerDraft((current) => ({ ...current, [field]: value }))
               }
-              onSubmit={submitNewChannel}
+              onSubmit={() => void submitNewChannel()}
             />
           </div>
         ) : null}
@@ -2596,13 +2792,13 @@ function TelegramChannelsPanel({
           <div className="rounded-[22px] border border-dashed border-border/30 bg-secondary/40 p-6 text-center">
             <strong className="block text-text">Пока нет каналов</strong>
             <p className="mt-2 leading-6 text-text-muted">
-              Открой форму выше и добавь первый Telegram-канал для этого
-              аккаунта.
+              Открой форму выше и добавь первый Telegram-канал. Ссылка будет
+              проверена через Telegram API и сохранена в runtime аккаунта.
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3">
-            {channels.map((channel, index) => {
+          <div className="grid grid-cols-3 gap-3">
+            {channels.map((channel) => {
               const isEditing = editingChannelId === channel.id;
 
               if (isEditing) {
@@ -2613,16 +2809,19 @@ function TelegramChannelsPanel({
                   >
                     <TelegramChannelComposer
                       draft={editingDraft}
-                      submitLabel="Обновить канал"
-                      title={`Редактирование: ${channel.title}`}
+                      deleteLabel="Удалить"
+                      isSubmitting={isActionDisabled}
+                      submitLabel="Обновить"
+                      title={`${channel.title}`}
                       onCancel={resetEditing}
+                      onDelete={() => void deleteChannel(channel.id)}
                       onDraftChange={(field, value) =>
                         setEditingDraft((current) => ({
                           ...current,
                           [field]: value,
                         }))
                       }
-                      onSubmit={submitEditedChannel}
+                      onSubmit={() => void submitEditedChannel()}
                     />
                   </div>
                 );
@@ -2637,38 +2836,28 @@ function TelegramChannelsPanel({
                     <div className="flex gap-4 items-center justify-between">
                       <div className="space-y-3">
                         <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-info">
-                            <Link2 className="h-5 w-5" />
-                          </div>
+                          <img src="/tg_logo.png" className="h-10 w-10" />
                           <div>
-                            <strong className="block text-[1.05rem] text-text">
+                            <h1 className="font-medium text-text">
                               {channel.title}
-                            </strong>
+                            </h1>
                             <span className="text-sm text-text-muted">
                               {formatChannelBadge(channel.handle)}
                             </span>
                           </div>
                         </div>
                       </div>
-                      <button
-                        className="border inline-flex items-center rounded-xl border-border/50 bg-warning/6.25 cursor-pointer duration-200 transition-all active:scale-[0.975] hover:bg-warning/12.5 hover:border-border/75 p-2.5"
-                        type="button"
-                        onClick={() => startEditing(channel)}
-                      >
-                        <PencilLine className="text-text h-4 w-4" />
-                      </button>
-                    </div>
-
-                    {channel.photoSource ? (
                       <div className="flex items-center gap-2">
-                        <span className="text-xs uppercase tracking-wide text-text-muted/75">
-                          Фото брать из
-                        </span>
-                        <span className="inline-flex items-center rounded-full border border-info/25 bg-info/10 px-2 text-xs text-text-muted">
-                          {channel.photoSource}
-                        </span>
+                        <button
+                          className="border inline-flex items-center rounded-xl border-border/50 bg-warning/6.25 cursor-pointer duration-200 transition-all active:scale-[0.975] hover:bg-warning/12.5 hover:border-border/75 p-2.5 disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={isActionDisabled}
+                          type="button"
+                          onClick={() => startEditing(channel)}
+                        >
+                          <PencilLine className="text-text h-4 w-4" />
+                        </button>
                       </div>
-                    ) : null}
+                    </div>
                   </div>
                 </article>
               );
@@ -2682,70 +2871,53 @@ function TelegramChannelsPanel({
 
 function TelegramChannelComposer({
   draft,
+  deleteLabel,
+  isSubmitting = false,
   submitLabel,
   title,
   onCancel,
+  onDelete,
   onDraftChange,
   onSubmit,
 }: TelegramChannelComposerProps) {
-  const isSubmitDisabled = !normalizeTelegramHandle(draft.handle);
+  const isSubmitDisabled =
+    !normalizeTelegramHandle(draft.handle) || isSubmitting;
 
   return (
     <div className="space-y-4">
       <div>
-        <strong className="block text-[1.02rem] text-text">{title}</strong>
+        <h1 className="font-medium text-text">{title}</h1>
         <p className="mt-2 leading-6 text-text-muted">
           Можно вставить `t.me/...`, `https://t.me/...` или просто `@handle`.
         </p>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <label className="flex flex-col gap-2">
-          <span className="text-sm font-medium text-text">Название</span>
-          <input
-            className={accountControlClassName}
-            placeholder="Например, Wardrobe Drop"
-            type="text"
-            value={draft.title}
-            onChange={(event) => onDraftChange('title', event.target.value)}
-          />
-        </label>
-
-        <label className="flex flex-col gap-2">
-          <span className="text-sm font-medium text-text">Ссылка</span>
-          <input
-            className={accountControlClassName}
-            placeholder="t.me/example_channel"
-            type="text"
-            value={draft.handle}
-            onChange={(event) => onDraftChange('handle', event.target.value)}
-          />
-        </label>
-      </div>
-
       <label className="flex flex-col gap-2">
-        <span className="text-sm font-medium text-text">Откуда брать фото</span>
-        <select
+        <span className="text-sm font-medium text-text">Ссылка</span>
+        <input
           className={accountControlClassName}
-          value={draft.photoSource}
-          onChange={(event) =>
-            onDraftChange(
-              'photoSource',
-              event.target.value as TelegramPhotoSource,
-            )
-          }
-        >
-          {telegramPhotoSourceOptions.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
+          placeholder="t.me/example_channel"
+          type="text"
+          value={draft.handle}
+          onChange={(event) => onDraftChange('handle', event.target.value)}
+        />
       </label>
 
-      <div className="flex flex-wrap justify-end gap-2">
+      <div className="flex flex-wrap text-sm justify-between gap-2">
+        {onDelete ? (
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-error/25 bg-error/8 px-3 py-2 text-error transition hover:border-error/45 hover:bg-error/12 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-error/25 disabled:hover:bg-error/8"
+            disabled={isSubmitting}
+            type="button"
+            onClick={onDelete}
+          >
+            <Trash2 className="h-4 w-4" />
+            {deleteLabel ?? 'Удалить'}
+          </button>
+        ) : null}
         <button
           className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border/40 bg-secondary/75 px-3 py-2 text-text transition hover:border-border/70 hover:bg-secondary"
+          disabled={isSubmitting}
           type="button"
           onClick={onCancel}
         >
