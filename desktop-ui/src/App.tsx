@@ -9,6 +9,7 @@ import {
 import {
   getShafaAuthStatus,
   getTelegramAuthStatus,
+  logoutShafa,
   logoutTelegram,
   requestTelegramCode,
   saveShafaStorageState,
@@ -213,6 +214,8 @@ function mapApiAccountToRow(account: ApiAccountRead): AccountRow {
     errors: String(account.errors),
     statusLabel,
     statusTone,
+    shafaSessionExists: account.shafa_session_exists,
+    telegramSessionExists: account.telegram_session_exists,
     telegramChannels: account.channel_links.map((link, index) => ({
       id: `${account.id}-channel-${index}`,
       title: link,
@@ -414,6 +417,8 @@ function createAccountFromDraft(draft: AccountDraft): AccountRow {
     errors: '0',
     statusLabel: 'stopped',
     statusTone: 'neutral',
+    shafaSessionExists: false,
+    telegramSessionExists: false,
     telegramChannels: [],
   };
 }
@@ -1301,10 +1306,8 @@ function AccountsPage({
                               }
                             />
                           </td>
-                          <td
-                            className={`${rowCellClassName} font-medium text-md text-text`}
-                          >
-                            <div className="flex items-center font-medium text-text gap-3">
+                          <td className={rowCellClassName}>
+                            <div className="flex items-center text-md font-medium text-text gap-3">
                               {account.name}
                             </div>
                           </td>
@@ -1739,6 +1742,7 @@ function ShafaSessionCard({
   const [isBrowserLoginPending, setIsBrowserLoginPending] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const statusMeta = getShafaStatusMeta(status);
+  const isConnected = Boolean(status?.connected);
 
   useEffect(() => {
     setImportValue('');
@@ -1835,9 +1839,26 @@ function ShafaSessionCard({
     }
   };
 
+  const handleLogout = async () => {
+    setIsSubmitting(true);
+    setError('');
+    setFeedback('');
+    setIsBrowserLoginPending(false);
+
+    try {
+      const nextStatus = await logoutShafa(accountId);
+      setFeedback(nextStatus.message);
+      await Promise.all([onRefreshStatuses(), onReloadAccounts()]);
+    } catch (nextError) {
+      setError(formatApiError(nextError, 'Не удалось выйти из Shafa.'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const isImportDisabled =
     !importValue.trim() || isSubmitting || isStatusLoading;
-  const isBrowserLoginDisabled = isSubmitting || isStatusLoading;
+  const isAuthActionDisabled = isSubmitting || isStatusLoading;
 
   return (
     <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
@@ -1850,7 +1871,7 @@ function ShafaSessionCard({
 
             <div className="space-y-1">
               <p className="font-medium text-text">Доступ к аккаунту Shafa</p>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <StatusPill tone={statusMeta.tone}>
                   {statusMeta.label}
                 </StatusPill>
@@ -1866,17 +1887,25 @@ function ShafaSessionCard({
 
         <div className="flex flex-wrap gap-2">
           <button
-            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
-            disabled={isBrowserLoginDisabled}
+            className={
+              isConnected
+                ? 'inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85'
+                : 'inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info'
+            }
+            disabled={isAuthActionDisabled}
             type="button"
-            onClick={() => void handleBrowserLogin()}
+            onClick={() =>
+              void (isConnected ? handleLogout() : handleBrowserLogin())
+            }
           >
-            {isSubmitting && isBrowserLoginPending ? (
+            {isSubmitting ? (
               <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : isConnected ? (
+              <LogOut className="h-4 w-4" />
             ) : (
               <LogIn className="h-4 w-4" />
             )}
-            Войти через браузер
+            {isConnected ? 'Выйти' : 'Войти через браузер'}
           </button>
           <input
             ref={fileInputRef}
@@ -1927,8 +1956,11 @@ function TelegramAuthCard({
   const [feedback, setFeedback] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const stepMeta = getTelegramStepMeta(status);
   const isConnected = Boolean(status?.connected);
+  const connectedPhoneLabel = status?.phone_number?.trim() || 'Номер не найден';
 
   useEffect(() => {
     setPhone(status?.phone_number ?? '');
@@ -1936,6 +1968,7 @@ function TelegramAuthCard({
     setPassword('');
     setFeedback('');
     setError('');
+    setIsAccountMenuOpen(false);
   }, [accountId]);
 
   useEffect(() => {
@@ -1943,6 +1976,44 @@ function TelegramAuthCard({
       setPhone(status.phone_number);
     }
   }, [status?.phone_number]);
+
+  useEffect(() => {
+    if (isConnected) {
+      return;
+    }
+
+    setIsAccountMenuOpen(false);
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!isAccountMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        accountMenuRef.current &&
+        event.target instanceof Node &&
+        !accountMenuRef.current.contains(event.target)
+      ) {
+        setIsAccountMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsAccountMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isAccountMenuOpen]);
 
   const runTelegramAction = async (
     action: () => Promise<ApiTelegramAuthStatus>,
@@ -1987,62 +2058,82 @@ function TelegramAuthCard({
   const isPasswordDisabled =
     isSubmitting || isStatusLoading || !password.trim() || !showPasswordField;
   const isLogoutDisabled = isSubmitting || isStatusLoading || !isConnected;
+  const isAccountMenuDisabled = isSubmitting || isStatusLoading || !isConnected;
 
   return (
     <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="space-y-3">
           <div className="flex items-start gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-secondary text-info">
               <LogIn className="h-6 w-6" />
             </div>
 
-            <div className="flex flex-col gap-1">
+            <div className="space-y-1">
               <p className="font-medium text-text">Telegram авторизация</p>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <StatusPill tone={stepMeta.tone}>{stepMeta.label}</StatusPill>
                 <StatusPill
                   tone={status?.has_api_credentials ? 'success' : 'warning'}
                 >
                   {status?.has_api_credentials ? 'API настроен' : 'Нет API'}
                 </StatusPill>
-                <StatusPill tone={status?.connected ? 'success' : 'neutral'}>
-                  {status?.connected ? 'Сессия готова' : 'Нет сессии'}
-                </StatusPill>
               </div>
             </div>
           </div>
         </div>
         {isConnected ? (
-          <button
-            className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 py-2 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
-            disabled={isLogoutDisabled}
-            type="button"
-            onClick={() =>
-              void runTelegramAction(
-                () => logoutTelegram(accountId),
-                'Не удалось выйти из Telegram.',
-              )
-            }
-          >
-            {isSubmitting ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-            ) : (
-              <LogOut className="h-4 w-4" />
-            )}
-            Выйти
-          </button>
+          <div className="relative" ref={accountMenuRef}>
+            <div className="flex font-medium gap-3 items-center px-3 border border-border/50 bg-secondary h-9.5 rounded-xl">
+              <button
+                aria-expanded={isAccountMenuOpen}
+                aria-haspopup="menu"
+                className="inline-flex cursor-pointer items-center justify-center gap-2 border-r border-border/50 rounded-l-xl text-sm h-9.5 font-medium pr-3 hover:text-text-muted text-text-muted/75 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={isAccountMenuDisabled}
+                type="button"
+                onClick={() =>
+                  setIsAccountMenuOpen((currentValue) => !currentValue)
+                }
+              >
+                {isSubmitting ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ChevronDown
+                    className={`h-4 w-4 transition-transform duration-200 ${isAccountMenuOpen ? 'rotate-180 text-text' : ''}`}
+                  />
+                )}
+              </button>
+              {connectedPhoneLabel}
+            </div>
+
+            {isAccountMenuOpen ? (
+              <div className="absolute top-full right-0 z-10 mt-2  rounded-2xl border border-border/20 bg-foreground p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+                <button
+                  className="inline-flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium text-text transition hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                  disabled={isLogoutDisabled}
+                  type="button"
+                  onClick={() => {
+                    setIsAccountMenuOpen(false);
+                    void runTelegramAction(
+                      () => logoutTelegram(accountId),
+                      'Не удалось выйти из Telegram.',
+                    );
+                  }}
+                >
+                  {isSubmitting ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <LogOut className="h-4 w-4" />
+                  )}
+                  Выйти из аккаунта
+                </button>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
-      {isConnected ? (
-        <div className="mt-4 rounded-2xl border border-border/20 bg-secondary/70 px-4 py-3">
-          <p className="text-sm text-text-muted">Телефон Telegram</p>
-          <p className="mt-1 text-base font-medium text-text">
-            {status?.phone_number || 'Номер не найден'}
-          </p>
-        </div>
-      ) : (
+      {isConnected ? null : (
         <>
           <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <AuthInputField
@@ -2208,7 +2299,19 @@ function AccountDetailsDialog({
       isOpen={isOpen}
       onClose={onClose}
       statusBadge={
-        <StatusPill tone={account.statusTone}>{account.statusLabel}</StatusPill>
+        <div className="flex flex-wrap gap-2">
+          <StatusPill tone={account.statusTone}>
+            {account.statusLabel}
+          </StatusPill>
+          <StatusPill tone={account.shafaSessionExists ? 'success' : 'neutral'}>
+            Shafa
+          </StatusPill>
+          <StatusPill
+            tone={account.telegramSessionExists ? 'success' : 'neutral'}
+          >
+            Telegram
+          </StatusPill>
+        </div>
       }
       title={account.name}
     >

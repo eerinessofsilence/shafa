@@ -213,6 +213,12 @@ class AccountAuthService:
             }
         )
 
+    async def logout_shafa(self, account_id: str) -> ShafaAuthStatusResponse:
+        account = await self._get_account(account_id)
+        self.store.delete_shafa_session(account)
+        status = await self.get_shafa_status(account_id)
+        return status.model_copy(update={"message": "Shafa cookies removed."})
+
     async def _get_account(self, account_id: str) -> Account:
         account = await self.account_service.get_account(account_id)
         return Account(

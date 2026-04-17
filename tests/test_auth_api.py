@@ -206,6 +206,9 @@ def test_telegram_logout_clears_session_and_returns_init_status(tmp_path: Path) 
     assert response.json()["phone_number"] == "+380501112233"
     assert store.telegram_session_file(account).exists() is False
 
+    account_payload = client.get(f"/accounts/{account_id}").json()
+    assert account_payload["telegram_session_exists"] is False
+
 
 def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
     client, store = _make_client(tmp_path)
@@ -242,3 +245,44 @@ def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
     assert saved_state["cookies"][0]["domain"] == ".shafa.ua"
     assert saved_state["cookies"][0]["name"] == "csrftoken"
     assert store.is_valid_shafa_session(account) is True
+
+
+def test_shafa_logout_clears_cookies_and_returns_disconnected_status(tmp_path: Path) -> None:
+    client, store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Shafa", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+    account = Account(id=account_id, name="Shafa", path="/tmp/project")
+
+    store.auth_file(account).write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "csrftoken",
+                        "value": "token-123",
+                        "domain": ".shafa.ua",
+                    },
+                    {
+                        "name": "sessionid",
+                        "value": "session-456",
+                        "domain": ".shafa.ua",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.post(f"/accounts/{account_id}/auth/shafa/logout")
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert response.json()["cookies_count"] == 0
+    assert store.auth_file(account).exists() is False
+
+    account_payload = client.get(f"/accounts/{account_id}").json()
+    assert account_payload["shafa_session_exists"] is False

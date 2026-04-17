@@ -69,6 +69,7 @@ export interface ApiAccountRead {
   status: ApiAccountStatus;
   last_run: string | null;
   errors: number;
+  shafa_session_exists: boolean;
   telegram_session_exists: boolean;
   api_credentials_configured: boolean;
   created_at: string | null;
@@ -150,6 +151,8 @@ export interface AccountRow {
   errors: string;
   statusLabel: string;
   statusTone: StatusTone;
+  shafaSessionExists?: boolean;
+  telegramSessionExists?: boolean;
   telegramChannels: TelegramChannel[];
 }
 

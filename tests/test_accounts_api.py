@@ -109,6 +109,32 @@ class AccountsApiTest(unittest.TestCase):
         self.assertEqual(empty_name.status_code, 422)
         self.assertEqual(invalid_timer.status_code, 422)
 
+    def test_get_account_returns_actual_session_flags(self) -> None:
+        account_dir = self.accounts_dir / "acc-1"
+        account_dir.mkdir(parents=True, exist_ok=True)
+        (account_dir / "auth.json").write_text(
+            json.dumps(
+                {
+                    "cookies": [
+                        {
+                            "name": "csrftoken",
+                            "value": "token-123",
+                            "domain": ".shafa.ua",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (account_dir / "telegram.session").write_bytes(b"SQLite format 3\x00payload")
+
+        response = self.client.get("/accounts/acc-1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["shafa_session_exists"], True)
+        self.assertEqual(payload["telegram_session_exists"], True)
+
     def test_cors_allows_renderer_origins(self) -> None:
         renderer_origin = self.client.options(
             "/accounts/acc-1",

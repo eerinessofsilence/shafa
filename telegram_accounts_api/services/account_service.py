@@ -6,6 +6,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from uuid import uuid4
 
+from shafa_control import Account, AccountSessionStore
 from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
 from telegram_accounts_api.utils.exceptions import NotFoundError
 from telegram_accounts_api.utils.storage import JsonListStorage
@@ -31,10 +32,21 @@ ACCOUNT_KNOWN_FIELDS = {
 
 
 class AccountService:
-    def __init__(self, storage: JsonListStorage, accounts_dir: Path, channel_template_service=None) -> None:
+    def __init__(
+        self,
+        storage: JsonListStorage,
+        accounts_dir: Path,
+        channel_template_service=None,
+        session_store: AccountSessionStore | None = None,
+    ) -> None:
         self.storage = storage
         self.accounts_dir = accounts_dir
         self.channel_template_service = channel_template_service
+        self.session_store = session_store or AccountSessionStore(
+            base_dir=accounts_dir.parent,
+            accounts_dir=accounts_dir,
+            legacy_state_file=storage.path,
+        )
 
     async def list_accounts(self) -> list[AccountRead]:
         payload = await self.storage.read()
@@ -147,22 +159,36 @@ class AccountService:
         phone = str(item.get("phone") or item.get("phone_number") or "").strip()
         extra = {key: value for key, value in item.items() if key not in ACCOUNT_KNOWN_FIELDS}
         account_id = str(item.get("id") or "")
-        channel_templates = []
-        if self.channel_template_service is not None and account_id:
-            channel_templates = await self.channel_template_service.list_template_summaries(account_id)
-        return AccountRead(
+        runtime_account = Account(
             id=account_id,
             name=str(item.get("name") or "").strip(),
-            phone=phone,
             path=str(item.get("path") or "").strip(),
+            phone_number=phone,
             branch=str(item.get("branch") or "main").strip() or "main",
             open_browser=bool(item.get("open_browser", False)),
             timer_minutes=int(item.get("timer_minutes", 5)),
             channel_links=item.get("channel_links") or [],
             status="started" if str(item.get("status")).strip().lower() in {"started", "running"} else "stopped",
-            last_run=item.get("last_run"),
+            last_run=item.get("last_run") or "—",
             errors=int(item.get("errors", 0)),
-            telegram_session_exists=self.session_file(account_id).exists(),
+        )
+        channel_templates = []
+        if self.channel_template_service is not None and account_id:
+            channel_templates = await self.channel_template_service.list_template_summaries(account_id)
+        return AccountRead(
+            id=account_id,
+            name=runtime_account.name,
+            phone=phone,
+            path=runtime_account.path,
+            branch=runtime_account.branch,
+            open_browser=runtime_account.open_browser,
+            timer_minutes=runtime_account.timer_minutes,
+            channel_links=runtime_account.channel_links,
+            status=runtime_account.status,
+            last_run=item.get("last_run"),
+            errors=runtime_account.errors,
+            shafa_session_exists=self.session_store.is_valid_shafa_session(runtime_account),
+            telegram_session_exists=self.session_store.is_valid_telegram_session(runtime_account),
             api_credentials_configured=self.credentials_file(account_id).exists(),
             created_at=self._parse_datetime(item.get("created_at")),
             updated_at=self._parse_datetime(item.get("updated_at")),

@@ -58,6 +58,7 @@ class AccountRead(AccountBase):
     status: AccountStatus = "stopped"
     last_run: str | None = None
     errors: int = 0
+    shafa_session_exists: bool = False
     telegram_session_exists: bool = False
     api_credentials_configured: bool = False
     created_at: datetime | None = None

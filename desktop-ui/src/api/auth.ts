@@ -87,3 +87,11 @@ export async function startShafaBrowserLogin(
     },
   );
 }
+
+export async function logoutShafa(
+  accountId: string,
+): Promise<ApiShafaAuthStatus> {
+  return request<ApiShafaAuthStatus>(`/accounts/${accountId}/auth/shafa/logout`, {
+    method: 'POST',
+  });
+}

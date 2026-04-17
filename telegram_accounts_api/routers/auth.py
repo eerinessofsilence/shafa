@@ -96,3 +96,11 @@ async def start_shafa_browser_login(
     service: AccountAuthService = Depends(get_auth_service),
 ) -> ShafaAuthStatusResponse:
     return await service.start_shafa_browser_login(account_id)
+
+
+@router.post("/shafa/logout", response_model=ShafaAuthStatusResponse)
+async def logout_shafa(
+    account_id: str,
+    service: AccountAuthService = Depends(get_auth_service),
+) -> ShafaAuthStatusResponse:
+    return await service.logout_shafa(account_id)
