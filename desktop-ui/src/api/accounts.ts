@@ -1,6 +1,7 @@
-import { request } from './client';
+import { buildWebSocketUrl, request } from './client';
 import type {
   ApiAccountCreate,
+  ApiAccountLogEntryRead,
   ApiAccountRead,
   ApiAccountUpdate,
 } from '../types';
@@ -48,4 +49,32 @@ export async function deleteAccount(
   return request<{ detail: string }>(`/accounts/${accountId}`, {
     method: 'DELETE',
   });
+}
+
+export async function listAccountLogs(
+  accountId: string,
+  limit = 100,
+  options?: {
+    level?: string;
+    since?: string;
+  },
+): Promise<ApiAccountLogEntryRead[]> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+
+  if (options?.level) {
+    params.set('level', options.level);
+  }
+
+  if (options?.since) {
+    params.set('since', options.since);
+  }
+
+  return request<ApiAccountLogEntryRead[]>(
+    `/accounts/${accountId}/logs?${params.toString()}`,
+  );
+}
+
+export function buildAccountLogsWebSocketUrl(accountId: string) {
+  return buildWebSocketUrl(`/ws/logs/${accountId}`);
 }

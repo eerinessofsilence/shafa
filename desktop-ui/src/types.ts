@@ -79,6 +79,14 @@ export interface ApiAccountRead {
   extra: Record<string, unknown>;
 }
 
+export interface ApiAccountLogEntryRead {
+  index: number;
+  account_id: string;
+  timestamp: string;
+  level: string;
+  message: string;
+}
+
 export interface ApiAccountCreate {
   name: string;
   phone: string;

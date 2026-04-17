@@ -1,6 +1,19 @@
-const apiBaseUrl =
+export const apiBaseUrl =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '') ||
   'http://127.0.0.1:8000';
+
+export function buildApiUrl(path: string) {
+  const normalizedPath = path.replace(/^\/+/, '');
+
+  return new URL(normalizedPath, `${apiBaseUrl}/`).toString();
+}
+
+export function buildWebSocketUrl(path: string) {
+  const url = new URL(buildApiUrl(path));
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+
+  return url.toString();
+}
 
 export class ApiRequestError extends Error {
   status: number;
@@ -19,7 +32,7 @@ export async function request<T>(
   let response: Response;
 
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
+    response = await fetch(buildApiUrl(path), {
       ...init,
       headers: {
         'Content-Type': 'application/json',
