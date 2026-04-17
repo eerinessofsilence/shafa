@@ -9,6 +9,7 @@ from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.services.channel_template_service import ChannelTemplateService
 from telegram_accounts_api.services.telegram_service import TelegramService
 from telegram_accounts_api.services.template_service import TemplateService
+from telegram_accounts_api.utils.account_logging import AccountLogStore, get_account_log_store as get_shared_account_log_store
 from telegram_accounts_api.utils.config import settings
 from telegram_accounts_api.utils.storage import JsonListStorage
 
@@ -63,3 +64,8 @@ def get_auth_service() -> AccountAuthService:
         account_service=get_account_service(),
         store=store,
     )
+
+
+@lru_cache
+def get_account_log_store() -> AccountLogStore:
+    return get_shared_account_log_store()

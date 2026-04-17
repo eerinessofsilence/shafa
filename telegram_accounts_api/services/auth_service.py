@@ -28,6 +28,7 @@ from telegram_accounts_api.models.auth import (
     TelegramPhoneRequest,
 )
 from telegram_accounts_api.services.account_service import AccountService
+from telegram_accounts_api.utils.account_logging import log
 from telegram_accounts_api.utils.exceptions import BadRequestError, TelegramOperationError
 
 
@@ -86,10 +87,13 @@ class AccountAuthService:
         api_id = str(payload.api_id or "").strip()
         api_hash = str(payload.api_hash or "").strip()
         if not api_id.isdigit():
+            log(account_id, "WARNING", "Rejected Telegram credentials: invalid API ID.")
             raise BadRequestError("Telegram API ID must be an integer.")
         if not api_hash:
+            log(account_id, "WARNING", "Rejected Telegram credentials: API hash missing.")
             raise BadRequestError("Telegram API hash is required.")
         self.store.save_telegram_credentials(account, api_id, api_hash)
+        log(account_id, "INFO", "Telegram API credentials saved.")
         return await self.get_telegram_status(account_id)
 
     async def request_telegram_code(
@@ -98,31 +102,43 @@ class AccountAuthService:
         payload: TelegramPhoneRequest,
     ) -> TelegramAuthStatusResponse:
         account = await self._get_account(account_id)
-        if not self._has_telegram_credentials(account):
-            raise BadRequestError(
-                "Telegram API credentials are missing on backend. "
-                "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH in .env or environment.",
+        log(account_id, "INFO", "Starting Telegram login: requesting verification code.")
+        try:
+            if not self._has_telegram_credentials(account):
+                log(account_id, "WARNING", "Telegram code request blocked: credentials are missing.")
+                raise BadRequestError(
+                    "Telegram API credentials are missing on backend. "
+                    "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH in .env or environment.",
+                )
+            reuse_status = self.telegram_auth.reuse_status(account)
+            if reuse_status is not None:
+                log(account_id, "INFO", "Telegram login already has an active pending step.")
+                return await self.get_telegram_status(account_id)
+            phone_status = self.telegram_auth.validate_phone(payload.phone)
+            if not phone_status.ok:
+                log(account_id, "WARNING", f"Rejected Telegram phone number: {phone_status.message}")
+                raise BadRequestError(phone_status.message)
+            runtime_account = self._with_phone(account, phone_status.message)
+            self.telegram_auth.persist_auth_state(
+                runtime_account,
+                phone_number=phone_status.message,
+                verification_code="",
+                telegram_password="",
+                current_auth_step="WAIT_PHONE",
+                session_path=str(self.store.telegram_session_file(runtime_account)),
+                code_confirmed=False,
             )
-        reuse_status = self.telegram_auth.reuse_status(account)
-        if reuse_status is not None:
+            result = self.telegram_auth.request_code(runtime_account)
+            if not result.ok:
+                log(account_id, "ERROR", f"Telegram verification code request failed: {result.message}")
+                raise TelegramOperationError(result.message)
+            log(account_id, "INFO", "Telegram verification code requested.")
             return await self.get_telegram_status(account_id)
-        phone_status = self.telegram_auth.validate_phone(payload.phone)
-        if not phone_status.ok:
-            raise BadRequestError(phone_status.message)
-        runtime_account = self._with_phone(account, phone_status.message)
-        self.telegram_auth.persist_auth_state(
-            runtime_account,
-            phone_number=phone_status.message,
-            verification_code="",
-            telegram_password="",
-            current_auth_step="WAIT_PHONE",
-            session_path=str(self.store.telegram_session_file(runtime_account)),
-            code_confirmed=False,
-        )
-        result = self.telegram_auth.request_code(runtime_account)
-        if not result.ok:
-            raise TelegramOperationError(result.message)
-        return await self.get_telegram_status(account_id)
+        except (BadRequestError, TelegramOperationError):
+            raise
+        except Exception as exc:
+            log(account_id, "ERROR", f"Unexpected Telegram code request failure: {exc}")
+            raise
 
     async def submit_telegram_code(
         self,
@@ -130,13 +146,22 @@ class AccountAuthService:
         payload: TelegramCodeRequest,
     ) -> TelegramAuthStatusResponse:
         account = await self._get_account(account_id)
-        state = self.telegram_auth.load_auth_state(account)
-        phone = str(state.get("phone_number") or account.phone_number or "").strip()
-        runtime_account = self._with_phone(account, phone)
-        result = self.telegram_auth.submit_code(runtime_account, payload.code)
-        if not result.ok:
-            raise TelegramOperationError(result.message)
-        return await self.get_telegram_status(account_id)
+        log(account_id, "INFO", "Submitting Telegram verification code.")
+        try:
+            state = self.telegram_auth.load_auth_state(account)
+            phone = str(state.get("phone_number") or account.phone_number or "").strip()
+            runtime_account = self._with_phone(account, phone)
+            result = self.telegram_auth.submit_code(runtime_account, payload.code)
+            if not result.ok:
+                log(account_id, "ERROR", f"Telegram code submission failed: {result.message}")
+                raise TelegramOperationError(result.message)
+            log(account_id, "INFO", "Telegram verification code accepted.")
+            return await self.get_telegram_status(account_id)
+        except TelegramOperationError:
+            raise
+        except Exception as exc:
+            log(account_id, "ERROR", f"Unexpected Telegram code submission failure: {exc}")
+            raise
 
     async def submit_telegram_password(
         self,
@@ -144,10 +169,19 @@ class AccountAuthService:
         payload: TelegramPasswordRequest,
     ) -> TelegramAuthStatusResponse:
         account = await self._get_account(account_id)
-        result = self.telegram_auth.submit_password(account, payload.password)
-        if not result.ok:
-            raise TelegramOperationError(result.message)
-        return await self.get_telegram_status(account_id)
+        log(account_id, "INFO", "Submitting Telegram 2FA password.")
+        try:
+            result = self.telegram_auth.submit_password(account, payload.password)
+            if not result.ok:
+                log(account_id, "ERROR", f"Telegram password submission failed: {result.message}")
+                raise TelegramOperationError(result.message)
+            log(account_id, "INFO", "Telegram login completed successfully.")
+            return await self.get_telegram_status(account_id)
+        except TelegramOperationError:
+            raise
+        except Exception as exc:
+            log(account_id, "ERROR", f"Unexpected Telegram password submission failure: {exc}")
+            raise
 
     async def logout_telegram(self, account_id: str) -> TelegramAuthStatusResponse:
         account = await self._get_account(account_id)
@@ -165,6 +199,7 @@ class AccountAuthService:
             extra={"phone_code_hash": ""},
         )
         status = await self.get_telegram_status(account_id)
+        log(account_id, "INFO", "Telegram session removed.")
         return status.model_copy(update={"message": "Telegram session removed."})
 
     async def get_shafa_status(self, account_id: str) -> ShafaAuthStatusResponse:
@@ -193,30 +228,49 @@ class AccountAuthService:
         payload: ShafaStorageStateRequest,
     ) -> ShafaAuthStatusResponse:
         account = await self._get_account(account_id)
-        storage_state = self._normalize_storage_state(payload)
-        auth_path = self.store.auth_file(account)
-        auth_path.parent.mkdir(parents=True, exist_ok=True)
-        auth_path.write_text(json.dumps(storage_state, ensure_ascii=False, indent=2), encoding="utf-8")
-        if not self.store.is_valid_shafa_session(account):
-            auth_path.unlink(missing_ok=True)
-            raise BadRequestError("Shafa cookies must include a non-empty csrftoken for shafa.ua.")
-        self.store.write_account_manifest(account)
-        return await self.get_shafa_status(account_id)
+        log(account_id, "INFO", "Saving Shafa authentication state.")
+        try:
+            storage_state = self._normalize_storage_state(payload)
+            auth_path = self.store.auth_file(account)
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(json.dumps(storage_state, ensure_ascii=False, indent=2), encoding="utf-8")
+            if not self.store.is_valid_shafa_session(account):
+                auth_path.unlink(missing_ok=True)
+                log(account_id, "WARNING", "Rejected Shafa cookies: valid session cookie was not found.")
+                raise BadRequestError("Shafa cookies must include a non-empty csrftoken for shafa.ua.")
+            self.store.write_account_manifest(account)
+            log(account_id, "INFO", "Shafa session saved.")
+            return await self.get_shafa_status(account_id)
+        except BadRequestError:
+            raise
+        except Exception as exc:
+            log(account_id, "ERROR", f"Unexpected Shafa session save failure: {exc}")
+            raise
 
     async def start_shafa_browser_login(self, account_id: str) -> ShafaAuthStatusResponse:
         account = await self._get_account(account_id)
-        self.shafa_login_launcher(account, ["main.py", "--login-shafa"])
-        status = await self.get_shafa_status(account_id)
-        return status.model_copy(
-            update={
-                "message": "Shafa login flow started. Complete login in the opened browser window.",
-            }
-        )
+        log(account_id, "INFO", "Starting Shafa browser login flow.")
+        try:
+            self.shafa_login_launcher(account, ["main.py", "--login-shafa"])
+            status = await self.get_shafa_status(account_id)
+            log(account_id, "INFO", "Shafa browser login flow started.")
+            return status.model_copy(
+                update={
+                    "message": "Shafa login flow started. Complete login in the opened browser window.",
+                }
+            )
+        except BadRequestError as exc:
+            log(account_id, "ERROR", f"Failed to start Shafa login flow: {exc.message}")
+            raise
+        except Exception as exc:
+            log(account_id, "ERROR", f"Unexpected Shafa login launcher failure: {exc}")
+            raise
 
     async def logout_shafa(self, account_id: str) -> ShafaAuthStatusResponse:
         account = await self._get_account(account_id)
         self.store.delete_shafa_session(account)
         status = await self.get_shafa_status(account_id)
+        log(account_id, "INFO", "Shafa session removed.")
         return status.model_copy(update={"message": "Shafa cookies removed."})
 
     async def _get_account(self, account_id: str) -> Account:
