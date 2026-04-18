@@ -15,5 +15,22 @@
     ],
     "created_at": "2026-04-17T12:31:46.848910+00:00",
     "updated_at": "2026-04-17T12:49:30.257987+00:00"
+  },
+  {
+    "id": "95c54a712e0b4ffebf7934ff498e18c4",
+    "account_id": "ca0c78d43a6b43d3b51f5485188723be",
+    "name": "default",
+    "links": [
+      "https://t.me/brooklyn_drop"
+    ],
+    "resolved_channels": [
+      {
+        "channel_id": -1002287669953,
+        "title": "Brooklyn • Dropshipping",
+        "alias": "main"
+      }
+    ],
+    "created_at": "2026-04-18T10:53:34.144969+00:00",
+    "updated_at": "2026-04-18T10:53:38.752229+00:00"
   }
 ]

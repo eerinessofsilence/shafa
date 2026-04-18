@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -81,6 +82,7 @@ class AccountLogsApiTest(unittest.TestCase):
         self.addCleanup(app.dependency_overrides.clear)
         self.addCleanup(lambda: set_account_log_store(AccountLogStore()))
         self.client = TestClient(app)
+        self.local_tz = datetime.now().astimezone().tzinfo or UTC
 
     def test_get_account_logs_returns_only_requested_account(self) -> None:
         log("acc-1", "INFO", "Login started")
@@ -107,6 +109,73 @@ class AccountLogsApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual([item["message"] for item in payload], ["three", "four"])
         self.assertEqual([item["index"] for item in payload], [2, 3])
+
+    def test_get_account_logs_reads_history_from_account_app_log(self) -> None:
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        account_log.write_text(
+            "\n".join(
+                [
+                    "[2026-04-18 13:54:09] [INFO] [Alpha] [RUN] started pid=3544",
+                    "[2026-04-18 13:54:13] [SUCCESS] [Alpha] Товар создан успешно. ID: 42.",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/accounts/acc-1/logs")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            [item["message"] for item in payload],
+            ["[RUN] started pid=3544", "Товар создан успешно. ID: 42."],
+        )
+        self.assertEqual([item["level"] for item in payload], ["INFO", "SUCCESS"])
+
+    def test_get_account_logs_merges_file_history_with_live_runtime_entries(self) -> None:
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        account_log.write_text(
+            "[2026-04-18 13:54:09] [INFO] [Alpha] [RUN] started pid=3544\n",
+            encoding="utf-8",
+        )
+        self.log_store.append(
+            "acc-1",
+            "ERROR",
+            "Не удалось обработать товар.",
+            timestamp=datetime(2026, 4, 18, 13, 54, 13, tzinfo=self.local_tz),
+        )
+
+        response = self.client.get("/accounts/acc-1/logs")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            [item["message"] for item in payload],
+            ["[RUN] started pid=3544", "Не удалось обработать товар."],
+        )
+
+    def test_get_account_logs_dedupes_identical_file_and_runtime_entries(self) -> None:
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        account_log.write_text(
+            "[2026-04-18 13:54:09] [INFO] [Alpha] [RUN] started pid=3544\n",
+            encoding="utf-8",
+        )
+        self.log_store.append(
+            "acc-1",
+            "INFO",
+            "[RUN] started pid=3544",
+            timestamp=datetime(2026, 4, 18, 13, 54, 9, tzinfo=self.local_tz),
+        )
+
+        response = self.client.get("/accounts/acc-1/logs")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual([item["message"] for item in payload], ["[RUN] started pid=3544"])
 
     def test_websocket_streams_new_account_logs(self) -> None:
         with self.client.websocket_connect("/ws/logs/acc-1") as websocket:

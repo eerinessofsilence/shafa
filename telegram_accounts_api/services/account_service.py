@@ -24,7 +24,7 @@ from shafa_control import (
     project_main_path,
 )
 from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
-from telegram_accounts_api.utils.account_logging import log
+from telegram_accounts_api.utils.account_logging import get_account_log_store, log
 from telegram_accounts_api.utils.exceptions import BadRequestError, NotFoundError, StorageError
 from telegram_accounts_api.utils.storage import JsonListStorage
 
@@ -465,15 +465,22 @@ class AccountService:
             LOGGER.exception("Failed to kill pid %s", process.pid)
 
     def _append_log(self, account: Account, message: str) -> None:
+        record = LogRecord(
+            timestamp=datetime.now(),
+            message=message,
+            level=self.log_store.detect_level(message),
+            account_id=account.id,
+            account_name=account.name,
+        )
         self.log_store.append(
-            LogRecord(
-                timestamp=datetime.now(),
-                message=message,
-                level=self.log_store.detect_level(message),
-                account_id=account.id,
-                account_name=account.name,
-            ),
+            record,
             account_log_file=self.session_store.account_log_file(account),
+        )
+        get_account_log_store().append(
+            account_id=account.id,
+            level=record.level,
+            message=record.message,
+            timestamp=record.timestamp,
         )
 
     def _consume_process_output(self, process: subprocess.Popen[str]) -> str:

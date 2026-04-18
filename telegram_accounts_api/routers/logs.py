@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from telegram_accounts_api.dependencies import get_account_log_store, get_account_service
 from telegram_accounts_api.models.logs import AccountLogEntryRead
 from telegram_accounts_api.services.account_service import AccountService
-from telegram_accounts_api.utils.account_logging import AccountLogStore
+from telegram_accounts_api.utils.account_logging import (
+    AccountLogStore,
+    filter_account_log_entries,
+    load_account_log_file_entries,
+    merge_account_log_entries,
+)
 from telegram_accounts_api.utils.exceptions import BadRequestError
 
 router = APIRouter(tags=["logs"])
@@ -24,12 +29,21 @@ async def get_account_logs(
 ) -> list[AccountLogEntryRead]:
     await service.get_account(account_id)
     since_index, since_timestamp = _parse_since(since)
-    entries = store.list_entries(
+    history_entries = load_account_log_file_entries(
         account_id,
+        service.account_dir(account_id) / "logs" / "app.log",
+    )
+    runtime_entries = store.list_entries(
+        account_id,
+        limit=store.max_entries_per_account,
+    )
+    entries = filter_account_log_entries(
+        merge_account_log_entries(history_entries, runtime_entries),
         limit=limit,
         level=level,
         since_index=since_index,
         since_timestamp=since_timestamp,
+        max_entries=store.max_entries_per_account,
     )
     return [
         AccountLogEntryRead(

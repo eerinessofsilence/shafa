@@ -8,6 +8,7 @@ import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 _MAX_LOG_ENTRIES_PER_ACCOUNT = 1000
@@ -16,6 +17,9 @@ _HANDLER_NAME = "telegram_accounts_api.account_log_handler"
 _SENSITIVE_VALUE_PATTERNS = (
     re.compile(r"(?i)\b(password|api_hash|token|sessionid|csrftoken|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)"),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+"),
+)
+_RENDERED_LOG_PATTERN = re.compile(
+    r"^\[(?P<timestamp>[^\]]+)\]\s+\[(?P<level>[^\]]+)\](?:\s+\[(?P<account_name>[^\]]+)\])?\s+(?P<message>.*)$"
 )
 
 
@@ -63,7 +67,7 @@ class AccountLogStore:
         entry = AccountLogEntry(
             index=self._next_index[normalized_account_id],
             account_id=normalized_account_id,
-            timestamp=(timestamp or datetime.now(UTC)).astimezone(UTC),
+            timestamp=normalize_log_timestamp(timestamp or datetime.now(UTC)),
             level=str(level or "INFO").upper(),
             message=sanitize_log_message(message),
         )
@@ -176,6 +180,118 @@ def sanitize_log_message(message: str) -> str:
         else:
             sanitized = pattern.sub(lambda match: f"{match.group(1)}=[REDACTED]", sanitized)
     return sanitized
+
+
+def normalize_log_timestamp(timestamp: datetime) -> datetime:
+    if timestamp.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo or UTC
+        timestamp = timestamp.replace(tzinfo=local_tz)
+    return timestamp.astimezone(UTC)
+
+
+def load_account_log_file_entries(
+    account_id: str | int,
+    log_file: Path,
+) -> list[AccountLogEntry]:
+    if not log_file.exists() or not log_file.is_file():
+        return []
+
+    entries: list[AccountLogEntry] = []
+    try:
+        raw_lines = log_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    normalized_account_id = str(account_id)
+    for raw_line in raw_lines:
+        match = _RENDERED_LOG_PATTERN.match(raw_line.strip())
+        if not match:
+            continue
+        try:
+            timestamp = datetime.strptime(
+                match.group("timestamp"),
+                "%Y-%m-%d %H:%M:%S",
+            )
+        except ValueError:
+            continue
+        entries.append(
+            AccountLogEntry(
+                index=0,
+                account_id=normalized_account_id,
+                timestamp=normalize_log_timestamp(timestamp),
+                level=str(match.group("level") or "INFO").upper(),
+                message=sanitize_log_message(match.group("message") or ""),
+            )
+        )
+    start_index = -len(entries)
+    return [
+        AccountLogEntry(
+            index=start_index + offset,
+            account_id=entry.account_id,
+            timestamp=entry.timestamp,
+            level=entry.level,
+            message=entry.message,
+        )
+        for offset, entry in enumerate(entries)
+    ]
+
+
+def merge_account_log_entries(*groups: list[AccountLogEntry]) -> list[AccountLogEntry]:
+    merged_by_key: dict[tuple[str, str, str, str], AccountLogEntry] = {}
+
+    for group in groups:
+        for entry in group:
+            dedupe_key = (
+                entry.account_id,
+                normalize_log_timestamp(entry.timestamp)
+                .replace(microsecond=0)
+                .isoformat(),
+                entry.level,
+                entry.message,
+            )
+            existing = merged_by_key.get(dedupe_key)
+            if existing is None or entry.index > existing.index:
+                merged_by_key[dedupe_key] = entry
+
+    return sorted(
+        merged_by_key.values(),
+        key=lambda entry: (
+            normalize_log_timestamp(entry.timestamp),
+            entry.index,
+            entry.message,
+        ),
+    )
+
+
+def filter_account_log_entries(
+    entries: list[AccountLogEntry],
+    *,
+    limit: int = 100,
+    level: str | None = None,
+    since_index: int | None = None,
+    since_timestamp: datetime | None = None,
+    max_entries: int = _MAX_LOG_ENTRIES_PER_ACCOUNT,
+) -> list[AccountLogEntry]:
+    target_level = str(level or "").upper()
+    normalized_since_timestamp = (
+        normalize_log_timestamp(since_timestamp)
+        if since_timestamp is not None
+        else None
+    )
+    bounded_limit = max(1, min(int(limit), int(max_entries)))
+
+    filtered = entries
+    if target_level:
+        filtered = [entry for entry in filtered if entry.level == target_level]
+    if since_index is not None:
+        filtered = [entry for entry in filtered if entry.index > since_index]
+    if normalized_since_timestamp is not None:
+        filtered = [
+            entry
+            for entry in filtered
+            if normalize_log_timestamp(entry.timestamp) >= normalized_since_timestamp
+        ]
+    return filtered[-bounded_limit:]
 
 
 def log(account_id: str | int, level: str, message: str) -> None:

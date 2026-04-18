@@ -183,6 +183,7 @@ const allLogAccountsValue = '__all_accounts__';
 const allLogLevelsValue = 'ALL';
 const statsLogLevelOptions = [
   { label: 'Все уровни', value: allLogLevelsValue },
+  { label: 'Успех', value: 'SUCCESS' },
   { label: 'Только ошибки', value: 'ERROR' },
   { label: 'Предупреждения', value: 'WARNING' },
   { label: 'Инфо', value: 'INFO' },
@@ -336,6 +337,9 @@ function formatApiError(error: unknown, fallback: string) {
 
 function getAccountLogTone(level: string): StatusTone {
   switch (level.toUpperCase()) {
+    case 'SUCCESS':
+    case 'OK':
+      return 'success';
     case 'ERROR':
     case 'CRITICAL':
       return 'danger';
@@ -1180,6 +1184,7 @@ function AccountsPage({
   const [bulkFeedback, setBulkFeedback] = useState('');
   const [isDetailsDialogOpen, setIsDetailsDialogOpen] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [itemsPerPage, setItemsPerPage] = useState<
     (typeof accountPageSizeOptions)[number]
   >(accountPageSizeOptions[0]);
@@ -1354,6 +1359,12 @@ function AccountsPage({
     }
   }, [detailsAccount, isDetailsDialogOpen]);
 
+  useEffect(() => {
+    if (isDeleteDialogOpen && selectedAccounts.length === 0) {
+      setIsDeleteDialogOpen(false);
+    }
+  }, [isDeleteDialogOpen, selectedAccounts.length]);
+
   return (
     <div className="space-y-4">
       <PageHeader title="Аккаунты" />
@@ -1415,7 +1426,7 @@ function AccountsPage({
                     selectedAccountIds.length === 0 || isMutationPending
                   }
                   type="button"
-                  onClick={() => void runBulkAction('delete')}
+                  onClick={() => setIsDeleteDialogOpen(true)}
                 >
                   <Trash2 className="h-4.5 w-4.5" />
                 </button>
@@ -1687,6 +1698,21 @@ function AccountsPage({
         onClose={() => setIsCreateDialogOpen(false)}
         onCreateAccount={onCreateAccount}
       />
+      <DeleteAccountsDialog
+        accounts={selectedAccounts}
+        isOpen={isDeleteDialogOpen}
+        isSubmitting={isMutationPending}
+        onClose={() => setIsDeleteDialogOpen(false)}
+        onConfirm={async () => {
+          await runBulkAction('delete');
+          setIsDeleteDialogOpen(false);
+        }}
+        onRemoveAccount={(accountId) =>
+          setSelectedAccountIds((currentSelection) =>
+            currentSelection.filter((selectedId) => selectedId !== accountId),
+          )
+        }
+      />
     </div>
   );
 }
@@ -1738,7 +1764,7 @@ function AccountDialogShell({
       onClick={onClose}
     >
       <div
-        className="max-h-[calc(100vh-64px)] w-full max-w-330 overflow-y-auto rounded-[30px] border border-border/20 bg-foreground p-6 shadow-[0_30px_90px_rgba(15,23,42,0.2)]"
+        className="max-h-[calc(100vh-64px)] w-full max-w-250 overflow-y-auto rounded-[30px] border border-border/20 bg-foreground p-5 shadow-[0_30px_90px_rgba(15,23,42,0.2)]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex flex-col gap-4 border-b border-border/10 pb-2.5 sm:flex-row sm:items-center sm:justify-between">
@@ -2720,6 +2746,151 @@ function CreateAccountDialog({
           >
             <Save className="h-4 w-4" />
             Создать аккаунт
+          </button>
+        </div>
+      </div>
+    </AccountDialogShell>
+  );
+}
+
+interface DeleteAccountsDialogProps {
+  accounts: AccountRow[];
+  isOpen: boolean;
+  isSubmitting: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+  onRemoveAccount: (accountId: string) => void;
+}
+
+function DeleteAccountsDialog({
+  accounts,
+  isOpen,
+  isSubmitting,
+  onClose,
+  onConfirm,
+  onRemoveAccount,
+}: DeleteAccountsDialogProps) {
+  const [submitError, setSubmitError] = useState('');
+  const isSingleAccount = accounts.length === 1;
+  const accountLabel = formatAccountCount(accounts.length);
+  const accountSignature = accounts
+    .map((account) => `${account.id}:${account.name}`)
+    .join('|');
+  const dialogTitle = isSingleAccount
+    ? 'Удаление аккаунта'
+    : 'Удаление аккаунтов';
+
+  useEffect(() => {
+    if (!isOpen) {
+      setSubmitError('');
+      return;
+    }
+
+    setSubmitError('');
+  }, [isOpen, accountSignature]);
+
+  if (!isOpen || accounts.length === 0) {
+    return null;
+  }
+
+  return (
+    <AccountDialogShell
+      closeLabel="Закрыть подтверждение удаления"
+      isOpen={isOpen}
+      onClose={onClose}
+      title={dialogTitle}
+    >
+      <div className="space-y-6 pt-6">
+        <div className="rounded-[22px] border border-error/25 bg-error/8 p-4">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-error/12 text-error">
+              <TriangleAlert className="h-5 w-5" />
+            </div>
+            <div className="space-y-1.5">
+              <strong className="block text-text">Действие необратимо</strong>
+              <p className="leading-6 text-text-muted">
+                Будут удалены настройки, сессии, локальная база, логи и другие
+                файлы выбранного аккаунта из каталога `accounts`. Автоматически
+                восстановить их не получится.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <p className="leading-6 text-text-muted">
+            {isSingleAccount
+              ? 'Вы уверены, что хотите удалить этот аккаунт?'
+              : `Вы уверены, что хотите удалить выбранные ${accountLabel}?`}
+          </p>
+          <div className="flex flex-wrap items-start gap-3">
+            <span className="pt-1 text-sm font-semibold text-text">
+              Будут удалены:
+            </span>
+            <div className="flex flex-wrap gap-2.5">
+              {accounts.map((account) =>
+                isSingleAccount ? (
+                  <span
+                    key={account.id}
+                    className="inline-flex items-center rounded-xl border border-error/25 bg-secondary px-3 py-1 text-sm font-medium text-text"
+                  >
+                    {account.name}
+                  </span>
+                ) : (
+                  <button
+                    key={account.id}
+                    className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-error/25 bg-secondary px-3 py-1 text-sm font-medium text-text transition hover:border-error/40 hover:bg-error/8 disabled:cursor-not-allowed disabled:opacity-55"
+                    disabled={isSubmitting}
+                    type="button"
+                    onClick={() => onRemoveAccount(account.id)}
+                  >
+                    <span>{account.name}</span>
+                    <X className="stroke-3 text-error h-3.5 w-3.5" />
+                  </button>
+                ),
+              )}
+            </div>
+          </div>
+        </div>
+
+        {submitError ? (
+          <p className="text-sm text-error">{submitError}</p>
+        ) : null}
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border/40 bg-secondary/75 px-3 py-2 text-text transition hover:border-border/70 hover:bg-secondary"
+            type="button"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+            Отмена
+          </button>
+          <button
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-error px-4 py-2 text-white transition hover:bg-error/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-error"
+            disabled={isSubmitting}
+            type="button"
+            onClick={async () => {
+              if (isSubmitting) {
+                return;
+              }
+
+              setSubmitError('');
+
+              try {
+                await onConfirm();
+              } catch (error) {
+                setSubmitError(
+                  formatApiError(
+                    error,
+                    'Не удалось удалить выбранные аккаунты.',
+                  ),
+                );
+              }
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            {isSingleAccount ? 'Удалить аккаунт' : `Удалить ${accountLabel}`}
           </button>
         </div>
       </div>
