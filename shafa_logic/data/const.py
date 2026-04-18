@@ -8,7 +8,7 @@ except ImportError:  # pragma: no cover - optional at import time for tests
     def load_dotenv(*args, **kwargs):
         return False
 
-_ROOT_DIR = Path(__file__).resolve().parents[1]
+_ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(dotenv_path=_ROOT_DIR / ".env", override=False)
 
 CREATE_PRODUCT_MUTATION = """
