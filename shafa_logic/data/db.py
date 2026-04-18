@@ -459,8 +459,7 @@ def get_size_id_by_name(
     mapping, mapping_by_catalog, _, ids_by_catalog = _load_sizes_cache()
     normalized_catalog_slug = _normalize_catalog_slug(catalog_slug)
     if normalized_catalog_slug:
-        if normalized_catalog_slug in ids_by_catalog:
-            return mapping_by_catalog.get((normalized_catalog_slug, key))
+        return mapping_by_catalog.get((normalized_catalog_slug, key))
     return mapping.get(key)
 
 
@@ -469,8 +468,9 @@ def size_id_exists(size_id: int, catalog_slug: Optional[str] = None) -> bool:
     normalized_catalog_slug = _normalize_catalog_slug(catalog_slug)
     if normalized_catalog_slug:
         scoped_ids = ids_by_catalog.get(normalized_catalog_slug)
-        if scoped_ids is not None:
-            return size_id in scoped_ids
+        if scoped_ids is None:
+            return False
+        return size_id in scoped_ids
     return size_id in ids
 
 

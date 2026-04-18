@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import controller.data_controller as dc
+from data.db import get_size_id_by_name
 
 
 class CategoryBySizeTests(unittest.TestCase):
@@ -129,3 +130,44 @@ class CategoryBySizeTests(unittest.TestCase):
 
         self.assertEqual(parsed["size"], "42")
         self.assertEqual(parsed["additional_sizes"], ["44", "46"])
+
+    def test_build_product_raw_data_uses_clothing_size_ids_for_sport_pants(self):
+        parsed = {
+            "word_for_slack": "штани",
+            "name": "Штани",
+            "description": "desc",
+            "size": "42",
+            "additional_sizes": ["44", "46"],
+            "price": "450",
+            "color": "чорний",
+            "brand": None,
+        }
+
+        product_raw_data = dc.build_product_raw_data(parsed)
+
+        self.assertEqual(product_raw_data["category"], "sport-otdyh/sportivnyye-shtany")
+        self.assertEqual(product_raw_data["size"], 6)
+        self.assertEqual(product_raw_data["additional_sizes"], [7, 8])
+
+    def test_build_product_raw_data_uses_shoe_size_ids_for_default_sneakers(self):
+        parsed = {
+            "word_for_slack": "",
+            "name": "Кроссовки",
+            "description": "desc",
+            "size": "42",
+            "additional_sizes": ["43", "44"],
+            "price": "1190",
+            "color": "чорний",
+            "brand": None,
+        }
+
+        product_raw_data = dc.build_product_raw_data(parsed)
+
+        self.assertEqual(product_raw_data["category"], "obuv/krossovki")
+        self.assertEqual(product_raw_data["size"], 177)
+        self.assertEqual(product_raw_data["additional_sizes"], [178, 179])
+
+    def test_database_confirms_clothes_and_shoes_have_different_size_ids(self):
+        self.assertEqual(get_size_id_by_name("42", catalog_slug="obuv/krossovki"), 177)
+        self.assertEqual(get_size_id_by_name("42", catalog_slug="zhenskaya-obuv/krossovki"), 39)
+        self.assertEqual(dc._resolve_size_id("42", catalog_slug="sport-otdyh/sportivnyye-shtany"), 6)
