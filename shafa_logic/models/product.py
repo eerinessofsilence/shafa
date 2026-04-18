@@ -9,6 +9,7 @@ class Product:
     brand: int
     size: int
     price: int
+    word_for_slack: str = ""
 
     translation_enabled: bool = True
     condition: str = "NEW"
