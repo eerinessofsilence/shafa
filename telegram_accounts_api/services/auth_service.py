@@ -43,6 +43,13 @@ def _preferred_project_dir(project_dir: Path) -> Path:
     return project_dir
 
 
+def _project_data_dir(project_dir: Path) -> Path:
+    preferred = _preferred_project_dir(project_dir)
+    if preferred.name == "shafa_logic":
+        return preferred.parent / "data"
+    return preferred / "data"
+
+
 class AccountAuthService:
     def __init__(
         self,
@@ -309,11 +316,12 @@ class AccountAuthService:
     def _account_env(self, account: Account) -> dict[str, str]:
         env = os.environ.copy()
         state_dir = self.store.account_dir(account)
+        project_path = _preferred_project_dir(Path(account.path).expanduser())
         api_id, api_hash = self._resolve_telegram_credentials(account)
         env.setdefault("PYTHONUNBUFFERED", "1")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
-        env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
+        env["SHAFA_DB_PATH"] = str(_project_data_dir(project_path) / "shafa.sqlite3")
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
