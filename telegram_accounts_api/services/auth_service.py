@@ -4,9 +4,12 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from fastapi import UploadFile
 
 from shafa_control import (
     Account,
@@ -256,6 +259,59 @@ class AccountAuthService:
         )
         return (await self.get_telegram_status(account_id)).model_copy(
             update={"message": f"Telegram session copied from account '{source_account_id}'."}
+        )
+
+    async def import_telegram_session(
+        self,
+        account_id: str,
+        file: UploadFile,
+    ) -> TelegramAuthStatusResponse:
+        account = await self._get_account(account_id)
+        filename = Path(file.filename or "telegram.session").name or "telegram.session"
+        temp_path: Path | None = None
+        try:
+            suffix = Path(filename).suffix or ".session"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
+                temp_path = Path(temp_file.name)
+
+            if temp_path.stat().st_size <= 0:
+                log(account_id, "WARNING", "Telegram session import rejected: file is empty.")
+                raise BadRequestError("Telegram session file is empty.")
+
+            self.telegram_auth.import_session(account, temp_path)
+        except RuntimeError as exc:
+            log(
+                account_id,
+                "WARNING",
+                f"Telegram session import failed from '{filename}': {exc}",
+            )
+            raise BadRequestError(str(exc)) from exc
+        finally:
+            await file.close()
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+        state = self.telegram_auth.load_auth_state(account)
+        phone_number = str(state.get("phone_number") or account.phone_number or "").strip()
+        self.telegram_auth.persist_auth_state(
+            self._with_phone(account, phone_number) if phone_number else account,
+            phone_number=phone_number,
+            verification_code="",
+            telegram_password="",
+            current_auth_step="SUCCESS",
+            session_path=str(self.store.telegram_session_file(account)),
+            code_confirmed=False,
+            extra={"phone_code_hash": ""},
+        )
+        self.store.write_account_manifest(account)
+        log(account_id, "INFO", f"Telegram session imported from file '{filename}'.")
+        return (await self.get_telegram_status(account_id)).model_copy(
+            update={"message": f"Telegram session imported from file '{filename}'."}
         )
 
     async def get_shafa_status(self, account_id: str) -> ShafaAuthStatusResponse:

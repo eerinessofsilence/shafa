@@ -11,6 +11,7 @@ import {
 import {
   getShafaAuthStatus,
   getTelegramAuthStatus,
+  importTelegramSession,
   logoutShafa,
   logoutTelegram,
   requestTelegramCode,
@@ -2229,6 +2230,7 @@ function TelegramAuthCard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const sessionFileInputRef = useRef<HTMLInputElement | null>(null);
   const stepMeta = getTelegramStepMeta(status);
   const isConnected = Boolean(status?.connected);
   const connectedPhoneLabel = status?.phone_number?.trim() || 'Номер не найден';
@@ -2316,6 +2318,44 @@ function TelegramAuthCard({
     }
   };
 
+  const handleSessionFileChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    setIsAccountMenuOpen(false);
+    setError('');
+    setFeedback('');
+
+    try {
+      const nextStatus = await importTelegramSession(accountId, file);
+
+      setFeedback(nextStatus.message);
+      if (nextStatus.phone_number) {
+        setPhone(nextStatus.phone_number);
+      }
+      setCode('');
+      setPassword('');
+
+      await Promise.all([onRefreshStatuses(), onReloadAccounts()]);
+    } catch (nextError) {
+      setError(
+        formatApiError(
+          nextError,
+          'Не удалось импортировать Telegram session файл.',
+        ),
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const showCodeField = status?.current_step === 'WAIT_CODE';
   const showPasswordField = status?.current_step === 'WAIT_PASSWORD';
   const isPhoneDisabled =
@@ -2330,6 +2370,7 @@ function TelegramAuthCard({
     isSubmitting || isStatusLoading || !password.trim() || !showPasswordField;
   const isLogoutDisabled = isSubmitting || isStatusLoading || !isConnected;
   const isAccountMenuDisabled = isSubmitting || isStatusLoading || !isConnected;
+  const isSessionImportDisabled = isSubmitting || isStatusLoading;
 
   return (
     <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
@@ -2344,64 +2385,86 @@ function TelegramAuthCard({
               <p className="font-medium text-text">Telegram авторизация</p>
               <div className="flex flex-wrap gap-2">
                 <StatusPill tone={stepMeta.tone}>{stepMeta.label}</StatusPill>
-                <StatusPill
-                  tone={status?.has_api_credentials ? 'success' : 'warning'}
-                >
-                  {status?.has_api_credentials ? 'API настроен' : 'Нет API'}
-                </StatusPill>
               </div>
             </div>
           </div>
         </div>
-        {isConnected ? (
-          <div className="relative" ref={accountMenuRef}>
-            <div className="flex font-medium gap-3 items-center px-3 border border-border/50 bg-secondary h-9.5 rounded-xl">
+        <div className="flex flex-wrap items-center gap-2">
+          {isConnected ? null : (
+            <>
+              <input
+                ref={sessionFileInputRef}
+                accept=".session,application/octet-stream"
+                className="hidden"
+                type="file"
+                onChange={(event) => void handleSessionFileChange(event)}
+              />
               <button
-                aria-expanded={isAccountMenuOpen}
-                aria-haspopup="menu"
-                className="inline-flex cursor-pointer items-center justify-center gap-2 border-r border-border/50 rounded-l-xl text-sm h-9.5 font-medium pr-3 hover:text-text-muted text-text-muted/75 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={isAccountMenuDisabled}
+                className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
+                disabled={isSessionImportDisabled}
                 type="button"
-                onClick={() =>
-                  setIsAccountMenuOpen((currentValue) => !currentValue)
-                }
+                onClick={() => sessionFileInputRef.current?.click()}
               >
                 {isSubmitting ? (
                   <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
-                  <ChevronDown
-                    className={`h-4 w-4 transition-transform duration-200 ${isAccountMenuOpen ? 'rotate-180 text-text' : ''}`}
-                  />
+                  <Upload className="h-4 w-4" />
                 )}
+                Добавить сессию
               </button>
-              {connectedPhoneLabel}
-            </div>
+            </>
+          )}
 
-            {isAccountMenuOpen ? (
-              <div className="absolute top-full right-0 z-10 mt-2  rounded-2xl border border-border/20 bg-foreground p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+          {isConnected ? (
+            <div className="relative" ref={accountMenuRef}>
+              <div className="flex h-9.5 items-center gap-3 rounded-xl border border-border/50 bg-secondary px-3 font-medium">
                 <button
-                  className="inline-flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium text-text transition hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-                  disabled={isLogoutDisabled}
+                  aria-expanded={isAccountMenuOpen}
+                  aria-haspopup="menu"
+                  className="inline-flex h-9.5 cursor-pointer items-center justify-center gap-2 rounded-l-xl border-r border-border/50 pr-3 text-sm font-medium text-text-muted/75 hover:text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={isAccountMenuDisabled}
                   type="button"
-                  onClick={() => {
-                    setIsAccountMenuOpen(false);
-                    void runTelegramAction(
-                      () => logoutTelegram(accountId),
-                      'Не удалось выйти из Telegram.',
-                    );
-                  }}
+                  onClick={() =>
+                    setIsAccountMenuOpen((currentValue) => !currentValue)
+                  }
                 >
                   {isSubmitting ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                   ) : (
-                    <LogOut className="h-4 w-4" />
+                    <ChevronDown
+                      className={`h-4 w-4 transition-transform duration-200 ${isAccountMenuOpen ? 'rotate-180 text-text' : ''}`}
+                    />
                   )}
-                  Выйти из аккаунта
                 </button>
+                {connectedPhoneLabel}
               </div>
-            ) : null}
-          </div>
-        ) : null}
+
+              {isAccountMenuOpen ? (
+                <div className="absolute top-full right-0 z-10 mt-2 rounded-2xl border border-border/20 bg-foreground p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+                  <button
+                    className="inline-flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium text-text transition hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                    disabled={isLogoutDisabled}
+                    type="button"
+                    onClick={() => {
+                      setIsAccountMenuOpen(false);
+                      void runTelegramAction(
+                        () => logoutTelegram(accountId),
+                        'Не удалось выйти из Telegram.',
+                      );
+                    }}
+                  >
+                    {isSubmitting ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <LogOut className="h-4 w-4" />
+                    )}
+                    Выйти из аккаунта
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {isConnected ? null : (
@@ -2417,7 +2480,7 @@ function TelegramAuthCard({
               onChange={setPhone}
             />
             <button
-              className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+              className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 h-12 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
               disabled={isPhoneDisabled}
               type="button"
               onClick={() =>
@@ -2450,7 +2513,7 @@ function TelegramAuthCard({
                 onChange={setCode}
               />
               <button
-                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 h-12 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
                 disabled={isCodeDisabled}
                 type="button"
                 onClick={() =>
@@ -2485,7 +2548,7 @@ function TelegramAuthCard({
                 onChange={setPassword}
               />
               <button
-                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 py-2 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
+                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-info px-4 h-12 text-white transition hover:bg-info/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-info"
                 disabled={isPasswordDisabled}
                 type="button"
                 onClick={() =>
@@ -3147,7 +3210,7 @@ function TelegramChannelsPanel({
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             {channels.map((channel) => {
               const isEditing = editingChannelId === channel.id;
 

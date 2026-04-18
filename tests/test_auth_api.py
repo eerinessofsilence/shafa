@@ -280,6 +280,37 @@ def test_telegram_copy_session_rejects_same_account(tmp_path: Path) -> None:
     assert response.json()["detail"] == "Source and target accounts must be different."
 
 
+def test_telegram_import_session_saves_uploaded_file(tmp_path: Path) -> None:
+    client, store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Import", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+    account = Account(id=account_id, name="Import", path="/tmp/project")
+
+    response = client.post(
+        f"/accounts/{account_id}/auth/telegram/import-session",
+        files={
+            "file": (
+                "telegram.session",
+                b"SQLite format 3\x00payload",
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is True
+    assert response.json()["current_step"] == "SUCCESS"
+    assert store.telegram_session_file(account).read_bytes() == b"SQLite format 3\x00payload"
+
+    account_payload = client.get(f"/accounts/{account_id}").json()
+    assert account_payload["telegram_session_exists"] is True
+
+
 def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
     client, store = _make_client(tmp_path)
 

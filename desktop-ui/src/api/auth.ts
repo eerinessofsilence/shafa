@@ -61,6 +61,22 @@ export async function logoutTelegram(
   });
 }
 
+export async function importTelegramSession(
+  accountId: string,
+  file: File,
+): Promise<ApiTelegramAuthStatus> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  return request<ApiTelegramAuthStatus>(
+    `/accounts/${accountId}/auth/telegram/import-session`,
+    {
+      body: formData,
+      method: 'POST',
+    },
+  );
+}
+
 export async function getShafaAuthStatus(
   accountId: string,
 ): Promise<ApiShafaAuthStatus> {

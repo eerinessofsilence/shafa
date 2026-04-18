@@ -30,12 +30,13 @@ export async function request<T>(
   init?: RequestInit,
 ): Promise<T> {
   let response: Response;
+  const isFormDataBody = init?.body instanceof FormData;
 
   try {
     response = await fetch(buildApiUrl(path), {
       ...init,
       headers: {
-        'Content-Type': 'application/json',
+        ...(isFormDataBody ? {} : { 'Content-Type': 'application/json' }),
         ...(init?.headers ?? {}),
       },
     });
