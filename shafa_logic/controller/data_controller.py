@@ -1651,6 +1651,10 @@ def is_mode_allowed_parsed(parsed: dict) -> bool:
     return category in {DEFAULT_SHOES_CATEGORY, WOMEN_SNEAKERS_CATEGORY}
 
 
+def catalog_supports_brand(catalog_slug: Optional[str]) -> bool:
+    return catalog_slug in {DEFAULT_SHOES_CATEGORY, WOMEN_SNEAKERS_CATEGORY}
+
+
 async def first_fetch() -> int:
     inserted = 0
     debug_fetch = _debug_fetch_enabled()
@@ -2456,7 +2460,11 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
         "name": parsed.get("name", ""),
         "description": description,
         "category": catalog_slug,
-        "brand": _resolve_brand_id(parsed.get("brand")),
+        "brand": (
+            _resolve_brand_id(parsed.get("brand"))
+            if catalog_supports_brand(catalog_slug)
+            else None
+        ),
         "size": resolved_size
         if resolved_size is not None
         else _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug),

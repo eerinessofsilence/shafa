@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from controller.catalog_filter import SLUG_TO_WORDS
 from controller.data_controller import (
     build_product_raw_data,
+    catalog_supports_brand,
     download_product_photos,
     get_next_product_for_upload,
     mark_product_created,
@@ -659,7 +660,7 @@ def main() -> None:
         log("INFO", f"Каталог из данных товара: {catalog_slug}.")
     if not catalog_slug:
         catalog_slug = DEFAULT_CATALOG_SLUG
-    if product_raw_data.get("brand") is None:
+    if product_raw_data.get("brand") is None and catalog_supports_brand(catalog_slug):
         log("WARN", "Бренд не определён. Обновляю список брендов...")
         try:
             _refresh_brands(csrftoken, cookies, catalog_slug=catalog_slug)

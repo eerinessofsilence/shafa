@@ -505,3 +505,9 @@ def find_word(name: str) -> str | None:
                 best_score = score
                 best_word = word
     return best_word
+
+
+def is_catalog_filter_slug(slug: str | None) -> bool:
+    if slug is None:
+        return False
+    return str(slug).strip() in SLUG_TO_WORDS
