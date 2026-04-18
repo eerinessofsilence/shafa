@@ -10,6 +10,7 @@ class Product:
     size: int
     price: int
     word_for_slack: str = ""
+    slug: str = ""
 
     translation_enabled: bool = True
     condition: str = "NEW"
