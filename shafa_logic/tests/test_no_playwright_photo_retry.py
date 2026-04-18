@@ -15,6 +15,76 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
     @patch("core.no_playwright.upload_photo")
     @patch("core.no_playwright.download_product_photos")
     @patch("core.no_playwright.reset_media_dir")
+    @patch("core.no_playwright.build_product_raw_data")
+    @patch("core.no_playwright._refresh_brands")
+    @patch("core.no_playwright._get_csrftoken_from_cookies")
+    @patch("core.no_playwright._load_shafa_cookies")
+    @patch("core.no_playwright.get_next_product_for_upload")
+    @patch("core.no_playwright.init_db")
+    def test_refreshes_brands_when_catalog_is_known_but_brand_missing(
+        self,
+        _init_db,
+        get_next_product_for_upload,
+        load_cookies,
+        get_csrftoken,
+        refresh_brands,
+        build_product_raw_data,
+        _reset_media_dir,
+        download_product_photos,
+        upload_photo,
+        create_product,
+        _mark_product_created,
+        _save_uploaded_product,
+    ):
+        parsed_data = {"name": "Nike Cortez Pink premium", "price": "1600", "size": "36"}
+        get_next_product_for_upload.return_value = {
+            "channel_id": 9,
+            "message_id": 11543,
+            "parsed_data": parsed_data,
+            "product_raw_data": {
+                "name": "Nike Cortez Pink premium",
+                "price": 1600,
+                "size": 33,
+                "brand": None,
+                "category": "zhenskaya-obuv/krossovki",
+            },
+        }
+        load_cookies.return_value = [{"name": "csrftoken", "value": "token"}]
+        get_csrftoken.return_value = "token"
+        build_product_raw_data.return_value = {
+            "name": "Nike Cortez Pink premium",
+            "price": 1600,
+            "size": 33,
+            "brand": 104,
+            "category": "zhenskaya-obuv/krossovki",
+            "colors": ["PINK"],
+        }
+        download_product_photos.return_value = 1
+        upload_photo.return_value = "photo-1"
+        create_product.return_value = {"createdProduct": {"id": "product-1"}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            photo_path = Path(tmpdir) / "shoe.jpg"
+            photo_path.write_bytes(b"jpg")
+            with patch("core.no_playwright.list_media_files", return_value=[photo_path]):
+                with patch("core.no_playwright.handle_retryable_product_failure") as handle_failure:
+                    no_playwright.main()
+
+        refresh_brands.assert_called_once_with(
+            "token",
+            [{"name": "csrftoken", "value": "token"}],
+            catalog_slug="zhenskaya-obuv/krossovki",
+        )
+        build_product_raw_data.assert_called_once_with(parsed_data)
+        create_product.assert_called_once()
+        handle_failure.assert_not_called()
+
+    @patch("core.no_playwright.save_uploaded_product")
+    @patch("core.no_playwright.mark_product_created")
+    @patch("core.no_playwright.create_product")
+    @patch("core.no_playwright.upload_photo")
+    @patch("core.no_playwright.download_product_photos")
+    @patch("core.no_playwright.reset_media_dir")
     @patch("core.no_playwright._get_csrftoken_from_cookies")
     @patch("core.no_playwright._load_shafa_cookies")
     @patch("core.no_playwright.get_next_product_for_upload")

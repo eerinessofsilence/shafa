@@ -1,4 +1,4 @@
-import _test_path  # noqa: F401
+import _test_path
 import unittest
 
 import controller.data_controller as dc

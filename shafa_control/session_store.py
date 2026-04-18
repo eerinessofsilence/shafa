@@ -109,8 +109,25 @@ class AccountSessionStore:
     def auth_file(self, account: Account) -> Path:
         return self.account_dir(account) / "auth.json"
 
+    @staticmethod
+    def _preferred_project_dir(project_dir: Path) -> Path:
+        shafa_logic_dir = project_dir / "shafa_logic"
+        if shafa_logic_dir.is_dir() and (shafa_logic_dir / "main.py").is_file():
+            return shafa_logic_dir
+        return project_dir
+
+    @classmethod
+    def _project_root_dir(cls, project_dir: Path) -> Path:
+        preferred = cls._preferred_project_dir(project_dir)
+        if preferred.name == "shafa_logic":
+            return preferred.parent
+        return preferred
+
     def db_file(self, account: Account) -> Path:
-        return self.account_dir(account) / "shafa.sqlite3"
+        project_dir = self._project_root_dir(Path(account.path).expanduser())
+        data_dir = project_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir / "shafa.sqlite3"
 
     def telegram_session_file(self, account: Account) -> Path:
         return self.account_dir(account) / "telegram.session"

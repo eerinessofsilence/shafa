@@ -379,8 +379,6 @@ def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
 def save_sizes(sizes: list[dict], catalog_slug: Optional[str] = None) -> None:
     global _SIZE_ID_BY_NAME_CACHE, _SIZE_ID_BY_NAME_CATALOG_CACHE
     global _SIZE_IDS_CACHE, _SIZE_IDS_CATALOG_CACHE
-    if not sizes:
-        return
     normalized_catalog_slug = _normalize_catalog_slug(catalog_slug)
     if normalized_catalog_slug is None:
         return
@@ -391,19 +389,25 @@ def save_sizes(sizes: list[dict], catalog_slug: Optional[str] = None) -> None:
         if size_id is None or not primary_name:
             continue
         rows.append((normalized_catalog_slug, size_id, str(primary_name)))
-    if not rows:
-        return
     _ensure_db_initialized()
     with _connect() as conn:
-        conn.executemany(
+        conn.execute(
             """
-            INSERT INTO size_catalogs (catalog_slug, size_id, primary_size_name)
-            VALUES (?, ?, ?)
-            ON CONFLICT(catalog_slug, size_id) DO UPDATE SET
-                primary_size_name = excluded.primary_size_name
+            DELETE FROM size_catalogs
+            WHERE catalog_slug = ?
             """,
-            rows,
+            (normalized_catalog_slug,),
         )
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO size_catalogs (catalog_slug, size_id, primary_size_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(catalog_slug, size_id) DO UPDATE SET
+                    primary_size_name = excluded.primary_size_name
+                """,
+                rows,
+            )
     _SIZE_ID_BY_NAME_CACHE = None
     _SIZE_ID_BY_NAME_CATALOG_CACHE = None
     _SIZE_IDS_CACHE = None

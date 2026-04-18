@@ -1,6 +1,9 @@
 import json
 
-from playwright.sync_api import BrowserContext
+try:
+    from playwright.sync_api import BrowserContext
+except ModuleNotFoundError:  # pragma: no cover - optional at import time for tests
+    BrowserContext = object
 
 from core.core import base_headers, read_response_json
 from data.const import API_BATCH_URL
@@ -65,7 +68,6 @@ def get_brands(
     )
 
     data = read_response_json(resp)
-
     if isinstance(data, list):
         data = data[0] if data else {}
 

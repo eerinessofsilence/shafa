@@ -63,7 +63,8 @@ USER_AGENT = (
 DEFAULT_CATALOG_SLUG = "obuv/krossovki"
 WOMEN_CATALOG_SLUG = "zhenskaya-obuv/krossovki"
 DEFAULT_CLOTES_CATEGORY = "verhnyaya-odezhda/palto"
-SIZE_CATALOG_SLUGS = (DEFAULT_CATALOG_SLUG, WOMEN_CATALOG_SLUG, DEFAULT_CLOTES_CATEGORY)
+
+SIZE_CATALOG_SLUGS = (DEFAULT_CATALOG_SLUG, WOMEN_CATALOG_SLUG, DEFAULT_CLOTES_CATEGORY, "dlya-beremennyh/dzhinsy", "specodezhda/sfera-obsluzhivaniya", "nizhnee-bele-i-kupalniki/lifchiki")
 
 try:
     from PIL import Image, ImageOps
@@ -629,7 +630,6 @@ def create_product(
 
 def main() -> None:
     init_db()
-    Brands = False
     _markup = 0
 
     product_data = get_next_product_for_upload(
@@ -658,9 +658,8 @@ def main() -> None:
     if catalog_slug:
         log("INFO", f"Каталог из данных товара: {catalog_slug}.")
     if not catalog_slug:
-        Brands = True
         catalog_slug = DEFAULT_CATALOG_SLUG
-    if product_raw_data.get("brand") is None and Brands:
+    if product_raw_data.get("brand") is None:
         log("WARN", "Бренд не определён. Обновляю список брендов...")
         try:
             _refresh_brands(csrftoken, cookies, catalog_slug=catalog_slug)
@@ -834,10 +833,13 @@ def main() -> None:
 
         log("INFO", "Создаю товар...")
         result = create_product(
-            csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP
+            csrftoken, cookies, photo_ids, product_raw_data, markup=_markup
         )
         errors = result.get("errors") or []
         if errors and _has_invalid_size_error(errors) and parsed_data:
+            print(product_raw_data)
+            print("________________________________")
+            print(errors)
             catalog_slug = str(product_raw_data.get("category") or "").strip()
             if not catalog_slug:
                 catalog_slug = DEFAULT_CATALOG_SLUG
@@ -867,7 +869,7 @@ def main() -> None:
                 )
                 return
             result = create_product(
-                csrftoken, cookies, photo_ids, product_raw_data, markup=DEFAULT_MARKUP
+                csrftoken, cookies, photo_ids, product_raw_data, markup=_markup
             )
             errors = result.get("errors") or []
         if errors:

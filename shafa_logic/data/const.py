@@ -115,6 +115,7 @@ TELEGRAM_CHANNEL_IDS = [channel_id for channel_id, _, _ in TELEGRAM_CHANNELS]
 
 API_URL = "https://shafa.ua/api/v3/graphiql"
 API_BATCH_URL = "https://shafa.ua/api/v3/graphiql-batch"
+API_V4_URL = "https://shafa.ua/api/v4/graphql"
 API_V5_URL = "https://shafa.ua/api/v5/graphql"
 ORIGIN_URL = "https://shafa.ua"
 REFERER_URL = "https://shafa.ua/uk/new"
@@ -130,6 +131,8 @@ LOG_CREATE_PRODUCT_REQUEST = _get_env_bool("SHAFA_LOG_CREATE_PRODUCT_REQUEST")
 MEDIA_DIR_PATH = "media"
 ACCOUNT_STATE_DIR = _get_env_path("SHAFA_ACCOUNT_STATE_DIR", _ROOT_DIR / "data")
 ACCOUNT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_DATA_DIR = _ROOT_DIR / "data"
+PROJECT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 STORAGE_STATE_PATH = _get_env_path("SHAFA_STORAGE_STATE_PATH", ACCOUNT_STATE_DIR / "auth.json")
 TELEGRAM_SESSION_PATH = _get_env_path(
     "SHAFA_TELEGRAM_SESSION_PATH",
@@ -144,7 +147,7 @@ TELEGRAM_CHANNELS_RUNTIME_PATH = _get_env_path(
     ACCOUNT_STATE_DIR / "shafa_telegram_channels.json",
 )
 HEADLESS = False
-DB_PATH = _get_env_path("SHAFA_DB_PATH", ACCOUNT_STATE_DIR / "shafa.sqlite3")
+DB_PATH = _get_env_path("SHAFA_DB_PATH", PROJECT_DATA_DIR / "shafa.sqlite3")
 
 BRAND_NAME_TO_ID: dict[str, int] = {}
 

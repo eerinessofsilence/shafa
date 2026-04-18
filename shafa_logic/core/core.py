@@ -2,7 +2,10 @@ import json
 import os
 from typing import Optional
 
-from playwright.sync_api import BrowserContext
+try:
+    from playwright.sync_api import BrowserContext
+except ModuleNotFoundError:  # pragma: no cover - optional at import time for tests
+    BrowserContext = object
 
 from data.const import APP_PLATFORM, APP_VERSION, ORIGIN_URL, REFERER_URL
 

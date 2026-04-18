@@ -1,4 +1,4 @@
-import _test_path  # noqa: F401
+import _test_path
 
 from controller.catalog_filter import find_slug_by_word, find_word
 
