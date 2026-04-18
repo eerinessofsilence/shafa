@@ -11,6 +11,7 @@ from telegram_accounts_api.models.auth import (
     TelegramCredentialsRequest,
     TelegramPasswordRequest,
     TelegramPhoneRequest,
+    TelegramSessionCopyRequest,
 )
 from telegram_accounts_api.services.auth_service import AccountAuthService
 
@@ -67,6 +68,15 @@ async def logout_telegram(
     service: AccountAuthService = Depends(get_auth_service),
 ) -> TelegramAuthStatusResponse:
     return await service.logout_telegram(account_id)
+
+
+@router.post("/telegram/copy-session", response_model=TelegramAuthStatusResponse)
+async def copy_telegram_session(
+    account_id: str,
+    payload: TelegramSessionCopyRequest,
+    service: AccountAuthService = Depends(get_auth_service),
+) -> TelegramAuthStatusResponse:
+    return await service.copy_telegram_session(account_id, payload)
 
 
 @router.get("/shafa", response_model=ShafaAuthStatusResponse)

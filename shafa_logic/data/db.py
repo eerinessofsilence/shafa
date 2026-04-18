@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+import re
 
 from data.const import DB_PATH
 from data.size_mapping import normalize_size_text
@@ -16,6 +17,18 @@ _SIZE_IDS_CATALOG_CACHE: Optional[dict[str, set[int]]] = None
 _SIZE_MAPPING_ROWS_CACHE: Optional[dict[str, list[dict]]] = None
 _BRAND_ID_BY_NAME_CACHE: Optional[dict[str, int]] = None
 _BRAND_NAMES_CACHE: Optional[list[str]] = None
+
+
+def _normalize_telegram_channel_alias(alias: Optional[str]) -> str:
+    raw = str(alias or "").strip()
+    tokens = [token for token in re.split(r"\s+", raw) if token]
+    if not tokens:
+        tokens = ["main"]
+    if "main" not in tokens:
+        tokens.insert(0, "main")
+    if "extra_photos" not in tokens:
+        tokens.append("extra_photos")
+    return " ".join(tokens)
 
 
 def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
@@ -737,7 +750,7 @@ def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> No
         text = str(name).strip()
         if not text:
             text = str(channel_id)
-        rows.append((int(channel_id), text, alias))
+        rows.append((int(channel_id), text, _normalize_telegram_channel_alias(alias)))
     if not rows:
         return
     _ensure_db_initialized()
@@ -800,8 +813,7 @@ def rename_telegram_channel(channel_id: int, name: str) -> bool:
 
 
 def update_telegram_channel_alias(channel_id: int, alias: Optional[str]) -> bool:
-    text = str(alias).strip() if alias is not None else ""
-    value = text or None
+    value = _normalize_telegram_channel_alias(alias)
     _ensure_db_initialized()
     with _connect() as conn:
         cursor = conn.execute(

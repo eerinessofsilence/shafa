@@ -1,7 +1,9 @@
 import _test_path
 import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -36,6 +38,7 @@ class DummyDiscussionResult:
 class FakeClient:
     def __init__(self, discussion_result, replies=None, fallback=None, aggressive=None):
         self.discussion_result = discussion_result
+        self.discussion_results = None
         self.replies = replies or []
         self.fallback = fallback or []
         self.aggressive = aggressive or []
@@ -44,6 +47,9 @@ class FakeClient:
 
     async def __call__(self, request):
         self.call_count += 1
+        if self.discussion_results is not None:
+            index = min(self.call_count - 1, len(self.discussion_results) - 1)
+            return self.discussion_results[index]
         return self.discussion_result
 
     async def iter_messages(
@@ -58,6 +64,17 @@ class FakeClient:
             items = self.fallback
         for item in items:
             yield item
+
+
+class FakeTelegramClientContext:
+    def __init__(self, client):
+        self.client = client
+
+    async def __aenter__(self):
+        return self.client
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
@@ -99,6 +116,38 @@ class CollectDiscussionPhotosTests(unittest.IsolatedAsyncioTestCase):
             result = await dc._collect_discussion_photos(client, channel_id, message_id)
         self.assertEqual([msg.id for msg in result], [11, 13])
         self.assertEqual(client.call_count, 1)
+
+    async def test_tries_next_candidate_when_first_discussion_result_has_no_root(self):
+        channel_id = 111
+        message_id = 222
+        discussion_chat_id = 999
+        root = DummyMessage(10, discussion_chat_id, is_photo=False)
+        replies = [DummyMessage(11, discussion_chat_id, is_photo=True)]
+        client = FakeClient(DummyDiscussionResult([]), replies=replies)
+        client.discussion_results = [
+            DummyDiscussionResult([DummyMessage(message_id, channel_id, is_photo=True)]),
+            DummyDiscussionResult(
+                [DummyMessage(message_id, channel_id, is_photo=True), root]
+            ),
+        ]
+        with (
+            patch(
+                "controller.data_controller.load_telegram_channels",
+                return_value=[{"channel_id": channel_id, "alias": "main extra_photos"}],
+            ),
+            patch(
+                "controller.data_controller._is_photo_message",
+                side_effect=lambda msg: getattr(msg, "is_photo", False),
+            ),
+        ):
+            result = await dc._collect_discussion_photos(
+                client,
+                channel_id,
+                message_id,
+                [message_id, message_id + 1],
+            )
+        self.assertEqual([msg.id for msg in result], [11])
+        self.assertEqual(client.call_count, 2)
 
     async def test_collects_non_reply_photos_within_window(self):
         channel_id = 111
@@ -224,3 +273,94 @@ class ImageDocumentTests(unittest.TestCase):
         )
 
         self.assertTrue(dc._is_image_document(document))
+
+
+class ProductPhotoMessageIdsTests(unittest.TestCase):
+    def test_collects_main_and_comment_message_ids(self):
+        product_data = {
+            "message_id": 10,
+            "parsed_data": {
+                "comment_messages": [
+                    {"message_id": 11},
+                    {"id": "12"},
+                ],
+                "comment_message_ids": [13, "14"],
+            },
+        }
+
+        self.assertEqual(
+            dc.get_product_photo_message_ids(product_data),
+            [10, 11, 12, 13, 14],
+        )
+
+
+class DownloadProductPhotosAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forwards_comment_message_ids(self):
+        with patch(
+            "controller.data_controller._download_message_photos",
+            return_value=3,
+        ) as download_photos:
+            result = await dc.download_product_photos_async(
+                10,
+                "/tmp/photos",
+                channel_id=111,
+                message_ids=[10, 11, 12],
+            )
+
+        self.assertEqual(result, 3)
+        download_photos.assert_awaited_once_with(
+            111,
+            10,
+            "/tmp/photos",
+            dc.MAX_DOWNLOAD_PHOTOS,
+            message_ids=[10, 11, 12],
+        )
+
+
+class DownloadMessagePhotosTotalLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_uses_cumulative_size_limit_per_product(self):
+        messages = {
+            10: DummyMessage(10, 111, is_photo=True),
+            11: DummyMessage(11, 111, is_photo=True),
+            12: DummyMessage(12, 111, is_photo=True),
+        }
+
+        class DownloadClient:
+            async def get_messages(self, channel_id, ids):
+                return messages.get(ids)
+
+            async def download_media(self, message, file):
+                path = os.path.join(file, f"{message.id}.jpg")
+                size_map = {
+                    10: dc.MAX_UPLOAD_BYTES // 2,
+                    11: dc.MAX_UPLOAD_BYTES // 2,
+                    12: dc.MAX_UPLOAD_BYTES // 4,
+                }
+                with open(path, "wb") as handle:
+                    handle.write(b"0" * size_map[message.id])
+                return path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "controller.data_controller.TelegramClient",
+                    return_value=FakeTelegramClientContext(DownloadClient()),
+                ),
+                patch("controller.data_controller._require_telegram_credentials", return_value=(1, "hash")),
+                patch("controller.data_controller._sync_channel_titles"),
+                patch("controller.data_controller._collect_discussion_photos", return_value=[]),
+                patch("controller.data_controller._is_photo_message", return_value=True),
+                patch("controller.data_controller.verbose_photo_logs_enabled", return_value=False),
+            ):
+                downloaded = await dc._download_message_photos(
+                    111,
+                    10,
+                    Path(tmpdir),
+                    max_photos=10,
+                    message_ids=[10, 11, 12],
+                )
+
+            self.assertEqual(downloaded, 2)
+            self.assertTrue((Path(tmpdir) / "10.jpg").exists())
+            self.assertTrue((Path(tmpdir) / "11.jpg").exists())
+            self.assertFalse((Path(tmpdir) / "12.jpg").exists())

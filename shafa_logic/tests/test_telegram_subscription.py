@@ -42,10 +42,13 @@ class TelegramSubscriptionTests(unittest.TestCase):
     def test_runtime_json_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             channels_path = Path(temp_dir) / "shafa_telegram_channels.json"
-            expected = [(-1001, "Channel One", "main"), (-1002, "Channel Two", "main")]
+            expected = [
+                (-1001, "Channel One", "main extra_photos"),
+                (-1002, "Channel Two", "main extra_photos"),
+            ]
 
             with patch("telegram_subscription.sync._mirror_channels_to_db"):
-                set_telegram_channels(expected, path=channels_path)
+                set_telegram_channels([(-1001, "Channel One", "main"), (-1002, "Channel Two", "")], path=channels_path)
                 actual = get_telegram_channels(path=channels_path)
 
         self.assertEqual(actual, expected)
@@ -65,7 +68,7 @@ class TelegramSubscriptionTests(unittest.TestCase):
         with patch("telegram_subscription.sync._get_peer_id", return_value=-100123):
             result = _channel_tuple_from_entity(entity)
 
-        self.assertEqual(result, (-100123, "Sample Channel", "main"))
+        self.assertEqual(result, (-100123, "Sample Channel", "main extra_photos"))
 
     def test_full_pipeline_resolves_link_to_tuple(self) -> None:
         client = self._make_client()
@@ -81,7 +84,7 @@ class TelegramSubscriptionTests(unittest.TestCase):
             telegram_client_cls.return_value = lambda *_args, **_kwargs: client
             result = asyncio.run(_resolve_channel_tuples(["https://t.me/generation_drop"]))
 
-        self.assertEqual(result, [(-1001801709326, "GENERATION DROP / OPT 🌊", "main")])
+        self.assertEqual(result, [(-1001801709326, "GENERATION DROP / OPT 🌊", "main extra_photos")])
         ensure_membership.assert_awaited_once_with(client, "https://t.me/generation_drop")
         fetch_response.assert_awaited_once_with(client, "https://t.me/generation_drop")
         client.connect.assert_awaited_once()
@@ -104,7 +107,7 @@ class TelegramSubscriptionTests(unittest.TestCase):
             telegram_client_cls.return_value = lambda *_args, **_kwargs: client
             result = asyncio.run(_resolve_channel_tuples(["https://t.me/generation_drop"]))
 
-        self.assertEqual(result, [(-1001801709326, "GENERATION DROP / OPT 🌊", "main")])
+        self.assertEqual(result, [(-1001801709326, "GENERATION DROP / OPT 🌊", "main extra_photos")])
         ensure_membership.assert_awaited_once_with(client, "https://t.me/generation_drop")
         fetch_response.assert_not_awaited()
 
@@ -132,7 +135,7 @@ class TelegramSubscriptionTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(result, [(-1007, "Good Channel", "main")])
+        self.assertEqual(result, [(-1007, "Good Channel", "main extra_photos")])
 
     def test_full_pipeline_raises_for_unauthorized_session(self) -> None:
         client = self._make_client(authorized=False)
@@ -155,7 +158,7 @@ class TelegramSubscriptionTests(unittest.TestCase):
                 json.dumps({"links": ["https://t.me/generation_drop"]}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            saved_channels = [(-100123, "Saved Channel", "main")]
+            saved_channels = [(-100123, "Saved Channel", "main extra_photos")]
             with patch("telegram_subscription.sync._runtime_channels_path", return_value=saved_channels_path):
                 with patch("telegram_subscription.sync._mirror_channels_to_db"):
                     set_telegram_channels(saved_channels, path=saved_channels_path)

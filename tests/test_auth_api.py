@@ -211,6 +211,75 @@ def test_telegram_logout_clears_session_and_returns_init_status(tmp_path: Path) 
     assert account_payload["telegram_session_exists"] is False
 
 
+def test_telegram_copy_session_copies_session_and_credentials(tmp_path: Path) -> None:
+    client, store = _make_client(tmp_path)
+
+    source_response = client.post(
+        "/accounts",
+        json={"name": "Source", "path": str(Path("/tmp/project")), "phone": "+380501112233", "channel_links": []},
+    )
+    target_response = client.post(
+        "/accounts",
+        json={"name": "Target", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert source_response.status_code == 201
+    assert target_response.status_code == 201
+
+    source_id = source_response.json()["id"]
+    target_id = target_response.json()["id"]
+    source = Account(id=source_id, name="Source", path="/tmp/project", phone_number="+380501112233")
+    target = Account(id=target_id, name="Target", path="/tmp/project")
+
+    store.telegram_session_file(source).write_bytes(b"SQLite format 3\x00payload")
+    store.telegram_credentials_file(source).write_text(
+        "SHAFA_TELEGRAM_API_ID=777000\nSHAFA_TELEGRAM_API_HASH=secret-hash\n",
+        encoding="utf-8",
+    )
+    store.telegram_login_state_file(source).write_text(
+        json.dumps(
+            {
+                "phone_number": "+380501112233",
+                "current_auth_step": "SUCCESS",
+                "session_path": str(store.telegram_session_file(source)),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        f"/accounts/{target_id}/auth/telegram/copy-session",
+        json={"source_account_id": source_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is True
+    assert response.json()["current_step"] == "SUCCESS"
+    assert response.json()["phone_number"] == "+380501112233"
+    assert store.telegram_session_file(target).read_bytes() == store.telegram_session_file(source).read_bytes()
+    assert store.telegram_credentials_file(target).read_text(encoding="utf-8") == (
+        "SHAFA_TELEGRAM_API_ID=777000\nSHAFA_TELEGRAM_API_HASH=secret-hash\n"
+    )
+
+
+def test_telegram_copy_session_rejects_same_account(tmp_path: Path) -> None:
+    client, _store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Test", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+
+    response = client.post(
+        f"/accounts/{account_id}/auth/telegram/copy-session",
+        json={"source_account_id": account_id},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Source and target accounts must be different."
+
+
 def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
     client, store = _make_client(tmp_path)
 

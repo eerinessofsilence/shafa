@@ -7,6 +7,7 @@ FastAPI backend for managing Telegram accounts stored in `accounts_state.json`, 
 - `GET /accounts` and `GET /accounts/{account_id}`
 - `POST /accounts` and `DELETE /accounts/{account_id}`
 - `POST /accounts/{account_id}/start` and `POST /accounts/{account_id}/stop`
+- Telegram auth endpoints at `/accounts/{account_id}/auth/telegram/*`
 - `GET /accounts/{account_id}/dialogs`
 - `GET /accounts/{account_id}/users/{user_ref}`
 - `POST /accounts/{account_id}/messages`
@@ -125,6 +126,13 @@ Example template:
 
 ### Telegram
 
+- `GET /accounts/{account_id}/auth/telegram`
+- `POST /accounts/{account_id}/auth/telegram/credentials`
+- `POST /accounts/{account_id}/auth/telegram/request-code`
+- `POST /accounts/{account_id}/auth/telegram/submit-code`
+- `POST /accounts/{account_id}/auth/telegram/submit-password`
+- `POST /accounts/{account_id}/auth/telegram/logout`
+- `POST /accounts/{account_id}/auth/telegram/copy-session`
 - `POST /accounts/{account_id}/messages`
 - `GET /accounts/{account_id}/dialogs?limit=20`
 - `GET /accounts/{account_id}/users/{user_ref}`
@@ -213,6 +221,14 @@ curl -X POST http://127.0.0.1:8000/accounts \
 
 ```bash
 curl -X POST http://127.0.0.1:8000/accounts/acc1/start
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/accounts/target-acc/auth/telegram/copy-session \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_account_id": "source-acc"
+  }'
 ```
 
 ```bash

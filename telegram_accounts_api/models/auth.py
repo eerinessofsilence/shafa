@@ -22,6 +22,10 @@ class TelegramPasswordRequest(BaseModel):
     password: str = Field(..., max_length=4096)
 
 
+class TelegramSessionCopyRequest(BaseModel):
+    source_account_id: str = Field(..., min_length=1, max_length=255)
+
+
 class TelegramAuthStatusResponse(BaseModel):
     account_id: str
     connected: bool

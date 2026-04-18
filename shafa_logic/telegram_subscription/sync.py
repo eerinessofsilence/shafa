@@ -16,6 +16,19 @@ RUNTIME_CONFIG_ENV = "SHAFA_TELEGRAM_CHANNEL_LINKS_FILE"
 ID_PATTERN = re.compile(r"(?im)(?:^|\n)\s*.*?\b(?:chat\s+)?id\b\s*:\s*(-?\d+)")
 TITLE_PATTERN = re.compile(r"(?im)(?:^|\n)\s*.*?\btitle\b\s*:\s*(.+)")
 USERNAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,}$")
+DEFAULT_CHANNEL_ALIAS = "main extra_photos"
+
+
+def _normalize_channel_alias(alias: object) -> str:
+    raw_alias = str(alias).strip()
+    tokens = [token for token in re.split(r"\s+", raw_alias) if token]
+    if not tokens:
+        tokens = ["main"]
+    if "main" not in tokens:
+        tokens.insert(0, "main")
+    if "extra_photos" not in tokens:
+        tokens.append("extra_photos")
+    return " ".join(tokens)
 
 
 def sync_channels_from_runtime_config() -> list[tuple[int, str, str]]:
@@ -66,7 +79,7 @@ def get_telegram_channels(path: Path | None = None) -> list[tuple[int, str, str]
         except (TypeError, ValueError):
             continue
         title_text = str(title).strip()
-        alias_text = str(alias).strip() or "main"
+        alias_text = _normalize_channel_alias(alias)
         if not title_text:
             continue
         channels.append((normalized_id, title_text, alias_text))
@@ -87,7 +100,7 @@ def set_telegram_channels(
         except (TypeError, ValueError):
             continue
         title_text = str(title).strip()
-        alias_text = str(alias).strip() or "main"
+        alias_text = _normalize_channel_alias(alias)
         if not title_text:
             continue
         normalized.append([normalized_id, title_text, alias_text])
@@ -134,7 +147,7 @@ async def _resolve_single_channel(
         response_text = await _fetch_id_bot_response(client, link)
         _log(f"bot response for {link}: {response_text!r}")
         channel_id, title = parse_id_bot_response(response_text)
-        return (channel_id, title, "main")
+        return (channel_id, title, DEFAULT_CHANNEL_ALIAS)
     except Exception as exc:
         _log(f"failed to resolve {link}: {exc}")
         return None
@@ -231,7 +244,7 @@ def _channel_tuple_from_entity(entity: object | None) -> tuple[int, str, str] | 
         if not isinstance(raw_id, int):
             return None
         channel_id = int(raw_id)
-    return (channel_id, title, "main")
+    return (channel_id, title, DEFAULT_CHANNEL_ALIAS)
 
 
 def _get_peer_id(entity: object) -> int:

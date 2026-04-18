@@ -1370,9 +1370,12 @@ def extract_price(lines: list[str]) -> str:
 
 
 def _normalize_size_token(token: str) -> str:
+    normalized = normalize_size_text(token)
+    if normalized in _ALPHA_SIZES or (
+        normalized and re.fullmatch(r"(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL)-(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL)", normalized)
+    ):
+        return normalized
     text = token.strip().upper()
-    if text in _ALPHA_SIZES:
-        return text
     if text.replace(",", ".").replace(".", "", 1).isdigit():
         value = text.replace(",", ".")
         if value.endswith(".0"):
@@ -1386,13 +1389,29 @@ def _extract_size_tokens_from_line(
     even_range_step: bool = False,
 ) -> list[str]:
     tokens: list[str] = []
+    alpha_range_spans: list[tuple[int, int]] = []
     lower = line.casefold()
     if re.search(r"\bone\s*size\b", lower):
         tokens.append("ONE SIZE")
-    for size in re.findall(
-        r"\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL|OS)\b", line.upper()
+    for match in re.finditer(
+        r"\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL)\s*[/\-]\s*"
+        r"(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL)\b",
+        line.upper(),
     ):
-        tokens.append(size)
+        normalized = _normalize_size_token(match.group(0))
+        if normalized:
+            tokens.append(normalized)
+            alpha_range_spans.append(match.span())
+    for match in re.finditer(
+        r"\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL|OS)\b",
+        line.upper(),
+    ):
+        if any(
+            span_start <= match.start() and match.end() <= span_end
+            for span_start, span_end in alpha_range_spans
+        ):
+            continue
+        tokens.append(match.group(0))
     for match in re.finditer(r"\b(\d{2})\s*[-–]\s*(\d{2})\b", line):
         after = line[match.end() : match.end() + 4].casefold()
         if "см" in after or "cm" in after:
@@ -1409,6 +1428,7 @@ def _extract_size_tokens_from_line(
     cleaned = re.sub(
         r"\b\d{2,3}(?:[.,]\d+)?\s*(?:см|cm)\b", "", line, flags=re.IGNORECASE
     )
+    cleaned = re.sub(r"(?<=\b\d{2})\s*,\s*(?=\d{2}\b)", " ", cleaned)
     for match in re.finditer(r"\d{2,3}(?:[.,]\d+)?", cleaned):
         if match.start() > 0 and cleaned[match.start() - 1].isdigit():
             continue
@@ -1896,20 +1916,50 @@ async def _collect_discussion_photos(
         if not candidate_ids:
             candidate_ids = [message_id]
     result = None
+    discussion_chat_id: Optional[int] = None
+    root = None
     last_exc: Optional[Exception] = None
     for candidate_id in candidate_ids:
         try:
-            result = await client(
+            candidate_result = await client(
                 GetDiscussionMessageRequest(peer=channel_id, msg_id=candidate_id)
             )
         except RPCError as exc:
             last_exc = exc
-            result = None
             continue
-        if result.messages:
-            break
-        result = None
-    if not result or not result.messages:
+        if not candidate_result or not candidate_result.messages:
+            continue
+        candidate_discussion_chat_id: Optional[int] = None
+        for msg in candidate_result.messages:
+            chat_id = getattr(msg, "chat_id", None)
+            if chat_id and chat_id != channel_id:
+                candidate_discussion_chat_id = chat_id
+                break
+        if candidate_discussion_chat_id is None:
+            for chat in candidate_result.chats:
+                chat_id = get_peer_id(chat)
+                if chat_id != channel_id:
+                    candidate_discussion_chat_id = chat_id
+                    break
+        if not candidate_discussion_chat_id:
+            result = candidate_result
+            continue
+        candidate_root = next(
+            (
+                msg
+                for msg in candidate_result.messages
+                if getattr(msg, "chat_id", None) == candidate_discussion_chat_id
+            ),
+            None,
+        )
+        if not candidate_root:
+            result = candidate_result
+            continue
+        result = candidate_result
+        discussion_chat_id = candidate_discussion_chat_id
+        root = candidate_root
+        break
+    if not result or not result.messages or not discussion_chat_id or not root:
         if last_exc:
             preview = ", ".join(str(value) for value in candidate_ids[:5])
             suffix = "..." if len(candidate_ids) > 5 else ""
@@ -1920,30 +1970,6 @@ async def _collect_discussion_photos(
                 + f"message_ids=[{preview}{suffix}]\n"
                 + f"error={last_exc}.",
             )
-        return []
-    discussion_chat_id: Optional[int] = None
-    for msg in result.messages:
-        chat_id = getattr(msg, "chat_id", None)
-        if chat_id and chat_id != channel_id:
-            discussion_chat_id = chat_id
-            break
-    if discussion_chat_id is None:
-        for chat in result.chats:
-            chat_id = get_peer_id(chat)
-            if chat_id != channel_id:
-                discussion_chat_id = chat_id
-                break
-    if not discussion_chat_id:
-        return []
-    root = next(
-        (
-            msg
-            for msg in result.messages
-            if getattr(msg, "chat_id", None) == discussion_chat_id
-        ),
-        None,
-    )
-    if not root:
         return []
     messages: list = []
     grouped_seen: set[int] = set()
@@ -2049,6 +2075,7 @@ async def _download_message_photos(
     message_id: int,
     target_dir: Path,
     max_photos: int,
+    message_ids: Optional[list[int]] = None,
 ) -> int:
     api_id_value, api_hash_value = _require_telegram_credentials()
     async with TelegramClient(str(TELEGRAM_SESSION_PATH), api_id_value, api_hash_value) as client:
@@ -2061,20 +2088,37 @@ async def _download_message_photos(
                 + f"channel_id={channel_id}\n"
                 + f"message_id={message_id}.",
             )        
-        message = await client.get_messages(channel_id, ids=message_id)
-        if not message or not _is_photo_message(message):
+        source_message_ids = [message_id]
+        if message_ids:
+            for candidate_id in message_ids:
+                if candidate_id and candidate_id not in source_message_ids:
+                    source_message_ids.append(candidate_id)
+        messages: list = []
+        for candidate_id in source_message_ids:
+            message = await client.get_messages(channel_id, ids=candidate_id)
+            if not message or not _is_photo_message(message):
+                continue
+            messages.append(message)
+        if not messages:
             return 0
-        messages = [message]
-        if message.grouped_id:
-            grouped = await _collect_group_messages(
-                client,
-                channel_id,
-                message_id,
-                message.grouped_id,
-            )
-            messages = grouped or [message]
-            if not messages:
-                messages = [message]
+        expanded_messages: list = []
+        grouped_seen: set[int] = set()
+        for message in messages:
+            if message.grouped_id:
+                if message.grouped_id in grouped_seen:
+                    continue
+                grouped_seen.add(message.grouped_id)
+                grouped = await _collect_group_messages(
+                    client,
+                    channel_id,
+                    message.id,
+                    message.grouped_id,
+                )
+                if grouped:
+                    expanded_messages.extend(grouped)
+                    continue
+            expanded_messages.append(message)
+        messages = expanded_messages or messages
         discussion_message_ids = [message_id]
         for msg in sorted(messages, key=lambda item: item.id):
             if msg.id != message_id:
@@ -2091,8 +2135,6 @@ async def _download_message_photos(
         downloaded = 0
         seen: set[tuple[int, int]] = set()
         queue: list[tuple] = []
-        skipped_large = 0
-        max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
         for msg in messages:
             chat_id = getattr(msg, "chat_id", channel_id)
             key = (int(chat_id), msg.id)
@@ -2100,31 +2142,18 @@ async def _download_message_photos(
                 continue
             seen.add(key)
             size_bytes = _get_message_media_size_bytes(msg)
-            if size_bytes is not None and size_bytes > MAX_UPLOAD_BYTES:
-                skipped_large += 1
-                size_mb = size_bytes / (1024 * 1024)
-                log(
-                    "WARN",
-                    "Пропускаю фото из Telegram: "
-                    f"message_id={msg.id} chat_id={chat_id} "
-                    f"{size_mb:.2f} MB > лимита {max_mb:.2f} MB.",
-                )
-                continue
             queue.append((msg, chat_id, size_bytes))
         if max_photos > 0 and len(queue) > max_photos:
             if verbose_photo_logs:
                 log("INFO", f"Ограничение на фото: {max_photos}.")
             queue = queue[:max_photos]
-        if skipped_large:
-            log(
-                "INFO",
-                f"Пропущено крупных файлов: {skipped_large}.\n"
-                + f"К скачиванию: {len(queue)}.",
-            )
         if not queue:
             log("WARN", "Нет подходящих фото для скачивания.")
             return 0
         failed_downloads = 0
+        skipped_total_limit = 0
+        total_downloaded_bytes = 0
+        max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
         with ProgressBar(
             total=len(queue),
             label="Скачивание фото",
@@ -2140,12 +2169,42 @@ async def _download_message_photos(
                     )
                 result = await client.download_media(msg, file=str(target_dir))
                 if result:
-                    downloaded += 1
-                    if verbose_photo_logs:
-                        log(
-                            "OK",
-                            f"Скачано фото {idx}/{len(queue)}: message_id={msg.id}.",
-                        )
+                    file_size_bytes: Optional[int] = None
+                    try:
+                        file_size_bytes = Path(result).stat().st_size
+                    except (OSError, TypeError, ValueError):
+                        file_size_bytes = None
+                    if (
+                        file_size_bytes is not None
+                        and total_downloaded_bytes + file_size_bytes > MAX_UPLOAD_BYTES
+                    ):
+                        skipped_total_limit += 1
+                        try:
+                            Path(result).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        if verbose_photo_logs:
+                            current_mb = total_downloaded_bytes / (1024 * 1024)
+                            next_mb = file_size_bytes / (1024 * 1024)
+                            log(
+                                "WARN",
+                                "Пропускаю фото из Telegram по общему лимиту: "
+                                f"message_id={msg.id} chat_id={chat_id} "
+                                f"текущее={current_mb:.2f} MB "
+                                f"+ фото={next_mb:.2f} MB > {max_mb:.2f} MB.",
+                            )
+                    else:
+                        if file_size_bytes is not None:
+                            total_downloaded_bytes += file_size_bytes
+                        downloaded += 1
+                        if verbose_photo_logs:
+                            total_mb = total_downloaded_bytes / (1024 * 1024)
+                            log(
+                                "OK",
+                                "Скачано фото "
+                                f"{idx}/{len(queue)}: message_id={msg.id}. "
+                                f"Суммарный размер: {total_mb:.2f} MB.",
+                            )
                 else:
                     failed_downloads += 1
                     if verbose_photo_logs:
@@ -2158,6 +2217,14 @@ async def _download_message_photos(
                     progress.advance()
         if failed_downloads and not verbose_photo_logs:
             log("WARN", f"Не удалось скачать фото: {failed_downloads}/{len(queue)}.")
+        if skipped_total_limit:
+            total_mb = total_downloaded_bytes / (1024 * 1024)
+            log(
+                "INFO",
+                "Пропущено по общему лимиту размера: "
+                f"{skipped_total_limit}. "
+                f"Итоговый размер товара: {total_mb:.2f} MB / {max_mb:.2f} MB.",
+            )
         return downloaded
 
 
@@ -2174,6 +2241,62 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
     if re.fullmatch(r"\d+", text):
         return int(text)
     return None
+
+
+def _collect_nested_message_ids(value) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        result: list[int] = []
+        direct_id = _parse_int(value.get("message_id"))
+        if direct_id is None:
+            direct_id = _parse_int(value.get("id"))
+        if direct_id is not None:
+            result.append(direct_id)
+        for key in (
+            "message_ids",
+            "photo_message_ids",
+            "comment_messages",
+            "comments",
+            "comment_message_ids",
+        ):
+            nested = value.get(key)
+            if nested is None:
+                continue
+            result.extend(_collect_nested_message_ids(nested))
+        return result
+    if isinstance(value, (list, tuple, set)):
+        result: list[int] = []
+        for item in value:
+            result.extend(_collect_nested_message_ids(item))
+        return result
+    parsed = _parse_int(value)
+    return [parsed] if parsed is not None else []
+
+
+def get_product_photo_message_ids(product_data: Optional[dict]) -> list[int]:
+    if not isinstance(product_data, dict):
+        return []
+    parsed_data = product_data.get("parsed_data")
+    message_ids: list[int] = []
+    for source in (
+        product_data.get("message_id"),
+        product_data.get("photo_message_ids"),
+        product_data.get("message_ids"),
+        product_data.get("comment_message_ids"),
+        product_data.get("comment_messages"),
+        product_data.get("comments"),
+        parsed_data,
+    ):
+        message_ids.extend(_collect_nested_message_ids(source))
+    deduped: list[int] = []
+    seen_ids: set[int] = set()
+    for message_id in message_ids:
+        if message_id in seen_ids:
+            continue
+        deduped.append(message_id)
+        seen_ids.add(message_id)
+    return deduped
 
 
 def _parse_price(value: Optional[str]) -> Optional[int]:
@@ -2245,6 +2368,9 @@ def _size_name_candidates(value: object) -> list[str]:
     add_candidate(text)
     add_candidate(text.replace(",", "."))
     add_candidate(text.replace(".", ","))
+    normalized_text = normalize_size_text(text)
+    if normalized_text:
+        add_candidate(normalized_text)
 
     for numeric in _extract_numeric_sizes(text):
         normalized = f"{numeric:g}"
@@ -2658,6 +2784,23 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
     )
     if additional_sizes:
         product_raw_data["additional_sizes"] = additional_sizes
+    if size_value or additional_size_values:
+        log(
+            "INFO",
+            "Размеры товара: "
+            + json.dumps(
+                {
+                    "catalog": catalog_slug,
+                    "raw_size": size_value,
+                    "raw_additional_sizes": additional_size_values,
+                    "expanded_sizes": expanded_size_values,
+                    "preferred_size_system": preferred_size_system,
+                    "resolved_size": product_raw_data.get("size"),
+                    "resolved_additional_sizes": additional_sizes,
+                },
+                ensure_ascii=False,
+            ),
+        )
     if _size_mapping_debug_enabled():
         log(
             "INFO",
@@ -2759,6 +2902,7 @@ async def download_product_photos_async(
     target_dir: Path,
     channel_id: Optional[int] = None,
     max_photos: int = MAX_DOWNLOAD_PHOTOS,
+    message_ids: Optional[list[int]] = None,
 ) -> int:
     resolved_channel_id = (
         channel_id if channel_id is not None else _get_channel_ids()[0]
@@ -2768,6 +2912,7 @@ async def download_product_photos_async(
         message_id,
         target_dir,
         max_photos,
+        message_ids=message_ids,
     )
 
 
@@ -2776,6 +2921,7 @@ def download_product_photos(
     target_dir: Path,
     channel_id: Optional[int] = None,
     max_photos: int = MAX_DOWNLOAD_PHOTOS,
+    message_ids: Optional[list[int]] = None,
 ) -> int:
     try:
         asyncio.get_running_loop()
@@ -2786,6 +2932,7 @@ def download_product_photos(
                 target_dir,
                 channel_id=channel_id,
                 max_photos=max_photos,
+                message_ids=message_ids,
             )
         )
     raise RuntimeError(

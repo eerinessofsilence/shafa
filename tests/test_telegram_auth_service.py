@@ -259,6 +259,26 @@ def test_reuse_status_restores_session_from_login_state_path(tmp_path: Path) -> 
     assert captured == [["main.py", "--telegram-session-status"]]
 
 
+def test_copy_session_copies_session_and_credentials(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    source = Account(id="source", name="Source", path="/tmp/project", phone_number="+380501112233")
+    target = Account(id="target", name="Target", path="/tmp/project")
+    store.telegram_session_file(source).write_bytes(b"SQLite format 3\x00payload")
+    store.telegram_credentials_file(source).write_text(
+        "SHAFA_TELEGRAM_API_ID=777000\nSHAFA_TELEGRAM_API_HASH=secret-hash\n",
+        encoding="utf-8",
+    )
+
+    service = TelegramAuthService(store, lambda *_args, **_kwargs: _completed(0))
+
+    service.copy_session(source, target)
+
+    assert store.telegram_session_file(target).read_bytes() == b"SQLite format 3\x00payload"
+    assert store.telegram_credentials_file(target).read_text(encoding="utf-8") == (
+        "SHAFA_TELEGRAM_API_ID=777000\nSHAFA_TELEGRAM_API_HASH=secret-hash\n"
+    )
+
+
 def test_reuse_status_rejects_unauthorized_existing_session(tmp_path: Path) -> None:
     store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
     account = Account(id="acc", name="Test", path="/tmp/project")

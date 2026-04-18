@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable, Protocol
 from urllib.parse import urlparse
 
-DEFAULT_CHANNEL_ALIAS = "main"
+DEFAULT_CHANNEL_ALIAS = "main extra_photos"
 
 _ID_PATTERNS = (
     re.compile(r"(?im)^\s*(?:chat\s*)?id\s*:\s*(-?\d+)\s*$"),

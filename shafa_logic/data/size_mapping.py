@@ -15,8 +15,25 @@ SIZE_SYSTEMS = (
 _ALPHA_SIZE_RE = re.compile(
     r"^(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL|OS|ONE SIZE)$"
 )
+_ALPHA_RANGE_RE = re.compile(
+    r"^(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL)\s*[/\-]\s*"
+    r"(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|XXXXL)$"
+)
 _NUMERIC_SIZE_RE = re.compile(r"^\d+(?:[.,]\d+)?$")
 _NUMERIC_RANGE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)$")
+_ALPHA_SIZE_ORDER = (
+    "XXXS",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "XXXL",
+    "XXXXL",
+)
+_ALPHA_SIZE_INDEX = {size: index for index, size in enumerate(_ALPHA_SIZE_ORDER)}
 _CYRILLIC_SIZE_TRANSLATION = str.maketrans(
     {
         "Х": "X",
@@ -40,6 +57,9 @@ def normalize_size_text(value: object) -> Optional[str]:
         return "ONE SIZE"
     if upper in {"OTHER", "ДРУГОЙ", "ІНШИЙ"}:
         return "ІНШИЙ"
+    alpha_range = _normalize_alpha_range(upper)
+    if alpha_range:
+        return alpha_range
     if _ALPHA_SIZE_RE.fullmatch(upper):
         return upper
     range_match = _NUMERIC_RANGE_RE.fullmatch(text)
@@ -50,6 +70,23 @@ def normalize_size_text(value: object) -> Optional[str]:
     if _NUMERIC_SIZE_RE.fullmatch(text):
         return _normalize_numeric_part(text)
     return upper if re.search(r"[A-Z]", upper) else text
+
+
+def _normalize_alpha_range(value: str) -> Optional[str]:
+    match = _ALPHA_RANGE_RE.fullmatch(value)
+    if not match:
+        return None
+    left = match.group(1)
+    right = match.group(2)
+    left_index = _ALPHA_SIZE_INDEX.get(left)
+    right_index = _ALPHA_SIZE_INDEX.get(right)
+    if left_index is None or right_index is None:
+        return None
+    if abs(left_index - right_index) != 1:
+        return None
+    if left_index > right_index:
+        left, right = right, left
+    return f"{left}-{right}"
 
 
 def parse_v3_secondary_size_name(value: object) -> tuple[Optional[str], Optional[str]]:

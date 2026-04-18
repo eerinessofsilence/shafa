@@ -50,6 +50,14 @@ class CategoryBySizeTests(unittest.TestCase):
         self.assertEqual(size, "42")
         self.assertEqual(additional_sizes, ["44", "46"])
 
+    def test_extract_sizes_handles_comma_separated_clothing_ranges(self):
+        size, additional_sizes = dc.extract_sizes(
+            ["Розмір: 42-44,46-48"],
+            even_range_step=True,
+        )
+        self.assertEqual(size, "42")
+        self.assertEqual(additional_sizes, ["44", "46", "48"])
+
     def test_extract_numeric_sizes_keeps_step_one_for_mixed_parity_ranges(self):
         self.assertEqual(dc._extract_numeric_sizes("36-41"), [36.0, 37.0, 38.0, 39.0, 40.0, 41.0])
 
@@ -64,7 +72,7 @@ class CategoryBySizeTests(unittest.TestCase):
         _parse_price,
         _resolve_brand_id,
     ):
-        resolve_size_id.side_effect = lambda value, catalog_slug=None: {
+        resolve_size_id.side_effect = lambda value, catalog_slug=None, preferred_system=None: {
             "42": 833,
             "44": 834,
             "46": 835,
@@ -96,7 +104,7 @@ class CategoryBySizeTests(unittest.TestCase):
         _parse_price,
         _resolve_brand_id,
     ):
-        resolve_size_id.side_effect = lambda value, catalog_slug=None: {
+        resolve_size_id.side_effect = lambda value, catalog_slug=None, preferred_system=None: {
             "36": 171,
             "37": 172,
             "38": 173,

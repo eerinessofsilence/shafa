@@ -17,6 +17,7 @@ from controller.data_controller import (
     build_product_raw_data,
     catalog_supports_brand,
     download_product_photos,
+    get_product_photo_message_ids,
     get_next_product_for_upload,
     mark_product_created,
     should_run_first_fetch,
@@ -728,6 +729,7 @@ def main() -> None:
     product_raw_data = product_data["product_raw_data"]
     parsed_data = product_data.get("parsed_data") or {}
     message_id = product_data["message_id"]
+    photo_message_ids = get_product_photo_message_ids(product_data)
     product_name = parsed_data.get("name") or product_raw_data.get("name") or "—"
     log("INFO", f"Товар для создания: {product_name}.")
 
@@ -820,6 +822,7 @@ def main() -> None:
             message_id,
             media_dir,
             channel_id=channel_id,
+            message_ids=photo_message_ids,
         )
         if downloaded == 0:
             log("WARN", f"Не нашёл фото для message_id={message_id} в Telegram.")

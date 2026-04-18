@@ -6,6 +6,7 @@ from data.size_mapping import (
     SIZE_SYSTEM_INTERNATIONAL,
     build_size_mappings,
     flatten_v5_size_groups,
+    normalize_size_text,
 )
 
 
@@ -30,6 +31,30 @@ def _palto_eu_44_row() -> dict:
         "id_v5_international": 837,
         "id_v5_eu": 818,
         "id_v5_ua": 785,
+    }
+
+
+def _dress_xs_s_row() -> dict:
+    return {
+        "id_v3": None,
+        "international": "XS-S",
+        "eu": None,
+        "ua": None,
+        "id_v5_international": 867,
+        "id_v5_eu": None,
+        "id_v5_ua": None,
+    }
+
+
+def _dress_m_l_row() -> dict:
+    return {
+        "id_v3": None,
+        "international": "M-L",
+        "eu": None,
+        "ua": None,
+        "id_v5_international": 869,
+        "id_v5_eu": None,
+        "id_v5_ua": None,
     }
 
 
@@ -106,6 +131,11 @@ def test_flatten_v5_size_groups_normalizes_cyrillic_x_sizes():
     ]
 
 
+def test_normalize_size_text_normalizes_adjacent_alpha_slash_range():
+    assert normalize_size_text("Xs/S") == "XS-S"
+    assert normalize_size_text("M/L") == "M-L"
+
+
 @patch("controller.data_controller.get_size_id_by_name", return_value=None)
 def test_resolve_size_id_prefers_alias_from_same_target_system(_get_size_id_by_name):
     row_s = _palto_alias_row()
@@ -171,3 +201,64 @@ def test_build_product_raw_data_deduplicates_cross_system_aliases(
 
     assert product_raw_data["size"] == 833
     assert "additional_sizes" not in product_raw_data
+
+
+@patch("controller.data_controller.find_slug_by_word", return_value="platya/maksi")
+def test_parse_message_keeps_clothing_alpha_ranges(_find_slug_by_word):
+    parsed = dc.parse_message(
+        "Сукня\n"
+        "Розмір: Xs/S M/L\n"
+        "Ціна 530 грн"
+    )
+
+    assert parsed["size"] == "XS-S"
+    assert parsed["additional_sizes"] == ["M-L"]
+
+
+@patch("controller.data_controller.get_size_id_by_name", return_value=None)
+@patch("controller.data_controller.find_slug_by_word", return_value="platya/maksi")
+def test_build_product_raw_data_uses_combined_clothing_range_ids(
+    _find_slug_by_word,
+    _get_size_id_by_name,
+):
+    xs_s_row = _dress_xs_s_row()
+    m_l_row = _dress_m_l_row()
+
+    def fake_candidates(value, catalog_slug=None):
+        if value == "XS-S":
+            return [
+                {
+                    "matched_system": "international",
+                    "matched_id": 867,
+                    "row": xs_s_row,
+                }
+            ]
+        if value == "M-L":
+            return [
+                {
+                    "matched_system": "international",
+                    "matched_id": 869,
+                    "row": m_l_row,
+                }
+            ]
+        return []
+
+    parsed = {
+        "word_for_slack": "сукня",
+        "name": "Сукня",
+        "description": "desc",
+        "size": "XS-S",
+        "additional_sizes": ["M-L"],
+        "price": "530",
+        "color": "чорний",
+        "brand": None,
+    }
+
+    with patch(
+        "controller.data_controller.find_size_mapping_candidates",
+        side_effect=fake_candidates,
+    ):
+        product_raw_data = dc._build_product_raw_data(parsed)
+
+    assert product_raw_data["size"] == 867
+    assert product_raw_data["additional_sizes"] == [869]
