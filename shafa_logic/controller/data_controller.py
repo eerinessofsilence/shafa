@@ -1374,7 +1374,10 @@ def _normalize_size_token(token: str) -> str:
     return ""
 
 
-def _extract_size_tokens_from_line(line: str) -> list[str]:
+def _extract_size_tokens_from_line(
+    line: str,
+    even_range_step: bool = False,
+) -> list[str]:
     tokens: list[str] = []
     lower = line.casefold()
     if re.search(r"\bone\s*size\b", lower):
@@ -1393,7 +1396,8 @@ def _extract_size_tokens_from_line(line: str) -> list[str]:
             continue
         if end < start or end - start > 20:
             continue
-        for value in range(start, end + 1):
+        step = 2 if even_range_step and (end - start) >= 2 and start % 2 == end % 2 else 1
+        for value in range(start, end + 1, step):
             tokens.append(str(value))
     cleaned = re.sub(
         r"\b\d{2,3}(?:[.,]\d+)?\s*(?:см|cm)\b", "", line, flags=re.IGNORECASE
@@ -1412,7 +1416,10 @@ def _extract_size_tokens_from_line(line: str) -> list[str]:
     return tokens
 
 
-def extract_sizes(lines: list[str]) -> tuple[str, list[str]]:
+def extract_sizes(
+    lines: list[str],
+    even_range_step: bool = False,
+) -> tuple[str, list[str]]:
     sizes: list[str] = []
     hinted_lines: list[str] = []
     fallback_lines: list[str] = []
@@ -1431,12 +1438,18 @@ def extract_sizes(lines: list[str]) -> tuple[str, list[str]]:
 
     if hinted_lines:
         for line in hinted_lines:
-            for token in _extract_size_tokens_from_line(line):
+            for token in _extract_size_tokens_from_line(
+                line,
+                even_range_step=even_range_step,
+            ):
                 if token not in sizes:
                     sizes.append(token)
     else:
         for line in fallback_lines:
-            tokens = _extract_size_tokens_from_line(line)
+            tokens = _extract_size_tokens_from_line(
+                line,
+                even_range_step=even_range_step,
+            )
             if not tokens:
                 continue
             if len(tokens) < 2:
@@ -1580,9 +1593,13 @@ def parse_message(message: str) -> dict:
     normalized = normalize_message(message)
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
     name, word_for_slack = extract_name(lines)
+    slug = find_slug_by_word(word_for_slack)
     description = extract_description(lines)
     brand = extract_brand(lines, name)
-    size, additional_sizes = extract_sizes(lines)
+    size, additional_sizes = extract_sizes(
+        lines,
+        even_range_step=_should_use_even_clothing_size_ranges(slug),
+    )
     color = extract_colors(lines, name)
     price = extract_price(lines)
     confidence = _calculate_confidence(name, price, size, brand, color)

@@ -41,6 +41,14 @@ class CategoryBySizeTests(unittest.TestCase):
         self.assertEqual(size, "42")
         self.assertEqual(additional_sizes, ["43", "44", "45", "46"])
 
+    def test_extract_sizes_uses_step_two_for_clothing_slug(self):
+        size, additional_sizes = dc.extract_sizes(
+            ["Розмір: 42-46 універсал"],
+            even_range_step=True,
+        )
+        self.assertEqual(size, "42")
+        self.assertEqual(additional_sizes, ["44", "46"])
+
     def test_extract_numeric_sizes_keeps_step_one_for_mixed_parity_ranges(self):
         self.assertEqual(dc._extract_numeric_sizes("36-41"), [36.0, 37.0, 38.0, 39.0, 40.0, 41.0])
 
@@ -110,3 +118,14 @@ class CategoryBySizeTests(unittest.TestCase):
         self.assertEqual(product_raw_data["category"], "zhenskaya-obuv/krossovki")
         self.assertEqual(product_raw_data["size"], 171)
         self.assertEqual(product_raw_data["additional_sizes"], [172, 173, 174, 175, 176])
+
+    @patch("controller.data_controller.find_slug_by_word", return_value="sport-otdyh/sportivnyye-shtany")
+    def test_parse_message_uses_step_two_for_clothes_ranges(self, _find_slug_by_word):
+        parsed = dc.parse_message(
+            "Штани\n"
+            "Розмір: 42-46 універсал\n"
+            "Ціна 450 грн"
+        )
+
+        self.assertEqual(parsed["size"], "42")
+        self.assertEqual(parsed["additional_sizes"], ["44", "46"])
