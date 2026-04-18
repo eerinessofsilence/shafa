@@ -69,6 +69,7 @@ def _log_create_product_payload(payload: dict) -> None:
     if not LOG_CREATE_PRODUCT_REQUEST:
         return
     payload_preview = {
+        "api_version": "v3",
         "operationName": payload.get("operationName"),
         "variables": payload.get("variables"),
     }
@@ -76,6 +77,21 @@ def _log_create_product_payload(payload: dict) -> None:
         "INFO",
         "Запрос создания товара: "
         + json.dumps(payload_preview, ensure_ascii=False),
+    )
+
+
+def _log_create_product_response(data: dict) -> None:
+    if not LOG_CREATE_PRODUCT_REQUEST:
+        return
+    preview = {
+        "api_version": "v3",
+        "data": data.get("data"),
+        "errors": data.get("errors"),
+    }
+    log(
+        "INFO",
+        "Ответ создания товара: "
+        + json.dumps(preview, ensure_ascii=False),
     )
 
 
@@ -99,6 +115,7 @@ def create_product(
     )
 
     data = read_response_json(resp)
+    _log_create_product_response(data)
     errors = data.get("errors") or []
     if errors:
         invalid_colors = _extract_invalid_color_enums(errors)
@@ -126,6 +143,7 @@ def create_product(
                     data=json.dumps(retry_payload),
                 )
                 data = read_response_json(resp)
+                _log_create_product_response(data)
                 errors = data.get("errors") or []
         if errors:
             raise RuntimeError(f"GraphQL errors: {errors}")

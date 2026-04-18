@@ -29,6 +29,7 @@ from core.product_failures import (
 from data.const import (
     API_BATCH_URL,
     API_URL,
+    API_V5_URL,
     APP_PLATFORM,
     APP_VERSION,
     CREATE_PRODUCT_MUTATION,
@@ -48,9 +49,11 @@ from data.db import (
     load_cookies,
     save_cookies,
     save_brands,
+    save_size_mappings,
     save_sizes,
     save_uploaded_product,
 )
+from data.size_mapping import build_size_mappings, flatten_v5_size_groups
 from models.product import Product
 from utils.logging import log
 from utils.media import list_media_files, reset_media_dir
@@ -311,7 +314,48 @@ def _fetch_sizes(
     cookies: list[dict],
     catalog_slug: str = DEFAULT_CATALOG_SLUG,
 ) -> list[dict]:
-    query = (
+    v5_query = (
+        "query WEB_ProductFormSizeGroup($catalogSlug: String!) {\n"
+        "  catalog(slug: $catalogSlug) {\n"
+        "    id\n"
+        "    sizeGroups {\n"
+        "      id\n"
+        "      name\n"
+        "      sizes {\n"
+        "        id\n"
+        "        name\n"
+        "        primarySizeName\n"
+        "        secondarySizeName\n"
+        "        __typename\n"
+        "      }\n"
+        "      __typename\n"
+        "    }\n"
+        "    __typename\n"
+        "  }\n"
+        "}"
+    )
+    v5_payload = {
+        "operationName": "WEB_ProductFormSizeGroup",
+        "variables": {"catalogSlug": catalog_slug},
+        "query": v5_query,
+    }
+    v5_headers = {
+        **_base_headers(csrftoken),
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+    }
+    v5_data = _request_json(
+        API_V5_URL,
+        json.dumps(v5_payload).encode("utf-8"),
+        v5_headers,
+        cookies,
+    )
+    if v5_data.get("errors"):
+        raise RuntimeError(f"GraphQL errors: {v5_data['errors']}")
+    v5_size_groups = (v5_data.get("data", {}).get("catalog") or {}).get("sizeGroups") or []
+    sizes = flatten_v5_size_groups(v5_size_groups)
+
+    v3_query = (
         "query WEB_ProductFormSizes($catalogSlug: String!) {\n"
         "  filterSize(catalogSlug: $catalogSlug) {\n"
         "    id\n"
@@ -321,31 +365,53 @@ def _fetch_sizes(
         "  }\n"
         "}"
     )
-    payload = [
+    v3_payload = [
         {
             "operationName": "WEB_ProductFormSizes",
             "variables": {"catalogSlug": catalog_slug},
-            "query": query,
+            "query": v3_query,
         }
     ]
-    headers = {
+    v3_headers = {
         **_base_headers(csrftoken),
         "Accept": "*/*",
         "Content-Type": "application/json",
         "batch": "true",
     }
-    data = _request_json(
+    v3_data = _request_json(
         API_BATCH_URL,
-        json.dumps(payload).encode("utf-8"),
-        headers,
+        json.dumps(v3_payload).encode("utf-8"),
+        v3_headers,
         cookies,
     )
-    if isinstance(data, list):
-        data = data[0] if data else {}
-    if data.get("errors"):
-        raise RuntimeError(f"GraphQL errors: {data['errors']}")
-    sizes = data.get("data", {}).get("filterSize") or []
-    save_sizes(sizes, catalog_slug=catalog_slug)
+    if isinstance(v3_data, list):
+        v3_data = v3_data[0] if v3_data else {}
+    if v3_data.get("errors"):
+        raise RuntimeError(f"GraphQL errors: {v3_data['errors']}")
+    v3_sizes = v3_data.get("data", {}).get("filterSize") or []
+    mappings = build_size_mappings(v3_sizes, v5_size_groups)
+    save_sizes(sizes, catalog_slug=catalog_slug, replace_catalog=True)
+    save_size_mappings(mappings, catalog_slug=catalog_slug)
+    if os.getenv("SHAFA_DEBUG_SIZE_MAPPING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        log(
+            "INFO",
+            "Нормализованы размеры: "
+            + json.dumps(
+                {
+                    "catalog": catalog_slug,
+                    "v5_size_count": len(sizes),
+                    "v3_size_count": len(v3_sizes),
+                    "mapping_count": len(mappings),
+                    "mapping_preview": mappings[:3],
+                },
+                ensure_ascii=False,
+            ),
+        )
     return sizes
 
 
@@ -529,6 +595,7 @@ def _log_create_product_payload(payload: dict) -> None:
     if not LOG_CREATE_PRODUCT_REQUEST:
         return
     payload_preview = {
+        "api_version": "v3",
         "operationName": payload.get("operationName"),
         "variables": payload.get("variables"),
     }
@@ -536,6 +603,21 @@ def _log_create_product_payload(payload: dict) -> None:
         "INFO",
         "Запрос создания товара: "
         + json.dumps(payload_preview, ensure_ascii=False),
+    )
+
+
+def _log_create_product_response(data: dict) -> None:
+    if not LOG_CREATE_PRODUCT_REQUEST:
+        return
+    preview = {
+        "api_version": "v3",
+        "data": data.get("data"),
+        "errors": data.get("errors"),
+    }
+    log(
+        "INFO",
+        "Ответ создания товара: "
+        + json.dumps(preview, ensure_ascii=False),
     )
 
 
@@ -599,12 +681,14 @@ def create_product(
 
     def request(payload_data: dict) -> dict:
         _log_create_product_payload(payload_data)
-        return _request_json(
+        data = _request_json(
             API_URL,
             json.dumps(payload_data).encode("utf-8"),
             headers,
             cookies,
         )
+        _log_create_product_response(data)
+        return data
 
     data = request(payload)
     errors = data.get("errors") or []

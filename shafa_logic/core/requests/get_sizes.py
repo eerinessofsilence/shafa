@@ -1,4 +1,5 @@
 import json
+import os
 
 try:
     from playwright.sync_api import BrowserContext
@@ -6,14 +7,25 @@ except ModuleNotFoundError:  # pragma: no cover - optional at import time for te
     BrowserContext = object
 
 from core.core import base_headers, read_response_json
-from data.const import API_BATCH_URL
-from data.db import save_sizes
+from data.const import API_BATCH_URL, API_V5_URL
+from data.db import save_size_mappings, save_sizes
+from data.size_mapping import build_size_mappings, flatten_v5_size_groups
+from utils.logging import log
 
 
-def get_sizes(
+def _size_debug_enabled() -> bool:
+    return os.getenv("SHAFA_DEBUG_SIZE_MAPPING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _fetch_v3_sizes(
     ctx: BrowserContext,
     csrftoken: str,
-    catalog_slug: str = "obuv/krossovki",
+    catalog_slug: str,
 ) -> list[dict]:
     query = (
         "query WEB_ProductFormSizes($catalogSlug: String!) {\n"
@@ -32,7 +44,6 @@ def get_sizes(
             "query": query,
         }
     ]
-
     resp = ctx.request.post(
         API_BATCH_URL,
         headers={
@@ -43,36 +54,99 @@ def get_sizes(
         },
         data=json.dumps(payload),
     )
-
     data = read_response_json(resp)
     if isinstance(data, list):
         data = data[0] if data else {}
     if data.get("errors"):
         raise RuntimeError(f"GraphQL errors: {data['errors']}")
+    return data.get("data", {}).get("filterSize") or []
 
-    sizes = data.get("data", {}).get("filterSize") or []
-    normalized_sizes: list[dict] = []
-    seen_ids: set[int] = set()
-    for size_item in sizes:
-        size_id = size_item.get("id")
-        primary_size_name = size_item.get("primarySizeName")
-        if size_id is None or not primary_size_name:
-            continue
-        try:
-            size_id_int = int(size_id)
-        except (TypeError, ValueError):
-            continue
-        if size_id_int in seen_ids:
-            continue
-        seen_ids.add(size_id_int)
-        normalized_sizes.append(
-            {
-                "id": size_id_int,
-                "primarySizeName": str(primary_size_name),
-                "secondarySizeName": size_item.get("secondarySizeName"),
-                "__typename": size_item.get("__typename") or "SizeType",
-            }
+
+def _fetch_v5_size_groups(
+    ctx: BrowserContext,
+    csrftoken: str,
+    catalog_slug: str,
+) -> list[dict]:
+    query = (
+        "query WEB_ProductFormSizeGroup($catalogSlug: String!) {\n"
+        "  catalog(slug: $catalogSlug) {\n"
+        "    id\n"
+        "    sizeGroup {\n"
+        "      id\n"
+        "      name\n"
+        "      __typename\n"
+        "    }\n"
+        "    productFormSizeTitle\n"
+        "    productFormSizeSubtitle\n"
+        "    sizeGroups {\n"
+        "      id\n"
+        "      name\n"
+        "      sizes {\n"
+        "        id\n"
+        "        name\n"
+        "        primarySizeName\n"
+        "        secondarySizeName\n"
+        "        __typename\n"
+        "      }\n"
+        "      __typename\n"
+        "    }\n"
+        "    __typename\n"
+        "  }\n"
+        "}"
+    )
+    payload = {
+        "operationName": "WEB_ProductFormSizeGroup",
+        "variables": {"catalogSlug": catalog_slug},
+        "query": query,
+    }
+    resp = ctx.request.post(
+        API_V5_URL,
+        headers={
+            **base_headers(csrftoken),
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(payload),
+    )
+    data = read_response_json(resp)
+    if data.get("errors"):
+        raise RuntimeError(f"GraphQL errors: {data['errors']}")
+    catalog = data.get("data", {}).get("catalog") or {}
+    return catalog.get("sizeGroups") or []
+
+
+def get_sizes(
+    ctx: BrowserContext,
+    csrftoken: str,
+    catalog_slug: str = "obuv/krossovki",
+) -> list[dict]:
+    v5_size_groups = _fetch_v5_size_groups(ctx, csrftoken, catalog_slug)
+    sizes = flatten_v5_size_groups(v5_size_groups)
+    try:
+        v3_sizes = _fetch_v3_sizes(ctx, csrftoken, catalog_slug)
+    except Exception as exc:
+        v3_sizes = []
+        if _size_debug_enabled():
+            log(
+                "WARN",
+                f"Не удалось загрузить V3 размеры для {catalog_slug}: {exc}",
+            )
+    mappings = build_size_mappings(v3_sizes, v5_size_groups)
+    save_sizes(sizes, catalog_slug=catalog_slug, replace_catalog=True)
+    save_size_mappings(mappings, catalog_slug=catalog_slug)
+    if _size_debug_enabled():
+        log(
+            "INFO",
+            "Нормализованы размеры: "
+            + json.dumps(
+                {
+                    "catalog": catalog_slug,
+                    "v5_size_count": len(sizes),
+                    "v3_size_count": len(v3_sizes),
+                    "mapping_count": len(mappings),
+                    "mapping_preview": mappings[:3],
+                },
+                ensure_ascii=False,
+            ),
         )
-
-    save_sizes(normalized_sizes, catalog_slug=catalog_slug)
-    return normalized_sizes
+    return sizes

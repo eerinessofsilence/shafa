@@ -43,6 +43,7 @@ from data.const import (
     TELEGRAM_SESSION_PATH,
 )
 from data.db import (
+    find_size_mapping_candidates,
     get_brand_id_by_name,
     get_next_uncreated_telegram_product,
     get_size_id_by_name,
@@ -53,6 +54,12 @@ from data.db import (
     save_telegram_channels,
     save_telegram_product,
     size_id_exists,
+)
+from data.size_mapping import (
+    SIZE_SYSTEM_EU,
+    SIZE_SYSTEM_INTERNATIONAL,
+    SIZE_SYSTEM_UA,
+    normalize_size_text,
 )
 from utils.logging import log
 from utils.progress import ProgressBar, verbose_photo_logs_enabled
@@ -2338,6 +2345,7 @@ def _resolve_brand_id(brand: Optional[str]) -> Optional[int]:
 def _resolve_size_id_from_category_map(
     value: Optional[object],
     catalog_slug: Optional[str],
+    preferred_system: Optional[str] = None,
 ) -> Optional[int]:
     if value is None:
         return None
@@ -2350,12 +2358,123 @@ def _resolve_size_id_from_category_map(
     main_slug = reverse_sizes_dict.get(catalog_slug or "", catalog_slug)
     if not main_slug:
         return None
+    size_id = _select_size_mapping_id(
+        mapped_text,
+        catalog_slug=main_slug,
+        preferred_system=preferred_system,
+    )
+    if size_id is not None:
+        return size_id
     return get_size_id_by_name(mapped_text, catalog_slug=main_slug)
+
+
+def _size_mapping_debug_enabled() -> bool:
+    return os.getenv("SHAFA_DEBUG_SIZE_MAPPING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _preferred_match_priority(preferred_system: Optional[str]) -> dict[str, int]:
+    if preferred_system == SIZE_SYSTEM_INTERNATIONAL:
+        return {
+            SIZE_SYSTEM_INTERNATIONAL: 0,
+            SIZE_SYSTEM_UA: 1,
+            SIZE_SYSTEM_EU: 2,
+        }
+    if preferred_system == SIZE_SYSTEM_UA:
+        return {
+            SIZE_SYSTEM_UA: 0,
+            SIZE_SYSTEM_INTERNATIONAL: 1,
+            SIZE_SYSTEM_EU: 2,
+        }
+    return {
+        SIZE_SYSTEM_EU: 0,
+        SIZE_SYSTEM_INTERNATIONAL: 1,
+        SIZE_SYSTEM_UA: 2,
+    }
+
+
+def _default_target_size_system(
+    normalized_value: Optional[str],
+    candidates: list[dict],
+) -> Optional[str]:
+    if not normalized_value or not candidates:
+        return None
+    if re.search(r"[A-Z]", normalized_value) or normalized_value in {"ONE SIZE", "ІНШИЙ"}:
+        return SIZE_SYSTEM_INTERNATIONAL
+    if re.fullmatch(r"\d+(?:\.\d+)?", normalized_value):
+        if any(candidate["matched_system"] == SIZE_SYSTEM_EU for candidate in candidates):
+            return SIZE_SYSTEM_EU
+        if any(
+            candidate["matched_system"] == SIZE_SYSTEM_INTERNATIONAL
+            for candidate in candidates
+        ):
+            return SIZE_SYSTEM_INTERNATIONAL
+        if any(candidate["matched_system"] == SIZE_SYSTEM_UA for candidate in candidates):
+            return SIZE_SYSTEM_UA
+    return candidates[0]["matched_system"]
+
+
+def _select_size_mapping_id(
+    value: object,
+    catalog_slug: Optional[str],
+    preferred_system: Optional[str] = None,
+) -> Optional[int]:
+    candidates = find_size_mapping_candidates(value, catalog_slug=catalog_slug)
+    if not candidates:
+        return None
+    normalized_value = normalize_size_text(value)
+    target_system = preferred_system or _default_target_size_system(
+        normalized_value,
+        candidates,
+    )
+    if target_system is None:
+        return None
+    priority = _preferred_match_priority(target_system)
+    ranked = sorted(
+        candidates,
+        key=lambda item: (
+            priority.get(item["matched_system"], 99),
+            0 if item["row"].get(f"id_v5_{target_system}") is not None else 1,
+            0 if item["row"].get("id_v3") is not None else 1,
+            item["matched_id"],
+        ),
+    )
+    row = ranked[0]["row"]
+    resolved_id = row.get(f"id_v5_{target_system}") or ranked[0]["matched_id"]
+    try:
+        return int(resolved_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_preferred_size_system(
+    value: Optional[object],
+    catalog_slug: Optional[str],
+) -> Optional[str]:
+    normalized_value = normalize_size_text(value)
+    if not normalized_value:
+        return None
+    candidates = find_size_mapping_candidates(normalized_value, catalog_slug=catalog_slug)
+    if not candidates:
+        return None
+    if re.search(r"[A-Z]", normalized_value) or normalized_value in {"ONE SIZE", "ІНШИЙ"}:
+        return SIZE_SYSTEM_INTERNATIONAL
+    matched_systems = {candidate["matched_system"] for candidate in candidates}
+    if len(matched_systems) == 1:
+        return next(iter(matched_systems))
+    if re.fullmatch(r"\d+(?:\.\d+)?", normalized_value):
+        return SIZE_SYSTEM_EU
+    return None
 
 
 def _resolve_size_id(
     value: Optional[object],
     catalog_slug: Optional[str] = None,
+    preferred_system: Optional[str] = None,
 ) -> Optional[int]:
     if value is None:
         return None
@@ -2364,11 +2483,22 @@ def _resolve_size_id(
 
     text = str(value).strip()
     for candidate in _size_name_candidates(text):
+        mapped_size_id = _select_size_mapping_id(
+            candidate,
+            catalog_slug=catalog_slug,
+            preferred_system=preferred_system,
+        )
+        if mapped_size_id is not None:
+            return mapped_size_id
         size_id = get_size_id_by_name(candidate, catalog_slug=catalog_slug)
         if size_id is not None:
             return size_id
 
-    mapped_size_id = _resolve_size_id_from_category_map(text, catalog_slug)
+    mapped_size_id = _resolve_size_id_from_category_map(
+        text,
+        catalog_slug,
+        preferred_system=preferred_system,
+    )
     if mapped_size_id is not None:
         return mapped_size_id
 
@@ -2401,10 +2531,21 @@ def _normalize_colors(color_raw: Optional[str]) -> list[str]:
 def _parse_additional_sizes(
     values: list[str],
     catalog_slug: Optional[str] = None,
+    preferred_system: Optional[str] = None,
 ) -> list[int]:
     sizes: list[int] = []
     for value in values:
-        size = _resolve_size_id(value, catalog_slug=catalog_slug)
+        if preferred_system is None:
+            size = _resolve_size_id(
+                value,
+                catalog_slug=catalog_slug,
+            )
+        else:
+            size = _resolve_size_id(
+                value,
+                catalog_slug=catalog_slug,
+                preferred_system=preferred_system,
+            )
         if size is not None and size not in sizes:
             sizes.append(size)
     return sizes
@@ -2439,16 +2580,35 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
 
     resolved_size = None
     resolved_additional_sizes: list[int] = []
+    preferred_size_system = None
     if expanded_size_values:
-        resolved_size = _resolve_size_id(
+        preferred_size_system = _detect_preferred_size_system(
             expanded_size_values[0],
-            catalog_slug=catalog_slug,
+            catalog_slug,
         )
-        if resolved_size is not None:
-            resolved_additional_sizes = _parse_additional_sizes(
-                expanded_size_values[1:],
+        if preferred_size_system is None:
+            resolved_size = _resolve_size_id(
+                expanded_size_values[0],
                 catalog_slug=catalog_slug,
             )
+        else:
+            resolved_size = _resolve_size_id(
+                expanded_size_values[0],
+                catalog_slug=catalog_slug,
+                preferred_system=preferred_size_system,
+            )
+        if resolved_size is not None:
+            if preferred_size_system is None:
+                resolved_additional_sizes = _parse_additional_sizes(
+                    expanded_size_values[1:],
+                    catalog_slug=catalog_slug,
+                )
+            else:
+                resolved_additional_sizes = _parse_additional_sizes(
+                    expanded_size_values[1:],
+                    catalog_slug=catalog_slug,
+                    preferred_system=preferred_size_system,
+                )
             resolved_additional_sizes = [
                 size_id
                 for size_id in resolved_additional_sizes
@@ -2467,7 +2627,15 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
         ),
         "size": resolved_size
         if resolved_size is not None
-        else _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug),
+        else (
+            _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug)
+            if preferred_size_system is None
+            else _resolve_size_id(
+                parsed.get("size"),
+                catalog_slug=catalog_slug,
+                preferred_system=preferred_size_system,
+            )
+        ),
         "price": _parse_price(parsed.get("price")),
         "slug": slug,
     }
@@ -2475,13 +2643,39 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
     additional_sizes = (
         resolved_additional_sizes
         if resolved_size is not None
-        else _parse_additional_sizes(
-            additional_size_values,
-            catalog_slug=catalog_slug,
+        else (
+            _parse_additional_sizes(
+                additional_size_values,
+                catalog_slug=catalog_slug,
+            )
+            if preferred_size_system is None
+            else _parse_additional_sizes(
+                additional_size_values,
+                catalog_slug=catalog_slug,
+                preferred_system=preferred_size_system,
+            )
         )
     )
     if additional_sizes:
         product_raw_data["additional_sizes"] = additional_sizes
+    if _size_mapping_debug_enabled():
+        log(
+            "INFO",
+            "Разрешение размеров: "
+            + json.dumps(
+                {
+                    "catalog": catalog_slug,
+                    "raw_size": size_value,
+                    "raw_additional_sizes": additional_size_values,
+                    "expanded_sizes": expanded_size_values,
+                    "preferred_size_system": preferred_size_system,
+                    "resolved_size": product_raw_data.get("size"),
+                    "resolved_additional_sizes": additional_sizes,
+                    "size_api_version": "v3_create_with_v5_size_ids",
+                },
+                ensure_ascii=False,
+            ),
+        )
     return product_raw_data
 
 
