@@ -1716,10 +1716,8 @@ async def first_fetch() -> int:
                     stats["duplicate"] += 1
                 itter_amount += 1
                 valid_messages += 1
-                print(valid_messages)
                 if valid_messages >= 20:
                     all_valid_messages += 20
-                    print(all_valid_messages)
                     valid_messages = 0
                     break
                 elif itter_amount >= 500:
@@ -2229,6 +2227,57 @@ def _size_name_candidates(value: object) -> list[str]:
 
     return candidates
 
+
+def _expand_size_values(value: object, even_range_step: bool = False) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, int):
+        return [str(value)]
+    if isinstance(value, float):
+        normalized = f"{value:g}"
+        return [normalized]
+
+    text = str(value).strip()
+    if not text:
+        return []
+
+    if even_range_step:
+        normalized_text = text.replace(",", ".")
+        without_length = re.sub(
+            r"\b\d{1,3}(?:\.\d+)?\s*(?:см|cm)\b",
+            "",
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+        range_match = re.fullmatch(r"\s*(\d{2})\s*[-–]\s*(\d{2})(?:\D.*)?\s*", without_length)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2))
+            if (
+                15 <= start <= 60
+                and 15 <= end <= 60
+                and end >= start
+                and end - start <= 20
+                and (end - start) >= 2
+                and start % 2 == end % 2
+            ):
+                return [str(value) for value in range(start, end + 1, 2)]
+
+    expanded: list[str] = []
+    for token in _extract_size_tokens_from_line(text):
+        normalized = _normalize_size_token(token)
+        if normalized and normalized not in expanded:
+            expanded.append(normalized)
+    if expanded:
+        return expanded
+    return [text]
+
+
+def _should_use_even_clothing_size_ranges(
+    catalog_filter_slug: Optional[str],
+) -> bool:
+    return bool(catalog_filter_slug)
+
 def _resolve_catalog_slug(size: object, additional_sizes: list[object], word_for_slack: str) -> str:
 
     values = [size, *additional_sizes]
@@ -2335,7 +2384,7 @@ def _parse_additional_sizes(
     sizes: list[int] = []
     for value in values:
         size = _resolve_size_id(value, catalog_slug=catalog_slug)
-        if size is not None:
+        if size is not None and size not in sizes:
             sizes.append(size)
     return sizes
 
@@ -2352,10 +2401,38 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
         word_for_slack=word_for_slack,
     )
     slug = find_slug_by_word(word_for_slack)
+    use_even_clothing_size_ranges = _should_use_even_clothing_size_ranges(slug)
 
     description = DEFAULT_DESCRIPTION
     if slug:
         description = parsed.get("description") or DEFAULT_DESCRIPTION
+
+    expanded_size_values: list[str] = []
+    for raw_value in [size_value, *additional_size_values]:
+        for expanded in _expand_size_values(
+            raw_value,
+            even_range_step=use_even_clothing_size_ranges,
+        ):
+            if expanded not in expanded_size_values:
+                expanded_size_values.append(expanded)
+
+    resolved_size = None
+    resolved_additional_sizes: list[int] = []
+    if expanded_size_values:
+        resolved_size = _resolve_size_id(
+            expanded_size_values[0],
+            catalog_slug=catalog_slug,
+        )
+        if resolved_size is not None:
+            resolved_additional_sizes = _parse_additional_sizes(
+                expanded_size_values[1:],
+                catalog_slug=catalog_slug,
+            )
+            resolved_additional_sizes = [
+                size_id
+                for size_id in resolved_additional_sizes
+                if size_id != resolved_size
+            ]
 
     product_raw_data: dict = {
         "word_for_slack": parsed.get("word_for_slack", ""),
@@ -2363,14 +2440,20 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
         "description": description,
         "category": catalog_slug,
         "brand": _resolve_brand_id(parsed.get("brand")),
-        "size": _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug),
+        "size": resolved_size
+        if resolved_size is not None
+        else _resolve_size_id(parsed.get("size"), catalog_slug=catalog_slug),
         "price": _parse_price(parsed.get("price")),
         "slug": slug,
     }
     product_raw_data["colors"] = _normalize_colors(parsed.get("color"))
-    additional_sizes = _parse_additional_sizes(
-        additional_size_values,
-        catalog_slug=catalog_slug,
+    additional_sizes = (
+        resolved_additional_sizes
+        if resolved_size is not None
+        else _parse_additional_sizes(
+            additional_size_values,
+            catalog_slug=catalog_slug,
+        )
     )
     if additional_sizes:
         product_raw_data["additional_sizes"] = additional_sizes

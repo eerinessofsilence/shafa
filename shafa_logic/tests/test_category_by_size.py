@@ -7,19 +7,19 @@ import controller.data_controller as dc
 
 class CategoryBySizeTests(unittest.TestCase):
     def test_women_category_for_sizes_36_to_41(self):
-        category = dc._resolve_catalog_slug("36", ["37", "40", "41"])
+        category = dc._resolve_catalog_slug("36", ["37", "40", "41"], "")
         self.assertEqual(category, dc.WOMEN_SNEAKERS_CATEGORY)
 
     def test_default_category_when_any_size_out_of_women_range(self):
-        category = dc._resolve_catalog_slug("41", ["42"])
+        category = dc._resolve_catalog_slug("41", ["42"], "")
         self.assertEqual(category, dc.DEFAULT_SHOES_CATEGORY)
 
     def test_women_category_for_range_text(self):
-        category = dc._resolve_catalog_slug("36-41", [])
+        category = dc._resolve_catalog_slug("36-41", [], "")
         self.assertEqual(category, dc.WOMEN_SNEAKERS_CATEGORY)
 
     def test_default_category_when_sizes_are_not_numeric(self):
-        category = dc._resolve_catalog_slug("ONE SIZE", ["M"])
+        category = dc._resolve_catalog_slug("ONE SIZE", ["M"], "")
         self.assertEqual(category, dc.DEFAULT_SHOES_CATEGORY)
 
     @patch("controller.data_controller.get_size_id_by_name")
@@ -35,3 +35,78 @@ class CategoryBySizeTests(unittest.TestCase):
             "36": 171
         }.get(name)
         self.assertEqual(dc._resolve_size_id("36-41"), 171)
+
+    def test_extract_sizes_keeps_default_step_one_without_catalog_slug(self):
+        size, additional_sizes = dc.extract_sizes(["Розмір: 42-46 універсал"])
+        self.assertEqual(size, "42")
+        self.assertEqual(additional_sizes, ["43", "44", "45", "46"])
+
+    def test_extract_numeric_sizes_keeps_step_one_for_mixed_parity_ranges(self):
+        self.assertEqual(dc._extract_numeric_sizes("36-41"), [36.0, 37.0, 38.0, 39.0, 40.0, 41.0])
+
+    @patch("controller.data_controller._resolve_brand_id", return_value=None)
+    @patch("controller.data_controller._parse_price", return_value=1200)
+    @patch("controller.data_controller.find_slug_by_word", return_value="shtany/bryuki")
+    @patch("controller.data_controller._resolve_size_id")
+    def test_build_product_raw_data_splits_range_into_additional_sizes(
+        self,
+        resolve_size_id,
+        _find_slug_by_word,
+        _parse_price,
+        _resolve_brand_id,
+    ):
+        resolve_size_id.side_effect = lambda value, catalog_slug=None: {
+            "42": 833,
+            "44": 834,
+            "46": 835,
+        }.get(str(value))
+        parsed = {
+            "word_for_slack": "штани",
+            "name": "Штани",
+            "description": "desc",
+            "size": "42-46 універсал",
+            "additional_sizes": [],
+            "price": "1200",
+            "color": "чорний",
+        }
+
+        product_raw_data = dc._build_product_raw_data(parsed)
+
+        self.assertEqual(product_raw_data["category"], "shtany/bryuki")
+        self.assertEqual(product_raw_data["size"], 833)
+        self.assertEqual(product_raw_data["additional_sizes"], [834, 835])
+
+    @patch("controller.data_controller._resolve_brand_id", return_value=None)
+    @patch("controller.data_controller._parse_price", return_value=1200)
+    @patch("controller.data_controller.find_slug_by_word", return_value=None)
+    @patch("controller.data_controller._resolve_size_id")
+    def test_build_product_raw_data_keeps_shoes_range_logic_untouched(
+        self,
+        resolve_size_id,
+        _find_slug_by_word,
+        _parse_price,
+        _resolve_brand_id,
+    ):
+        resolve_size_id.side_effect = lambda value, catalog_slug=None: {
+            "36": 171,
+            "37": 172,
+            "38": 173,
+            "39": 174,
+            "40": 175,
+            "41": 176,
+        }.get(str(value))
+        parsed = {
+            "word_for_slack": "кроссовки",
+            "name": "Кроссовки",
+            "description": "desc",
+            "size": "36-41",
+            "additional_sizes": [],
+            "price": "1200",
+            "color": "чорний",
+        }
+
+        product_raw_data = dc._build_product_raw_data(parsed)
+
+        self.assertEqual(product_raw_data["category"], "zhenskaya-obuv/krossovki")
+        self.assertEqual(product_raw_data["size"], 171)
+        self.assertEqual(product_raw_data["additional_sizes"], [172, 173, 174, 175, 176])
