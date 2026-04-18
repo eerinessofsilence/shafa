@@ -1508,10 +1508,16 @@ def _load_brand_patterns() -> list[tuple[str, re.Pattern]]:
 def _find_brand_in_text(text: str) -> str:
     if not text:
         return ""
+    best_match: tuple[int, int, str] | None = None
     for name, pattern in _load_brand_patterns():
-        if pattern.search(text):
-            return name
-    return ""
+        match = pattern.search(text)
+        if not match:
+            continue
+        start = match.start()
+        candidate = (start, -len(name), name)
+        if best_match is None or candidate < best_match:
+            best_match = candidate
+    return best_match[2] if best_match else ""
 
 
 def _fallback_brand_from_name(name: str) -> str:

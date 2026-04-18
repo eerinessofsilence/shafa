@@ -7,6 +7,14 @@ from data.db import get_size_id_by_name
 
 
 class CategoryBySizeTests(unittest.TestCase):
+    def test_extract_brand_prefers_earliest_brand_match_in_name(self):
+        brand = dc.extract_brand([], "Nike air force")
+        self.assertEqual(brand, "Nike")
+
+    def test_extract_brand_keeps_multiword_brand_at_name_start(self):
+        brand = dc.extract_brand([], "New Balance 574")
+        self.assertEqual(brand, "New Balance")
+
     def test_women_category_for_sizes_36_to_41(self):
         category = dc._resolve_catalog_slug("36", ["37", "40", "41"], "")
         self.assertEqual(category, dc.WOMEN_SNEAKERS_CATEGORY)
