@@ -6,6 +6,7 @@ import type {
   ApiTelegramCodeRequest,
   ApiTelegramPasswordRequest,
   ApiTelegramPhoneRequest,
+  ApiTelegramSessionCopyRequest,
 } from '../types';
 
 export async function getTelegramAuthStatus(
@@ -59,6 +60,19 @@ export async function logoutTelegram(
   return request<ApiTelegramAuthStatus>(`/accounts/${accountId}/auth/telegram/logout`, {
     method: 'POST',
   });
+}
+
+export async function copyTelegramSession(
+  accountId: string,
+  payload: ApiTelegramSessionCopyRequest,
+): Promise<ApiTelegramAuthStatus> {
+  return request<ApiTelegramAuthStatus>(
+    `/accounts/${accountId}/auth/telegram/copy-session`,
+    {
+      body: JSON.stringify(payload),
+      method: 'POST',
+    },
+  );
 }
 
 export async function importTelegramSession(

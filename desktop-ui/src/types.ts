@@ -128,6 +128,10 @@ export interface ApiTelegramPasswordRequest {
   password: string;
 }
 
+export interface ApiTelegramSessionCopyRequest {
+  source_account_id: string;
+}
+
 export interface ApiTelegramAuthStatus {
   account_id: string;
   connected: boolean;
@@ -165,6 +169,7 @@ export interface ApiShafaAuthStatus {
 export interface AccountRow {
   id: string;
   name: string;
+  phone?: string;
   path: string;
   branch: string;
   browser: string;

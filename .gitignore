@@ -1,50 +1,82 @@
-venv
+# Python virtualenvs and local env
+venv/
+.venv/
+.env
+.env.*
+!.env.example
+
+# Python caches and tooling
 __pycache__/
-*/__pycache__/
-runtime/
-logs/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
 *.pyc
 *.pyo
 *.pyd
-*.db
-*.sqlite3
-*.log
-*.session
-*.pot
-*.mo
-*.swp
-.DS_Store
-.idea/
-.vscode/
+
+# Coverage and reports
+.coverage
+.coverage.*
+htmlcov/
+
+# Python packaging artifacts
 *.egg-info/
-dist/
-build/
-.pyinstaller/
-node_modules/
-.vite/
-desktop-ui/dist/
-desktop-ui/node_modules/
-desktop-ui/release/
-desktop-ui/dist-electron/
-*.tsbuildinfo
+*.egg
 eggs/
 parts/
 sdist/
-var/
-*.egg
+build/
+dist/
+.pyinstaller/
+
+# Logs and runtime output
+runtime/
+logs/
+*.log
 *.bak
-shafa/venv/
-shafa/media/*
-shafa/auth.json
-shafa/*.session
-shafa/data/*.sqlite3
-shafa/.env
-shafa/.codexignore
+*.swp
+
+# Databases and local sessions
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.session
+*.session-journal
+
+# Localization artifacts
+*.pot
+*.mo
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Node / Electron / Vite
+node_modules/
+.vite/
+*.tsbuildinfo
+desktop-ui/node_modules/
+desktop-ui/dist/
+desktop-ui/dist-electron/
+desktop-ui/release/
+
+# Test and browser artifacts
+playwright-report/
+test-results/
+
+# Project runtime state
 accounts/
 accounts_state.json
 auth.json
 app_config.json
 chart_history.json
 channel_templates.json
-session.session
+message_templates.json
+telegram_channel_templates.json

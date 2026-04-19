@@ -9,9 +9,9 @@ import {
   updateAccount as updateAccountRequest,
 } from './api/accounts';
 import {
+  copyTelegramSession,
   getShafaAuthStatus,
   getTelegramAuthStatus,
-  importTelegramSession,
   logoutShafa,
   logoutTelegram,
   requestTelegramCode,
@@ -294,6 +294,7 @@ function mapApiAccountToRow(account: ApiAccountRead): AccountRow {
   return {
     id: account.id,
     name: account.name,
+    phone: account.phone,
     path: account.path,
     branch: account.branch || 'main',
     browser: account.open_browser ? 'Да' : 'Нет',
@@ -628,6 +629,7 @@ function createAccountFromDraft(draft: AccountDraft): AccountRow {
   return {
     id: createEntityId('account'),
     name: draft.name.trim(),
+    phone: '',
     path: draft.path.trim() || defaultAccountProjectPath,
     branch: deriveAccountBranch(draft.path),
     browser: draft.browser,
@@ -1686,6 +1688,7 @@ function AccountsPage({
 
       <AccountDetailsDialog
         account={detailsAccount}
+        accounts={accounts}
         isOpen={isDetailsDialogOpen}
         isSubmitting={isMutationPending}
         onClose={() => setIsDetailsDialogOpen(false)}
@@ -1909,11 +1912,13 @@ function AuthTextareaField({
 
 interface AccountAuthPanelProps {
   account: AccountRow;
+  accounts: AccountRow[];
   onReloadAccounts: () => Promise<void>;
 }
 
 function AccountAuthPanel({
   account,
+  accounts,
   onReloadAccounts,
 }: AccountAuthPanelProps) {
   const [telegramStatus, setTelegramStatus] =
@@ -1983,6 +1988,7 @@ function AccountAuthPanel({
 
       <TelegramAuthCard
         accountId={account.id}
+        accounts={accounts}
         isStatusLoading={isStatusLoading}
         status={telegramStatus}
         onRefreshStatuses={loadStatuses}
@@ -2209,6 +2215,7 @@ function ShafaSessionCard({
 
 interface TelegramAuthCardProps {
   accountId: string;
+  accounts: AccountRow[];
   status: ApiTelegramAuthStatus | null;
   isStatusLoading: boolean;
   onRefreshStatuses: () => Promise<void>;
@@ -2217,6 +2224,7 @@ interface TelegramAuthCardProps {
 
 function TelegramAuthCard({
   accountId,
+  accounts,
   status,
   isStatusLoading,
   onRefreshStatuses,
@@ -2230,10 +2238,32 @@ function TelegramAuthCard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
-  const sessionFileInputRef = useRef<HTMLInputElement | null>(null);
   const stepMeta = getTelegramStepMeta(status);
   const isConnected = Boolean(status?.connected);
   const connectedPhoneLabel = status?.phone_number?.trim() || 'Номер не найден';
+  const sessionSourceAccounts = [...accounts]
+    .filter((account) => account.id !== accountId)
+    .sort((leftAccount, rightAccount) => {
+      const leftHasSession = Boolean(leftAccount.telegramSessionExists);
+      const rightHasSession = Boolean(rightAccount.telegramSessionExists);
+
+      if (leftHasSession !== rightHasSession) {
+        return rightHasSession ? 1 : -1;
+      }
+
+      return leftAccount.name.localeCompare(rightAccount.name, 'ru', {
+        sensitivity: 'base',
+      });
+    });
+  const hasSessionSources = sessionSourceAccounts.length > 0;
+  const hasCopyableSessionSource = sessionSourceAccounts.some((account) =>
+    Boolean(account.telegramSessionExists),
+  );
+  const sessionImportLabel = !hasSessionSources
+    ? 'Нет других аккаунтов'
+    : hasCopyableSessionSource
+      ? 'Импортировать из аккаунта'
+      : 'Выбрать аккаунт';
 
   useEffect(() => {
     setPhone(status?.phone_number ?? '');
@@ -2249,14 +2279,6 @@ function TelegramAuthCard({
       setPhone(status.phone_number);
     }
   }, [status?.phone_number]);
-
-  useEffect(() => {
-    if (isConnected) {
-      return;
-    }
-
-    setIsAccountMenuOpen(false);
-  }, [isConnected]);
 
   useEffect(() => {
     if (!isAccountMenuOpen) {
@@ -2318,23 +2340,16 @@ function TelegramAuthCard({
     }
   };
 
-  const handleSessionFileChange = async (
-    event: ChangeEvent<HTMLInputElement>,
-  ) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-
-    if (!file) {
-      return;
-    }
-
+  const handleSessionImport = async (sourceAccountId: string) => {
     setIsSubmitting(true);
     setIsAccountMenuOpen(false);
     setError('');
     setFeedback('');
 
     try {
-      const nextStatus = await importTelegramSession(accountId, file);
+      const nextStatus = await copyTelegramSession(accountId, {
+        source_account_id: sourceAccountId,
+      });
 
       setFeedback(nextStatus.message);
       if (nextStatus.phone_number) {
@@ -2348,7 +2363,7 @@ function TelegramAuthCard({
       setError(
         formatApiError(
           nextError,
-          'Не удалось импортировать Telegram session файл.',
+          'Не удалось импортировать Telegram session из другого аккаунта.',
         ),
       );
     } finally {
@@ -2369,8 +2384,8 @@ function TelegramAuthCard({
   const isPasswordDisabled =
     isSubmitting || isStatusLoading || !password.trim() || !showPasswordField;
   const isLogoutDisabled = isSubmitting || isStatusLoading || !isConnected;
-  const isAccountMenuDisabled = isSubmitting || isStatusLoading || !isConnected;
-  const isSessionImportDisabled = isSubmitting || isStatusLoading;
+  const isAccountMenuDisabled =
+    isSubmitting || isStatusLoading || (!isConnected && !hasSessionSources);
 
   return (
     <div className="rounded-[22px] border border-border/20 bg-secondary/55 p-4">
@@ -2391,28 +2406,72 @@ function TelegramAuthCard({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {isConnected ? null : (
-            <>
-              <input
-                ref={sessionFileInputRef}
-                accept=".session,application/octet-stream"
-                className="hidden"
-                type="file"
-                onChange={(event) => void handleSessionFileChange(event)}
-              />
+            <div className="relative" ref={accountMenuRef}>
               <button
+                aria-expanded={isAccountMenuOpen}
+                aria-haspopup="menu"
                 className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-border/40 bg-secondary/85 px-4 text-sm font-medium text-text transition hover:border-border/70 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border/40 disabled:hover:bg-secondary/85"
-                disabled={isSessionImportDisabled}
+                disabled={isAccountMenuDisabled}
                 type="button"
-                onClick={() => sessionFileInputRef.current?.click()}
+                onClick={() =>
+                  setIsAccountMenuOpen((currentValue) => !currentValue)
+                }
               >
                 {isSubmitting ? (
                   <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
                   <Upload className="h-4 w-4" />
                 )}
-                Добавить сессию
+                {sessionImportLabel}
               </button>
-            </>
+
+              {isAccountMenuOpen ? (
+                <div className="absolute top-full right-0 z-10 mt-2 w-80 max-w-[calc(100vw-3rem)] rounded-2xl border border-border/20 bg-foreground p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+                  <p className="px-3 py-2 text-xs font-medium tracking-wide text-text-muted uppercase">
+                    Выберите аккаунт-источник
+                  </p>
+                  <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+                    {sessionSourceAccounts.map((sourceAccount) => {
+                      const hasTelegramSession = Boolean(
+                        sourceAccount.telegramSessionExists,
+                      );
+                      const sourcePhoneLabel =
+                        sourceAccount.phone?.trim() || 'Телефон не указан';
+
+                      return (
+                        <button
+                          key={sourceAccount.id}
+                          className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition ${
+                            hasTelegramSession
+                              ? 'cursor-pointer text-text hover:bg-secondary/80'
+                              : 'cursor-not-allowed text-text-muted/70'
+                          }`}
+                          disabled={!hasTelegramSession || isSubmitting}
+                          type="button"
+                          onClick={() =>
+                            void handleSessionImport(sourceAccount.id)
+                          }
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium">
+                              {sourceAccount.name}
+                            </span>
+                            <span className="block truncate text-xs text-text-muted">
+                              {sourcePhoneLabel}
+                            </span>
+                          </span>
+                          <StatusPill
+                            tone={hasTelegramSession ? 'success' : 'neutral'}
+                          >
+                            {hasTelegramSession ? 'Есть session' : 'Нет session'}
+                          </StatusPill>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           )}
 
           {isConnected ? (
@@ -2592,6 +2651,7 @@ function TelegramAuthCard({
 
 interface AccountDetailsDialogProps {
   account: AccountRow | null;
+  accounts: AccountRow[];
   isOpen: boolean;
   isSubmitting: boolean;
   onClose: () => void;
@@ -2605,6 +2665,7 @@ interface AccountDetailsDialogProps {
 
 function AccountDetailsDialog({
   account,
+  accounts,
   isOpen,
   isSubmitting,
   onClose,
@@ -2667,6 +2728,7 @@ function AccountDetailsDialog({
 
         <AccountAuthPanel
           account={account}
+          accounts={accounts}
           onReloadAccounts={onReloadAccounts}
         />
 
