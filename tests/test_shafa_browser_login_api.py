@@ -31,7 +31,6 @@ class ShafaBrowserLoginApiTest(unittest.TestCase):
                         "phone": "",
                         "path": "/tmp/project",
                         "branch": "main",
-                        "open_browser": False,
                         "timer_minutes": 5,
                         "channel_links": [],
                         "status": "stopped",

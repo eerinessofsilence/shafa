@@ -15,7 +15,6 @@ class AccountBase(BaseModel):
     phone: str = Field(default="", max_length=32)
     path: str = Field(default="")
     branch: str = Field(default="main")
-    open_browser: bool = False
     timer_minutes: int = Field(default=5, ge=1, le=1440)
     channel_links: list[str] = Field(default_factory=list)
 
@@ -41,7 +40,6 @@ class AccountCreate(AccountBase):
 class AccountUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     path: str | None = Field(default=None)
-    open_browser: bool | None = None
     timer_minutes: int | None = Field(default=None, ge=1, le=1440)
     channel_links: list[str] | None = None
 

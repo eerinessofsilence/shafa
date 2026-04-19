@@ -96,7 +96,6 @@ Example create request:
   "phone": "+380000000000",
   "path": "/home/user/shafa_app/shafa_logic",
   "branch": "main",
-  "open_browser": false,
   "timer_minutes": 5,
   "channel_links": ["https://t.me/example_channel"]
 }

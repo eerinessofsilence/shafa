@@ -2,7 +2,7 @@ export type PageId =
   | 'dashboard'
   | 'accounts'
   | 'parsing'
-  | 'stats'
+  | 'logs'
   | 'settings';
 
 export type StatusTone = 'success' | 'warning' | 'info' | 'danger' | 'neutral';
@@ -65,7 +65,6 @@ export interface ApiAccountRead {
   phone: string;
   path: string;
   branch: string;
-  open_browser: boolean;
   timer_minutes: number;
   channel_links: string[];
   status: ApiAccountStatus;
@@ -88,11 +87,31 @@ export interface ApiAccountLogEntryRead {
   message: string;
 }
 
+export interface ApiDashboardSeriesPoint {
+  date: string;
+  items: number;
+  errors: number;
+}
+
+export interface ApiDashboardSummary {
+  generated_at: string;
+  total_accounts: number;
+  active_accounts: number;
+  ready_accounts: number;
+  attention_accounts: number;
+  item_successes_last_7_days: number;
+  error_events_last_7_days: number;
+  latest_run_account_name: string | null;
+  latest_run_at: string | null;
+  top_error_account_name: string | null;
+  top_error_account_errors: number;
+  series: ApiDashboardSeriesPoint[];
+}
+
 export interface ApiAccountCreate {
   name: string;
   phone: string;
   path: string;
-  open_browser: boolean;
   timer_minutes: number;
   channel_links: string[];
   branch?: string;
@@ -101,7 +120,6 @@ export interface ApiAccountCreate {
 export interface ApiAccountUpdate {
   name?: string;
   path?: string;
-  open_browser?: boolean;
   timer_minutes?: number;
   channel_links?: string[];
 }
@@ -172,7 +190,6 @@ export interface AccountRow {
   phone?: string;
   path: string;
   branch: string;
-  browser: string;
   timer: string;
   errors: string;
   statusLabel: string;

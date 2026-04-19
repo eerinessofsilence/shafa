@@ -16,7 +16,6 @@ class Account:
     phone_number: str = ""
     telegram_password: str = ""
     branch: str = "main"
-    open_browser: bool = False
     timer_minutes: int = 5
     channel_links: list[str] = field(default_factory=list)
     status: str = "stopped"
@@ -32,7 +31,6 @@ class Account:
             "phone_number": self.phone_number,
             "telegram_password": self.telegram_password,
             "branch": self.branch,
-            "open_browser": self.open_browser,
             "timer_minutes": self.timer_minutes,
             "channel_links": self.channel_links,
             "status": self.status,
@@ -49,7 +47,6 @@ class Account:
             phone_number=str(data.get("phone_number") or ""),
             telegram_password=str(data.get("telegram_password") or ""),
             branch=data.get("branch", "main"),
-            open_browser=bool(data.get("open_browser", False)),
             timer_minutes=int(data.get("timer_minutes", 5)),
             channel_links=sanitize_channel_links(data.get("channel_links", [])),
             status=data.get("status", "stopped"),

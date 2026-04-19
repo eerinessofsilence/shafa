@@ -7,6 +7,7 @@ from shafa_control import AccountSessionStore
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.services.channel_template_service import ChannelTemplateService
+from telegram_accounts_api.services.dashboard_service import DashboardService
 from telegram_accounts_api.services.telegram_service import TelegramService
 from telegram_accounts_api.services.template_service import TemplateService
 from telegram_accounts_api.utils.account_logging import AccountLogStore, get_account_log_store as get_shared_account_log_store
@@ -69,3 +70,11 @@ def get_auth_service() -> AccountAuthService:
 @lru_cache
 def get_account_log_store() -> AccountLogStore:
     return get_shared_account_log_store()
+
+
+@lru_cache
+def get_dashboard_service() -> DashboardService:
+    return DashboardService(
+        account_service=get_account_service(),
+        log_store=get_account_log_store(),
+    )

@@ -52,7 +52,6 @@ class AccountsApiTest(unittest.TestCase):
                     "phone_number": "+380000000000",
                     "path": "/tmp/project",
                     "branch": "main",
-                    "open_browser": False,
                     "timer_minutes": 5,
                     "channel_links": ["https://t.me/example_channel"],
                     "status": "stopped",
@@ -111,7 +110,6 @@ class AccountsApiTest(unittest.TestCase):
             json={
                 "name": "Updated account",
                 "path": "/tmp/updated-project",
-                "open_browser": True,
                 "timer_minutes": 15,
                 "channel_links": [
                     "t.me/updated_channel",
@@ -124,7 +122,7 @@ class AccountsApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["name"], "Updated account")
         self.assertEqual(payload["path"], "/tmp/updated-project")
-        self.assertEqual(payload["open_browser"], True)
+        self.assertNotIn("open_browser", payload)
         self.assertEqual(payload["timer_minutes"], 15)
         self.assertEqual(
             payload["channel_links"],
@@ -140,7 +138,7 @@ class AccountsApiTest(unittest.TestCase):
         stored_payload = self._read_accounts()[0]
         self.assertEqual(stored_payload["name"], "Updated account")
         self.assertEqual(stored_payload["path"], "/tmp/updated-project")
-        self.assertEqual(stored_payload["open_browser"], True)
+        self.assertNotIn("open_browser", stored_payload)
         self.assertEqual(stored_payload["timer_minutes"], 15)
         self.assertEqual(
             stored_payload["channel_links"],
@@ -209,7 +207,6 @@ class AccountsApiTest(unittest.TestCase):
                 "phone": "",
                 "path": "",
                 "branch": "main",
-                "open_browser": False,
                 "timer_minutes": 5,
                 "channel_links": [],
             },
@@ -218,10 +215,12 @@ class AccountsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         payload = response.json()
         self.assertEqual(payload["path"], str(self.base_dir))
+        self.assertNotIn("open_browser", payload)
 
         stored_accounts = self._read_accounts()
         created_account = next(item for item in stored_accounts if item["id"] == payload["id"])
         self.assertEqual(created_account["path"], str(self.base_dir))
+        self.assertNotIn("open_browser", created_account)
 
     def test_start_account_requires_valid_shafa_session(self) -> None:
         project_dir = self._make_project()
@@ -233,7 +232,6 @@ class AccountsApiTest(unittest.TestCase):
                 "phone": "",
                 "path": str(project_dir),
                 "branch": "main",
-                "open_browser": False,
                 "timer_minutes": 5,
                 "channel_links": [],
             },
@@ -261,7 +259,6 @@ class AccountsApiTest(unittest.TestCase):
                 "phone": "",
                 "path": str(project_dir),
                 "branch": "main",
-                "open_browser": False,
                 "timer_minutes": 5,
                 "channel_links": [],
             },

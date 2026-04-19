@@ -37,7 +37,6 @@ ACCOUNT_KNOWN_FIELDS = {
     "phone_number",
     "path",
     "branch",
-    "open_browser",
     "timer_minutes",
     "channel_links",
     "status",
@@ -100,7 +99,6 @@ class AccountService:
             "phone_number": data.phone,
             "path": data.path or default_project_path,
             "branch": data.branch,
-            "open_browser": data.open_browser,
             "timer_minutes": data.timer_minutes,
             "channel_links": data.channel_links,
             "status": "stopped",
@@ -127,8 +125,6 @@ class AccountService:
                 item["name"] = data.name
             if data.path is not None:
                 item["path"] = data.path
-            if data.open_browser is not None:
-                item["open_browser"] = data.open_browser
             if data.timer_minutes is not None:
                 item["timer_minutes"] = data.timer_minutes
             if data.channel_links is not None:
@@ -275,7 +271,6 @@ class AccountService:
             phone=phone,
             path=runtime_account.path,
             branch=runtime_account.branch,
-            open_browser=runtime_account.open_browser,
             timer_minutes=runtime_account.timer_minutes,
             channel_links=runtime_account.channel_links,
             status=status,
@@ -306,14 +301,15 @@ class AccountService:
                 raise StorageError(f"Failed to read JSON file: {self.storage.path}") from exc
             if not isinstance(raw, list):
                 raise StorageError(f"Expected a JSON list in {self.storage.path}")
-            return [item for item in raw if isinstance(item, dict)]
+            return [self._normalize_record(item) for item in raw if isinstance(item, dict)]
 
     def _write_payload_sync(self, payload: list[dict]) -> None:
         with self._records_lock:
             try:
                 self.storage.path.parent.mkdir(parents=True, exist_ok=True)
+                normalized_payload = [self._normalize_record(item) for item in payload]
                 self.storage.path.write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    json.dumps(normalized_payload, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
             except OSError as exc:
@@ -345,6 +341,12 @@ class AccountService:
         item["phone_number"] = phone
         item["updated_at"] = datetime.now(UTC).isoformat()
 
+    @staticmethod
+    def _normalize_record(item: dict) -> dict:
+        normalized = dict(item)
+        normalized.pop("open_browser", None)
+        return normalized
+
     def _record_to_account(self, item: dict) -> Account:
         phone = str(item.get("phone") or item.get("phone_number") or "").strip()
         return Account(
@@ -353,7 +355,6 @@ class AccountService:
             path=str(item.get("path") or "").strip(),
             phone_number=phone,
             branch=str(item.get("branch") or "main").strip() or "main",
-            open_browser=bool(item.get("open_browser", False)),
             timer_minutes=int(item.get("timer_minutes", 5)),
             channel_links=item.get("channel_links") or [],
             status="started" if str(item.get("status")).strip().lower() in {"started", "running"} else "stopped",

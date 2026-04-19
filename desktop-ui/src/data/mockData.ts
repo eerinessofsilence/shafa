@@ -1,5 +1,4 @@
 import type {
-  AccountRow,
   AlertItem,
   ChartPoint,
   LogRecordItem,
@@ -16,35 +15,35 @@ import type {
 export const navItems: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', caption: 'Обзор и сигналы' },
   { id: 'accounts', label: 'Аккаунты', caption: 'Каталог и детали' },
-  { id: 'stats', label: 'Статистика', caption: 'Графики и KPI' },
+  { id: 'logs', label: 'Логи', caption: 'События и runtime' },
   { id: 'settings', label: 'Настройки', caption: 'Системные параметры' },
 ];
 
 export const dashboardMetrics: Metric[] = [
-  { label: 'Всего аккаунтов', value: '12', accent: 'teal' },
-  { label: 'Активные аккаунты', value: '5', accent: 'amber' },
-  { label: 'Всего товаров', value: '284', accent: 'blue' },
-  { label: 'Всего ошибок', value: '7', accent: 'rose' },
+  { label: 'Средняя скорость', value: '14.2/min', accent: 'teal' },
+  { label: 'Обработано за 7 дней', value: '1 842', accent: 'blue' },
+  { label: 'Активные аккаунты', value: '5 / 12', accent: 'amber' },
+  { label: 'Баны / таймауты', value: '3 / 11', accent: 'rose' },
 ];
 
 export const systemStatus: StatusItem[] = [
   {
-    label: 'Основной pipeline',
-    value: 'Работает стабильно',
-    badge: 'Good',
+    label: 'Пиковый день',
+    value: 'Пятница дала 171 публикацию и 7 ошибок на моковой неделе.',
+    badge: 'Peak',
     tone: 'success',
   },
   {
-    label: 'Telegram login flow',
-    value: '1 сессия ожидает код',
-    badge: 'Wait',
-    tone: 'warning',
+    label: 'Базовая нагрузка',
+    value: 'Основной объём держится в диапазоне 118-156 публикаций в день.',
+    badge: 'Flow',
+    tone: 'info',
   },
   {
-    label: 'Очередь задач',
-    value: '8 заданий на подготовке',
-    badge: 'Queue',
-    tone: 'info',
+    label: 'Зона риска',
+    value: '3 бана и 11 таймаутов пока показываем как отдельный моковый блок.',
+    badge: 'Watch',
+    tone: 'warning',
   },
 ];
 
@@ -78,357 +77,6 @@ export const releaseNotes: NoteItem[] = [
   {
     title: 'Static mock data',
     copy: 'Никаких запросов, только шаблонный UI для следующего шага интеграции.',
-  },
-];
-
-export const accountRows: AccountRow[] = [
-  {
-    id: 'waffle',
-    name: 'waffle',
-    path: '/workspace/shafa/main',
-    branch: 'main',
-    browser: 'Нет',
-    timer: '5 мин',
-    errors: '2',
-    statusLabel: 'stopped',
-    statusTone: 'neutral',
-    telegramChannels: [
-      {
-        id: 'wardrobe-drop',
-        title: 'Wardrobe Drop',
-        handle: 't.me/wardrobe_drop',
-        photoSource: 'Сообщение',
-      },
-      {
-        id: 'shafa-daily',
-        title: 'Shafa Daily',
-        handle: 't.me/shafa_daily',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'womenwear-mock',
-        title: 'Womenwear Mock',
-        handle: 't.me/womenwear_mock',
-        photoSource: 'Два в одном',
-      },
-      {
-        id: 'sales-alpha',
-        title: 'Sales Alpha',
-        handle: 't.me/sales_alpha',
-        photoSource: 'Сообщение',
-      },
-    ],
-  },
-  {
-    id: 'hat',
-    name: 'шляпа',
-    path: '/workspace/shafa/clothes-feature',
-    branch: 'clothes-feature',
-    browser: 'Да',
-    timer: '8 мин',
-    errors: '0',
-    statusLabel: 'running',
-    statusTone: 'success',
-    telegramChannels: [
-      {
-        id: 'fashion-lab',
-        title: 'Fashion Lab',
-        handle: 't.me/fashion_lab',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'premium-mock',
-        title: 'Premium Mock',
-        handle: 't.me/premium_mock',
-        photoSource: 'Два в одном',
-      },
-      {
-        id: 'sneaker-board',
-        title: 'Sneaker Board',
-        handle: 't.me/sneaker_board',
-        photoSource: 'Сообщение',
-      },
-    ],
-  },
-  {
-    id: 'capsule',
-    name: 'щляпчик',
-    path: '/workspace/shafa/sneakers',
-    branch: 'sneakers-ui',
-    browser: 'Нет',
-    timer: '15 мин',
-    errors: '1',
-    statusLabel: 'checking',
-    statusTone: 'warning',
-    telegramChannels: [
-      {
-        id: 'drop-queue',
-        title: 'Drop Queue',
-        handle: 't.me/drop_queue',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'streetwear-flow',
-        title: 'Streetwear Flow',
-        handle: 't.me/streetwear_flow',
-        photoSource: 'Два в одном',
-      },
-      {
-        id: 'runner-pairs',
-        title: 'Runner Pairs',
-        handle: 't.me/runner_pairs',
-        photoSource: 'Сообщение',
-      },
-    ],
-  },
-  {
-    id: 'linen',
-    name: 'linen',
-    path: '/workspace/shafa/ops',
-    branch: 'ops-dashboard',
-    browser: 'Да',
-    timer: '12 мин',
-    errors: '4',
-    statusLabel: 'error',
-    statusTone: 'danger',
-    telegramChannels: [
-      {
-        id: 'backoffice-mock',
-        title: 'Backoffice Mock',
-        handle: 't.me/backoffice_mock',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'archive-lane',
-        title: 'Archive Lane',
-        handle: 't.me/archive_lane',
-        photoSource: 'Два в одном',
-      },
-    ],
-  },
-  {
-    id: 'ember',
-    name: 'ember',
-    path: '/workspace/shafa/refresh',
-    branch: 'refresh-feed',
-    browser: 'Да',
-    timer: '6 мин',
-    errors: '0',
-    statusLabel: 'running',
-    statusTone: 'success',
-    telegramChannels: [
-      {
-        id: 'market-pulse',
-        title: 'Market Pulse',
-        handle: 't.me/market_pulse',
-        photoSource: 'Сообщение',
-      },
-      {
-        id: 'daily-rack',
-        title: 'Daily Rack',
-        handle: 't.me/daily_rack',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'closet-monitor',
-        title: 'Closet Monitor',
-        handle: 't.me/closet_monitor',
-        photoSource: 'Два в одном',
-      },
-    ],
-  },
-  {
-    id: 'quartz',
-    name: 'quartz',
-    path: '/workspace/shafa/outerwear',
-    branch: 'outerwear-auto',
-    browser: 'Нет',
-    timer: '9 мин',
-    errors: '0',
-    statusLabel: 'running',
-    statusTone: 'success',
-    telegramChannels: [
-      {
-        id: 'outerwear-lab',
-        title: 'Outerwear Lab',
-        handle: 't.me/outerwear_lab',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'coat-alert',
-        title: 'Coat Alert',
-        handle: 't.me/coat_alert',
-        photoSource: 'Сообщение',
-      },
-    ],
-  },
-  {
-    id: 'orbit',
-    name: 'orbit',
-    path: '/workspace/shafa/accessories',
-    branch: 'accessories-stream',
-    browser: 'Да',
-    timer: '11 мин',
-    errors: '0',
-    statusLabel: 'running',
-    statusTone: 'success',
-    telegramChannels: [
-      {
-        id: 'orbit-access',
-        title: 'Orbit Access',
-        handle: 't.me/orbit_access',
-        photoSource: 'Два в одном',
-      },
-      {
-        id: 'caps-watch',
-        title: 'Caps Watch',
-        handle: 't.me/caps_watch',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'addons-line',
-        title: 'Addons Line',
-        handle: 't.me/addons_line',
-        photoSource: 'Сообщение',
-      },
-    ],
-  },
-  {
-    id: 'velvet',
-    name: 'velvet',
-    path: '/workspace/shafa/premium',
-    branch: 'premium-drop',
-    browser: 'Да',
-    timer: '4 мин',
-    errors: '0',
-    statusLabel: 'running',
-    statusTone: 'success',
-    telegramChannels: [
-      {
-        id: 'premium-edit',
-        title: 'Premium Edit',
-        handle: 't.me/premium_edit',
-        photoSource: 'Сообщение',
-      },
-      {
-        id: 'velvet-radar',
-        title: 'Velvet Radar',
-        handle: 't.me/velvet_radar',
-        photoSource: 'Два в одном',
-      },
-    ],
-  },
-  {
-    id: 'marzipan',
-    name: 'marzipan',
-    path: '/workspace/shafa/womenswear',
-    branch: 'womenswear-check',
-    browser: 'Нет',
-    timer: '13 мин',
-    errors: '0',
-    statusLabel: 'checking',
-    statusTone: 'warning',
-    telegramChannels: [
-      {
-        id: 'dress-room',
-        title: 'Dress Room',
-        handle: 't.me/dress_room',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'soft-hanger',
-        title: 'Soft Hanger',
-        handle: 't.me/soft_hanger',
-        photoSource: 'Сообщение',
-      },
-      {
-        id: 'look-preview',
-        title: 'Look Preview',
-        handle: 't.me/look_preview',
-        photoSource: 'Два в одном',
-      },
-    ],
-  },
-  {
-    id: 'comet',
-    name: 'comet',
-    path: '/workspace/shafa/queue',
-    branch: 'queue-observer',
-    browser: 'Нет',
-    timer: '16 мин',
-    errors: '0',
-    statusLabel: 'checking',
-    statusTone: 'warning',
-    telegramChannels: [
-      {
-        id: 'queue-trace',
-        title: 'Queue Trace',
-        handle: 't.me/queue_trace',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'second-pass',
-        title: 'Second Pass',
-        handle: 't.me/second_pass',
-        photoSource: 'Сообщение',
-      },
-    ],
-  },
-  {
-    id: 'atlas',
-    name: 'atlas',
-    path: '/workspace/shafa/archive',
-    branch: 'archive-pack',
-    browser: 'Нет',
-    timer: '20 мин',
-    errors: '0',
-    statusLabel: 'stopped',
-    statusTone: 'neutral',
-    telegramChannels: [
-      {
-        id: 'archive-feed',
-        title: 'Archive Feed',
-        handle: 't.me/archive_feed',
-        photoSource: 'Сообщение',
-      },
-      {
-        id: 'cold-storage',
-        title: 'Cold Storage',
-        handle: 't.me/cold_storage',
-        photoSource: 'Два в одном',
-      },
-    ],
-  },
-  {
-    id: 'studio',
-    name: 'studio',
-    path: '/workspace/shafa/editorial',
-    branch: 'editorial-prep',
-    browser: 'Да',
-    timer: '7 мин',
-    errors: '0',
-    statusLabel: 'stopped',
-    statusTone: 'neutral',
-    telegramChannels: [
-      {
-        id: 'editorial-note',
-        title: 'Editorial Note',
-        handle: 't.me/editorial_note',
-        photoSource: 'Комментарии',
-      },
-      {
-        id: 'studio-board',
-        title: 'Studio Board',
-        handle: 't.me/studio_board',
-        photoSource: 'Сообщение',
-      },
-      {
-        id: 'ready-layout',
-        title: 'Ready Layout',
-        handle: 't.me/ready_layout',
-        photoSource: 'Два в одном',
-      },
-    ],
   },
 ];
 
@@ -493,29 +141,6 @@ export const parserResults: ParserResult[] = [
   },
 ];
 
-export const statsMetrics: Metric[] = [
-  {
-    label: 'Скорость',
-    value: '14.2/min',
-    accent: 'teal',
-  },
-  {
-    label: 'Обработано',
-    value: '1 842',
-    accent: 'blue',
-  },
-  {
-    label: 'Баны',
-    value: '3',
-    accent: 'amber',
-  },
-  {
-    label: 'Таймауты',
-    value: '11',
-    accent: 'rose',
-  },
-];
-
 export const logRecords: LogRecordItem[] = [
   {
     time: '10:14:02',
@@ -574,16 +199,6 @@ export const settingsGroups: SettingsGroup[] = [
 ];
 
 export const dashboardSeries: ChartPoint[] = [
-  { label: '08', items: 14, errors: 1 },
-  { label: '09', items: 18, errors: 1 },
-  { label: '10', items: 24, errors: 2 },
-  { label: '11', items: 31, errors: 2 },
-  { label: '12', items: 27, errors: 1 },
-  { label: '13', items: 35, errors: 3 },
-  { label: '14', items: 30, errors: 2 },
-];
-
-export const statsSeries: ChartPoint[] = [
   { label: 'Пн', items: 102, errors: 6 },
   { label: 'Вт', items: 124, errors: 4 },
   { label: 'Ср', items: 118, errors: 3 },
