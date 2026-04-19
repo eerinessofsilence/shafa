@@ -72,13 +72,16 @@ class AccountAuthService:
         connected = self.store.is_valid_telegram_session(account) and not has_active_login
         if connected:
             current_step = "SUCCESS"
+        phone_number = str(state.get("phone_number") or account.phone_number or "").strip()
+        if connected and not phone_number:
+            phone_number = await self._backfill_phone_from_session(account)
         return TelegramAuthStatusResponse(
             account_id=account.id,
             connected=connected,
             has_api_credentials=self._has_telegram_credentials(account),
             current_step=current_step,
             next_step=self._next_telegram_step(current_step, connected),
-            phone_number=str(state.get("phone_number") or account.phone_number or "").strip(),
+            phone_number=phone_number,
             message=self._telegram_status_message(current_step, connected),
         )
 
@@ -494,6 +497,75 @@ class AccountAuthService:
     def _has_telegram_credentials(self, account: Account) -> bool:
         api_id, api_hash = self._resolve_telegram_credentials(account)
         return api_id.isdigit() and bool(api_hash)
+
+    async def _backfill_phone_from_session(self, account: Account) -> str:
+        phone_number = await self._resolve_phone_from_session(account)
+
+        if not phone_number:
+            return ""
+
+        account_with_phone = self._with_phone(account, phone_number)
+        await self.account_service.set_account_phone(account.id, phone_number)
+        self.telegram_auth.persist_auth_state(
+            account_with_phone,
+            phone_number=phone_number,
+            verification_code="",
+            telegram_password="",
+            current_auth_step="SUCCESS",
+            session_path=str(self.store.telegram_session_file(account)),
+            code_confirmed=False,
+            extra={"phone_code_hash": ""},
+        )
+        self.store.write_account_manifest(account_with_phone)
+        log(account.id, "INFO", "Telegram phone number resolved from authorized session.")
+        return phone_number
+
+    async def _resolve_phone_from_session(self, account: Account) -> str:
+        if not self.store.is_valid_telegram_session(account):
+            return ""
+
+        api_id, api_hash = self._resolve_telegram_credentials(account)
+        if not api_id.isdigit() or not api_hash:
+            return ""
+
+        try:
+            from telethon import TelegramClient
+        except ImportError:
+            return ""
+
+        try:
+            client = TelegramClient(
+                str(self.store.telegram_session_file(account)),
+                int(api_id),
+                api_hash,
+            )
+            await client.connect()
+
+            if not await client.is_user_authorized():
+                return ""
+
+            me = await client.get_me()
+            return self._normalize_resolved_telegram_phone(
+                getattr(me, "phone", None),
+            )
+        except Exception:
+            return ""
+        finally:
+            if "client" in locals():
+                await client.disconnect()
+
+    @staticmethod
+    def _normalize_resolved_telegram_phone(phone: str | None) -> str:
+        normalized_phone = TelegramAuthService.normalize_phone(str(phone or ""))
+
+        if not normalized_phone:
+            return ""
+
+        return (
+            normalized_phone
+            if normalized_phone.startswith("+")
+            else f"+{normalized_phone}"
+        )
 
     def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
         project_path = _preferred_project_dir(Path(account.path).expanduser())

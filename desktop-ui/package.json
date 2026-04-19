@@ -2,7 +2,7 @@
   "name": "shafa-control-desktop-ui",
   "private": true,
   "version": "0.1.0",
-  "description": "Static Electron + React desktop UI prototype for Shafa Control",
+  "description": "Electron + React desktop UI for Shafa Control",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\" \"npm:dev:desktop\"",
@@ -10,9 +10,43 @@
     "dev:electron": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
     "dev:desktop": "wait-on tcp:5173 file:dist-electron/main.js && ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "build:backend": "node ./scripts/build-backend.mjs",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run typecheck && npm run build:electron && vite build",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "dist:win": "npm run build:backend && npm run build && electron-builder --win nsis portable",
+    "pack:win": "npm run build:backend && npm run build && electron-builder --dir --win"
+  },
+  "build": {
+    "appId": "com.shafa.control",
+    "productName": "Shafa Control",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/backend/ShafaControlBackend.exe",
+        "to": "backend/ShafaControlBackend.exe"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-${arch}-${target}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   },
   "dependencies": {
     "lucide-react": "^1.8.0",
@@ -29,6 +63,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "electron": "^35.1.5",
+    "electron-builder": "^26.8.1",
     "prettier": "^3.8.2",
     "prettier-plugin-tailwindcss": "^0.7.2",
     "tailwindcss": "^4.2.2",

@@ -94,13 +94,11 @@ Example create request:
 {
   "name": "Account 1",
   "phone": "+380000000000",
-  "path": "/home/slava/shafa_app/shafa_logic",
+  "path": "/home/user/shafa_app/shafa_logic",
   "branch": "main",
   "open_browser": false,
   "timer_minutes": 5,
-  "channel_links": [
-    "https://t.me/example_channel"
-  ]
+  "channel_links": ["https://t.me/example_channel"]
 }
 ```
 
@@ -160,9 +158,7 @@ Example create request:
 ```json
 {
   "name": "rough",
-  "links": [
-    "https://t.me/Fashionista_drop"
-  ]
+  "links": ["https://t.me/Fashionista_drop"]
 }
 ```
 
@@ -194,7 +190,7 @@ Template example:
   "peer": "@username",
   "template_id": "promo-template-id",
   "template_variables": {
-    "name": "Slava"
+    "name": "User"
   }
 }
 ```
@@ -215,7 +211,7 @@ curl -X POST http://127.0.0.1:8000/accounts \
   -d '{
     "name": "Account 1",
     "phone": "+380000000000",
-    "path": "/home/slava/shafa_app/shafa_logic"
+    "path": "/home/user/shafa_app/shafa_logic"
   }'
 ```
 
@@ -246,7 +242,7 @@ curl -X POST http://127.0.0.1:8000/accounts/acc1/messages \
   -d '{
     "peer": "@username",
     "template_id": "promo-template-id",
-    "template_variables": {"name": "Slava"}
+    "template_variables": {"name": "User"}
   }'
 ```
 

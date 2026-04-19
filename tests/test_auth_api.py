@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 from shafa_control import Account, AccountSessionStore
 from telegram_accounts_api.dependencies import get_account_service, get_auth_service
 from telegram_accounts_api.main import app
+from telegram_accounts_api.models.account import AccountCreate
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.utils.storage import JsonListStorage
@@ -309,6 +311,57 @@ def test_telegram_import_session_saves_uploaded_file(tmp_path: Path) -> None:
 
     account_payload = client.get(f"/accounts/{account_id}").json()
     assert account_payload["telegram_session_exists"] is True
+
+
+def test_telegram_status_backfills_phone_from_authorized_session(tmp_path: Path) -> None:
+    accounts_file = tmp_path / "accounts_state.json"
+    accounts_dir = tmp_path / "accounts"
+    storage = JsonListStorage(accounts_file)
+    account_service = AccountService(storage=storage, accounts_dir=accounts_dir)
+    store = AccountSessionStore(tmp_path, accounts_dir, accounts_file)
+    auth_service = AccountAuthService(
+        account_service=account_service,
+        store=store,
+        runner=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+    )
+
+    created = asyncio.run(
+        account_service.create_account(
+            AccountCreate(
+                name="Resolved phone",
+                phone="",
+                path=str(Path("/tmp/project")),
+                channel_links=[],
+            )
+        )
+    )
+    account = Account(id=created.id, name=created.name, path=created.path)
+    store.telegram_session_file(account).parent.mkdir(parents=True, exist_ok=True)
+    store.telegram_session_file(account).write_bytes(b"SQLite format 3\x00payload")
+    auth_service.telegram_auth.persist_auth_state(
+        account,
+        current_auth_step="SUCCESS",
+        session_path=str(store.telegram_session_file(account)),
+        code_confirmed=False,
+    )
+
+    with patch.object(
+        auth_service,
+        "_resolve_phone_from_session",
+        AsyncMock(return_value="+380501112233"),
+    ):
+        status = asyncio.run(auth_service.get_telegram_status(created.id))
+
+    assert status.connected is True
+    assert status.phone_number == "+380501112233"
+
+    updated_account = asyncio.run(account_service.get_account(created.id))
+    assert updated_account.phone == "+380501112233"
+
+    persisted_state = auth_service.telegram_auth.load_auth_state(
+        Account(id=created.id, name=created.name, path=created.path),
+    )
+    assert persisted_state["phone_number"] == "+380501112233"
 
 
 def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:

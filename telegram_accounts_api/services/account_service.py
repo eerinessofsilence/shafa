@@ -230,6 +230,14 @@ class AccountService:
         log(account_id, "INFO", "Account status changed to stopped.")
         return await self._to_model(updated_record)
 
+    async def set_account_phone(self, account_id: str, phone: str) -> AccountRead:
+        normalized_phone = str(phone or "").strip()
+        updated_record = await self._update_record(
+            account_id,
+            lambda item: self._set_phone_number(item, normalized_phone),
+        )
+        return await self._to_model(updated_record)
+
     async def set_status(self, account_id: str, status: str) -> AccountRead:
         if status == "started":
             return await self.start_account(account_id)
@@ -331,6 +339,11 @@ class AccountService:
                 self._write_payload_sync(payload)
                 return dict(item)
         raise NotFoundError(f"Account '{account_id}' not found.")
+
+    @staticmethod
+    def _set_phone_number(item: dict, phone: str) -> None:
+        item["phone_number"] = phone
+        item["updated_at"] = datetime.now(UTC).isoformat()
 
     def _record_to_account(self, item: dict) -> Account:
         phone = str(item.get("phone") or item.get("phone_number") or "").strip()

@@ -10,6 +10,7 @@ export type StatusTone = 'success' | 'warning' | 'info' | 'danger' | 'neutral';
 export type MetricAccent = 'teal' | 'amber' | 'blue' | 'rose';
 
 export interface DesktopShellInfo {
+  apiBaseUrl: string;
   platform: string;
   electronVersion: string;
   chromeVersion: string;

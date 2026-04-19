@@ -1,4 +1,10 @@
+const runtimeApiBaseUrl =
+  typeof window !== 'undefined'
+    ? window.desktopShell?.apiBaseUrl?.replace(/\/+$/, '')
+    : undefined;
+
 export const apiBaseUrl =
+  runtimeApiBaseUrl ||
   import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '') ||
   'http://127.0.0.1:8000';
 

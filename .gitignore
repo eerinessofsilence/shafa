@@ -20,6 +20,7 @@ logs/
 *.egg-info/
 dist/
 build/
+.pyinstaller/
 node_modules/
 .vite/
 desktop-ui/dist/
