@@ -32,6 +32,7 @@ def test_session_store_writes_index_and_account_manifest(tmp_path: Path) -> None
     assert manifest_payload["browser_session_path"].endswith("Shuffa/acc-1/auth.json")
     assert manifest_payload["telegram_credentials_path"].endswith("Shuffa/acc-1/.env")
     assert manifest_payload["telegram_credentials_configured"] is False
+    assert str(store.channel_templates_file(account)).endswith("Shuffa/acc-1/channel_templates.json")
 
 
 def test_session_store_reads_legacy_file_when_index_missing(tmp_path: Path) -> None:
@@ -231,3 +232,23 @@ def test_delete_shafa_session_clears_runtime_cookie_store(tmp_path: Path) -> Non
         products_count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
     assert cookies_count == 0
     assert products_count == 1
+
+
+def test_session_store_uses_separate_db_per_account_for_same_project(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    project_path = str(tmp_path / "project")
+    first = Account(id="acc-1", name="First", path=project_path)
+    second = Account(id="acc-2", name="Second", path=project_path)
+
+    first_db = store.db_file(first)
+    second_db = store.db_file(second)
+
+    assert first_db.name == "shafa.sqlite3"
+    assert second_db.name == "shafa.sqlite3"
+    assert first_db != second_db
+    assert first_db.parent.name == "acc-1"
+    assert second_db.parent.name == "acc-2"

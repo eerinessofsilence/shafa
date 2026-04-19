@@ -17,7 +17,7 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_APP_MODE"] == "sneakers"
     assert env["SHAFA_ACCOUNT_STATE_DIR"].endswith("accounts/acc-1")
     assert env["SHAFA_STORAGE_STATE_PATH"].endswith("accounts/acc-1/auth.json")
-    assert env["SHAFA_DB_PATH"].endswith("project/data/shafa.sqlite3")
+    assert env["SHAFA_DB_PATH"].endswith("accounts/acc-1/shafa.sqlite3")
     assert env["SHAFA_TELEGRAM_SESSION_PATH"].endswith("accounts/acc-1/telegram.session")
     assert env["SHAFA_TELEGRAM_API_ID"] == "777000"
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
@@ -37,9 +37,24 @@ def test_account_runtime_uses_root_env_credentials(tmp_path: Path) -> None:
     env = runtime.account_env(account, base_env={"BASE": "1"})
 
     assert env["BASE"] == "1"
-    assert env["SHAFA_DB_PATH"].endswith("project/data/shafa.sqlite3")
+    assert env["SHAFA_DB_PATH"].endswith("accounts/acc-3/shafa.sqlite3")
     assert env["SHAFA_TELEGRAM_API_ID"] == "33979811"
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-root-hash"
+
+
+def test_account_runtime_isolates_db_per_account_even_for_same_project(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    runtime = AccountRuntimeService(store)
+    project_dir = tmp_path / "project"
+    first = Account(id="acc-1", name="First", path=str(project_dir))
+    second = Account(id="acc-2", name="Second", path=str(project_dir))
+
+    first_env = runtime.account_env(first)
+    second_env = runtime.account_env(second)
+
+    assert first_env["SHAFA_DB_PATH"].endswith("accounts/acc-1/shafa.sqlite3")
+    assert second_env["SHAFA_DB_PATH"].endswith("accounts/acc-2/shafa.sqlite3")
+    assert first_env["SHAFA_DB_PATH"] != second_env["SHAFA_DB_PATH"]
 
 
 def test_account_runtime_exports_channel_runtime_config(tmp_path: Path) -> None:

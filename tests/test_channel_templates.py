@@ -53,3 +53,14 @@ def test_combined_mode_and_template_behavior(tmp_path) -> None:
 
     assert AppConfigStore(config_path).load().mode == "sneakers"
     assert ChannelTemplateStore(template_path).get_template("Sneakers").links == ["https://t.me/sneakers"]
+
+
+def test_templates_are_isolated_by_store_path(tmp_path) -> None:
+    first_store = ChannelTemplateStore(tmp_path / "acc-1" / "channel_templates.json")
+    second_store = ChannelTemplateStore(tmp_path / "acc-2" / "channel_templates.json")
+
+    first_store.save_template("First", ["https://t.me/one"])
+    second_store.save_template("Second", ["https://t.me/two"])
+
+    assert [item.name for item in first_store.list_templates()] == ["First"]
+    assert [item.name for item in second_store.list_templates()] == ["Second"]

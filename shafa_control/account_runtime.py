@@ -34,10 +34,6 @@ def project_root_dir(project_dir: Path) -> Path:
     return preferred
 
 
-def project_data_dir(project_dir: Path) -> Path:
-    return project_root_dir(project_dir) / "data"
-
-
 def nested_runnable_project_dir(project_dir: Path) -> Path | None:
     if not project_dir.is_dir():
         return None
@@ -95,7 +91,7 @@ class AccountRuntimeService:
         env.setdefault("PYTHONUNBUFFERED", "1")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
-        env["SHAFA_DB_PATH"] = str(project_data_dir(project_path) / "shafa.sqlite3")
+        env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))

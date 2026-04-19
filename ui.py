@@ -72,7 +72,6 @@ RUNTIME_DIR = BASE_DIR / "runtime"
 ACCOUNTS_DIR = BASE_DIR / "accounts"
 DEFAULT_PROJECT_DIR = BASE_DIR / "shafa"
 APP_CONFIG_FILE = BASE_DIR / "app_config.json"
-CHANNEL_TEMPLATES_FILE = BASE_DIR / "channel_templates.json"
 
 
 def _default_account_project_dir() -> str:
@@ -1543,7 +1542,6 @@ class MainWindow(QMainWindow):
             self.session_store = AccountSessionStore(BASE_DIR, ACCOUNTS_DIR, STATE_FILE)
             self.account_runtime = AccountRuntimeService(self.session_store)
             self.app_config_store = AppConfigStore(APP_CONFIG_FILE)
-            self.channel_template_store = ChannelTemplateStore(CHANNEL_TEMPLATES_FILE)
             self.app_config = self.app_config_store.load()
             self.accounts: List[Account] = self._load_accounts()
             self.log_store = LogStore(RUNTIME_DIR / "logs")
@@ -1567,6 +1565,7 @@ class MainWindow(QMainWindow):
             self.background_log_signal.connect(self._handle_background_log, Qt.ConnectionType.QueuedConnection)
             self._build_ui()
             self.accounts_page.selection_changed.connect(self._restore_account_auth_form_state)
+            self.accounts_page.selection_changed.connect(self._sync_account_templates)
             self.accounts_page.phone_input.textChanged.connect(self._persist_selected_phone_input)
             self.accounts_page.telegram_code_input.textChanged.connect(self._persist_selected_code_input)
             self.accounts_page.telegram_password_input.textChanged.connect(self._persist_selected_password_input)
@@ -1600,7 +1599,22 @@ class MainWindow(QMainWindow):
             self.log(f"[ERROR] Failed to save app config: {exc}")
 
     def _template_names(self) -> list[str]:
-        return [template.name for template in self.channel_template_store.list_templates()]
+        account = self.accounts_page.selected_account()
+        if account is None:
+            return []
+        return [template.name for template in self._channel_template_store(account).list_templates()]
+
+    def _channel_template_store(self, account: Account) -> ChannelTemplateStore:
+        return ChannelTemplateStore(self.session_store.channel_templates_file(account))
+
+    def _sync_account_templates(self, row: int) -> None:
+        account = self._account_by_row(row)
+        if account is None:
+            self.accounts_page.set_templates([])
+            return
+        self.accounts_page.set_templates(
+            [template.name for template in self._channel_template_store(account).list_templates()]
+        )
 
     @staticmethod
     def _normalize_project_path(path: str) -> Path:
@@ -1823,7 +1837,7 @@ class MainWindow(QMainWindow):
 
         self.logs_page.set_accounts(self.accounts)
         self.settings_page.set_mode(self.app_config.mode)
-        self.accounts_page.set_templates(self._template_names())
+        self._sync_account_templates(self.accounts_page.selected_row())
         self._set_page(0)
 
     def _apply_styles(self) -> None:
@@ -2254,11 +2268,11 @@ class MainWindow(QMainWindow):
             return
         links = [self.accounts_page.channel_links.item(i).text() for i in range(self.accounts_page.channel_links.count())]
         try:
-            template = self.channel_template_store.save_template(name, links)
+            template = self._channel_template_store(account).save_template(name, links)
         except ValueError as exc:
             QMessageBox.warning(self, "Шаблон каналов", str(exc))
             return
-        self.accounts_page.set_templates(self._template_names())
+        self._sync_account_templates(row)
         self.log(f"[TEMPLATE] Saved channel template {template.name}", account=account)
 
     def load_channel_template(self, row: int, name: str) -> None:
@@ -2266,7 +2280,7 @@ class MainWindow(QMainWindow):
         if account is None:
             return
         try:
-            template = self.channel_template_store.get_template(name)
+            template = self._channel_template_store(account).get_template(name)
         except KeyError:
             QMessageBox.warning(self, "Шаблон каналов", "Шаблон не найден.")
             return

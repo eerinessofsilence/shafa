@@ -124,10 +124,7 @@ class AccountSessionStore:
         return preferred
 
     def db_file(self, account: Account) -> Path:
-        project_dir = self._project_root_dir(Path(account.path).expanduser())
-        data_dir = project_dir / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir / "shafa.sqlite3"
+        return self.account_dir(account) / "shafa.sqlite3"
 
     def telegram_session_file(self, account: Account) -> Path:
         return self.account_dir(account) / "telegram.session"
@@ -140,6 +137,9 @@ class AccountSessionStore:
 
     def channels_file(self, account: Account) -> Path:
         return self.account_dir(account) / "shafa_telegram_channels.json"
+
+    def channel_templates_file(self, account: Account) -> Path:
+        return self.account_dir(account) / "channel_templates.json"
 
     def logs_dir(self, account: Account) -> Path:
         path = self.account_dir(account) / "logs"

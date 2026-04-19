@@ -273,14 +273,8 @@ def _extract_search_query(link: str) -> str:
 
 
 def _mirror_channels_to_db(channels: list[tuple[int, str, str]]) -> None:
-    if not channels:
-        return
-    try:
-        from data.db import save_telegram_channels
-
-        save_telegram_channels(channels)
-    except Exception as exc:
-        _log(f"db mirror skipped: {exc}")
+    if channels:
+        _log("legacy telegram_channels DB mirror skipped")
 
 
 def _require_telegram_credentials() -> tuple[int, str]:

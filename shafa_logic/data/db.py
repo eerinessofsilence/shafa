@@ -75,12 +75,6 @@ def init_db(db_path: Path = DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_telegram_products_channel
                 ON telegram_products(channel_id);
 
-            CREATE TABLE IF NOT EXISTS telegram_channels (
-                channel_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                alias TEXT
-            );
-
             CREATE TABLE IF NOT EXISTS size_catalogs (
                 catalog_slug TEXT NOT NULL,
                 size_id INTEGER NOT NULL,
@@ -135,7 +129,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         )
         _ensure_uploaded_products_schema(conn)
         _ensure_telegram_products_schema(conn)
-        _ensure_telegram_channels_schema(conn)
+        _drop_legacy_telegram_channels_table(conn)
         _ensure_size_catalogs_schema(conn)
     _DB_INITIALIZED = True
 
@@ -317,13 +311,8 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE telegram_products ADD COLUMN last_create_error TEXT")
 
 
-def _ensure_telegram_channels_schema(conn: sqlite3.Connection) -> None:
-    columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(telegram_channels)").fetchall()
-    }
-    if "alias" not in columns:
-        conn.execute("ALTER TABLE telegram_channels ADD COLUMN alias TEXT")
+def _drop_legacy_telegram_channels_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS telegram_channels")
 
 
 def _ensure_size_catalogs_schema(conn: sqlite3.Connection) -> None:
@@ -740,7 +729,12 @@ def save_telegram_product(
 def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> None:
     if not channels:
         return
-    rows: list[tuple[int, str, Optional[str]]] = []
+    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+
+    current = {
+        int(channel_id): (int(channel_id), str(name).strip(), str(alias or "main"))
+        for channel_id, name, alias in get_telegram_channels()
+    }
     for entry in channels:
         if len(entry) == 2:
             channel_id, name = entry
@@ -750,99 +744,90 @@ def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> No
         text = str(name).strip()
         if not text:
             text = str(channel_id)
-        rows.append((int(channel_id), text, _normalize_telegram_channel_alias(alias)))
-    if not rows:
-        return
-    _ensure_db_initialized()
-    with _connect() as conn:
-        conn.executemany(
-            """
-            INSERT INTO telegram_channels (channel_id, name, alias)
-            VALUES (?, ?, ?)
-            ON CONFLICT(channel_id) DO UPDATE SET
-                name = excluded.name,
-                alias = COALESCE(excluded.alias, telegram_channels.alias)
-            """,
-            rows,
-        )
+        normalized_id = int(channel_id)
+        current[normalized_id] = (normalized_id, text, _normalize_telegram_channel_alias(alias))
+    set_telegram_channels(current.values())
 
 
 def load_telegram_channels() -> list[dict]:
-    _ensure_db_initialized()
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT channel_id, name, alias
-            FROM telegram_channels
-            ORDER BY channel_id
-            """
-        ).fetchall()
+    from telegram_subscription.sync import get_telegram_channels
+
     return [
-        {"channel_id": row["channel_id"], "name": row["name"], "alias": row["alias"]}
-        for row in rows
+        {"channel_id": channel_id, "name": name, "alias": alias}
+        for channel_id, name, alias in get_telegram_channels()
     ]
 
 
 def delete_telegram_channel(channel_id: int) -> None:
-    _ensure_db_initialized()
-    with _connect() as conn:
-        conn.execute(
-            """
-            DELETE FROM telegram_channels
-            WHERE channel_id = ?
-            """,
-            (channel_id,),
-        )
+    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+
+    set_telegram_channels(
+        [
+            (current_channel_id, name, alias)
+            for current_channel_id, name, alias in get_telegram_channels()
+            if current_channel_id != int(channel_id)
+        ]
+    )
 
 
 def rename_telegram_channel(channel_id: int, name: str) -> bool:
+    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+
     text = str(name).strip()
     if not text:
         return False
-    _ensure_db_initialized()
-    with _connect() as conn:
-        cursor = conn.execute(
-            """
-            UPDATE telegram_channels
-            SET name = ?
-            WHERE channel_id = ?
-            """,
-            (text, channel_id),
-        )
-    return cursor.rowcount > 0
+    updated = False
+    channels: list[tuple[int, str, str]] = []
+    for current_channel_id, current_name, alias in get_telegram_channels():
+        if current_channel_id == int(channel_id):
+            channels.append((current_channel_id, text, alias))
+            updated = True
+        else:
+            channels.append((current_channel_id, current_name, alias))
+    if updated:
+        set_telegram_channels(channels)
+    return updated
 
 
 def update_telegram_channel_alias(channel_id: int, alias: Optional[str]) -> bool:
+    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+
     value = _normalize_telegram_channel_alias(alias)
-    _ensure_db_initialized()
-    with _connect() as conn:
-        cursor = conn.execute(
-            """
-            UPDATE telegram_channels
-            SET alias = ?
-            WHERE channel_id = ?
-            """,
-            (value, channel_id),
-        )
-    return cursor.rowcount > 0
+    updated = False
+    channels: list[tuple[int, str, str]] = []
+    for current_channel_id, name, current_alias in get_telegram_channels():
+        if current_channel_id == int(channel_id):
+            channels.append((current_channel_id, name, value))
+            updated = True
+        else:
+            channels.append((current_channel_id, name, current_alias))
+    if updated:
+        set_telegram_channels(channels)
+    return updated
 
 
 def update_telegram_channel_id(old_channel_id: int, new_channel_id: int) -> bool:
+    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+
     if old_channel_id == new_channel_id:
         return False
+    channels = get_telegram_channels()
+    if any(channel_id == int(new_channel_id) for channel_id, _, _ in channels):
+        return False
+    updated = False
+    next_channels: list[tuple[int, str, str]] = []
+    for channel_id, name, alias in channels:
+        if channel_id == int(old_channel_id):
+            next_channels.append((int(new_channel_id), name, alias))
+            updated = True
+        else:
+            next_channels.append((channel_id, name, alias))
+    if not updated:
+        return False
+    set_telegram_channels(next_channels)
     _ensure_db_initialized()
     with _connect() as conn:
         try:
-            cursor = conn.execute(
-                """
-                UPDATE telegram_channels
-                SET channel_id = ?
-                WHERE channel_id = ?
-                """,
-                (new_channel_id, old_channel_id),
-            )
-            if cursor.rowcount <= 0:
-                return False
             conn.execute(
                 """
                 UPDATE telegram_products
