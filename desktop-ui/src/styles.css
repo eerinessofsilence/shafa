@@ -1,18 +1,19 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import 'tailwindcss';
 
 :root {
   --font-sans: 'Avenir Next', 'Segoe UI', 'Helvetica Neue', sans-serif;
-  --bg-dark: oklch(90% 0 0);
-  --bg: oklch(95% 0 0);
-  --bg-light: oklch(100% 0 0);
-  --text: oklch(15% 0 0);
-  --text-muted: oklch(30% 0 0);
-  --border: oklch(40% 0 0);
-  --success: oklch(72.3% 0.219 149.6);
-  --warning: oklch(76.9% 0.188 70.1);
-  --error: oklch(63.7% 0.237 25.3);
-  --info: oklch(62.3% 0.214 259.8);
-  --alert: oklch(85.2% 0.199 91.9);
+  --bg-dark: #f8f9fb;
+  --bg: #ffffff;
+  --bg-light: #f3f5f8;
+  --text: #191c1e;
+  --text-muted: #737685;
+  --border: #cfd5e1;
+  --success: #18a058;
+  --warning: #d5a13e;
+  --error: #d1331b;
+  --info: #0c56d0;
+  --alert: #f8ecd2;
 }
 
 @theme inline {
@@ -34,7 +35,7 @@
   html {
     scroll-behavior: smooth;
     font-size: 16px;
-    color-scheme: dark;
+    color-scheme: light;
   }
 
   body {
@@ -49,5 +50,5 @@
 }
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }

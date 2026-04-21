@@ -7,26 +7,26 @@ interface MetricCardProps {
 }
 
 const accentClasses: Record<MetricAccent, { bar: string; value: string }> = {
-  teal: { bar: 'bg-success/75', value: 'text-success' },
-  amber: { bar: 'bg-warning/75', value: 'text-warning' },
-  blue: { bar: 'bg-info/75', value: 'text-info' },
-  rose: { bar: 'bg-error/75', value: 'text-error' },
+  teal: { bar: 'bg-[#64d79c]', value: 'text-[#18a058]' },
+  amber: { bar: 'bg-[#f3bf68]', value: 'text-[#d48806]' },
+  blue: { bar: 'bg-[#86b2ff]', value: 'text-[#2d73ea]' },
+  rose: { bar: 'bg-[#f28b97]', value: 'text-[#e0344a]' },
 };
 
 export function MetricCard({ label, value, accent }: MetricCardProps) {
   const accentClass = accentClasses[accent];
 
   return (
-    <article className="relative flex  flex-col gap-2 overflow-hidden rounded-xl border border-border/25 bg-secondary/50 p-2.5 pt-4.5">
+    <article className="relative flex flex-col gap-2 overflow-hidden rounded-[12px] border border-[#cfd5e1] bg-white px-3 py-4 shadow-[0_1px_2px_rgba(15,23,42,0.02)]">
       <div
         className={[
-          'absolute inset-x-0 top-0 h-2 opacity-70',
+          'absolute inset-x-0 top-0 h-1.5',
           accentClass.bar,
         ].join(' ')}
       />
-      <span className="font-medium">{label}</span>
+      <span className="text-[14px] font-medium text-[#2f3440]">{label}</span>
       <strong
-        className={`leading-none text-3xl tracking-tighter ${accentClass.value}`}
+        className={`leading-none text-[32px] tracking-tight ${accentClass.value}`}
       >
         {value}
       </strong>

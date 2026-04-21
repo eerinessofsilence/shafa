@@ -10,6 +10,10 @@ export async function listAccounts(): Promise<ApiAccountRead[]> {
   return request<ApiAccountRead[]>('/accounts');
 }
 
+export async function getAccount(accountId: string): Promise<ApiAccountRead> {
+  return request<ApiAccountRead>(`/accounts/${accountId}`);
+}
+
 export async function createAccount(
   payload: ApiAccountCreate,
 ): Promise<ApiAccountRead> {
@@ -48,6 +52,12 @@ export async function deleteAccount(
 ): Promise<{ detail: string }> {
   return request<{ detail: string }>(`/accounts/${accountId}`, {
     method: 'DELETE',
+  });
+}
+
+export async function clearLogs(): Promise<{ detail: string }> {
+  return request<{ detail: string }>('/logs/clear', {
+    method: 'POST',
   });
 }
 

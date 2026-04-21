@@ -401,6 +401,51 @@ def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
     assert store.is_valid_shafa_session(account) is True
 
 
+def test_shafa_auth_api_returns_profile_fields(tmp_path: Path) -> None:
+    client, store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Shafa", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+    account = Account(id=account_id, name="Shafa", path="/tmp/project")
+
+    store.auth_file(account).write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "csrftoken",
+                        "value": "token-123",
+                        "domain": ".shafa.ua",
+                    },
+                    {
+                        "name": "sessionid",
+                        "value": "session-456",
+                        "domain": ".shafa.ua",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    auth_service = app.dependency_overrides[get_auth_service]()
+    with patch.object(
+        auth_service,
+        "_fetch_shafa_profile",
+        return_value={"email": "seller@example.com", "phone": "+380501112233"},
+    ):
+        response = client.get(f"/accounts/{account_id}/auth/shafa")
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is True
+    assert response.json()["email"] == "seller@example.com"
+    assert response.json()["phone"] == "+380501112233"
+
+
 def test_shafa_logout_clears_cookies_and_returns_disconnected_status(tmp_path: Path) -> None:
     client, store = _make_client(tmp_path)
 

@@ -190,6 +190,27 @@ class AccountLogsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("since", response.json()["detail"])
 
+    def test_clear_logs_removes_runtime_and_account_log_files(self) -> None:
+        runtime_log = self.base_dir / "runtime" / "logs" / "all.log"
+        runtime_log.parent.mkdir(parents=True, exist_ok=True)
+        runtime_log.write_text("[2026-04-18 13:54:09] [INFO] [Alpha] runtime\n", encoding="utf-8")
+
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        account_log.write_text(
+            "[2026-04-18 13:54:09] [INFO] [Alpha] account\n",
+            encoding="utf-8",
+        )
+        self.log_store.append("acc-1", "INFO", "live entry")
+
+        response = self.client.post("/logs/clear")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Логи очищены", response.json()["detail"])
+        self.assertFalse(runtime_log.exists())
+        self.assertFalse(account_log.exists())
+        self.assertEqual(self.log_store.list_entries("acc-1"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

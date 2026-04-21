@@ -3,20 +3,20 @@ export function cx(...parts: Array<string | false | null | undefined>) {
 }
 
 export const pageTitleClassName =
-  'text-3xl font-semibold tracking-tight text-text';
+  'text-[28px] font-semibold tracking-tight text-[#191c1e]';
 export const sectionTitleClassName =
-  'text-2xl font-semibold tracking-tight text-text';
+  'text-[17px] font-medium text-[#191c1e]';
 export const cardTitleClassName =
-  'text-lg font-medium tracking-tight text-text';
+  'text-[15px] font-semibold text-[#191c1e]';
 export const fieldLabelClassName =
-  'flex items-center gap-2 text-sm font-medium text-text';
+  'flex items-center gap-2 text-[13px] font-medium text-[#434654]';
 
 export type ButtonTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 export type ButtonVariant = 'soft' | 'solid' | 'ghost';
 export type ButtonSize = 'sm' | 'md' | 'icon-sm' | 'icon-md' | 'row';
 
 const buttonBaseClassName =
-  'inline-flex shrink-0 cursor-pointer items-center justify-center rounded-xl border text-sm font-medium transition-all duration-200 outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex shrink-0 cursor-pointer items-center justify-center rounded-[8px] border text-sm font-medium transition-all duration-200 outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50';
 
 const buttonSizeClassNames: Record<ButtonSize, string> = {
   sm: 'h-10 gap-2 px-3.5',
@@ -32,36 +32,36 @@ const buttonVariantClassNames: Record<
 > = {
   soft: {
     neutral:
-      'border-border/40 bg-secondary/80 text-text hover:border-border/70 hover:bg-secondary',
-    info: 'border-info/25 bg-info/12.5 text-text hover:border-info/45 hover:bg-info/20',
+      'border-[#cfd5e1] bg-white text-[#191c1e] hover:border-[#b9c3d3] hover:bg-[#fafbfc]',
+    info: 'border-[#c6d8ff] bg-[#f4f7ff] text-[#0c56d0] hover:border-[#9ebeff] hover:bg-[#eaf1ff]',
     success:
-      'border-success/25 bg-success/12.5 text-text hover:border-success/45 hover:bg-success/20',
+      'border-[#b9e5c9] bg-[#edf8f1] text-[#1f7a42] hover:border-[#94d3ac] hover:bg-[#e3f4ea]',
     warning:
-      'border-warning/25 bg-warning/12.5 text-text hover:border-warning/45 hover:bg-warning/20',
+      'border-[#ead7aa] bg-[#fdf7ea] text-[#966f15] hover:border-[#ddc685] hover:bg-[#fbf1d7]',
     danger:
-      'border-error/25 bg-error/8 text-error hover:border-error/45 hover:bg-error/12',
+      'border-[#f1c2ba] bg-[#fff1ee] text-[#b93823] hover:border-[#e8a79a] hover:bg-[#ffe7e1]',
   },
   solid: {
     neutral:
-      'border-border/50 bg-secondary text-text hover:border-border/70 hover:bg-secondary/90',
-    info: 'border-info bg-info text-white hover:border-info/90 hover:bg-info/90',
+      'border-[#cfd5e1] bg-white text-[#191c1e] hover:border-[#b9c3d3] hover:bg-[#f7f8fa]',
+    info: 'border-[#0c56d0] bg-[#0c56d0] text-white hover:border-[#094ab1] hover:bg-[#094ab1]',
     success:
-      'border-success bg-success text-white hover:border-success/90 hover:bg-success/90',
+      'border-[#18a058] bg-[#18a058] text-white hover:border-[#14854a] hover:bg-[#14854a]',
     warning:
-      'border-warning bg-warning text-text hover:border-warning/90 hover:bg-warning/90',
+      'border-[#d5a13e] bg-[#d5a13e] text-white hover:border-[#bb8c2f] hover:bg-[#bb8c2f]',
     danger:
-      'border-error bg-error text-white hover:border-error/90 hover:bg-error/90',
+      'border-[#d1331b] bg-[#d1331b] text-white hover:border-[#b02c17] hover:bg-[#b02c17]',
   },
   ghost: {
     neutral:
-      'border-transparent bg-transparent text-text hover:border-border/30 hover:bg-secondary/80',
-    info: 'border-transparent bg-transparent text-info hover:border-info/25 hover:bg-info/10',
+      'border-transparent bg-transparent text-[#191c1e] hover:border-[#d8dde7] hover:bg-white',
+    info: 'border-transparent bg-transparent text-[#0c56d0] hover:border-[#c6d8ff] hover:bg-[#f4f7ff]',
     success:
-      'border-transparent bg-transparent text-success hover:border-success/25 hover:bg-success/10',
+      'border-transparent bg-transparent text-[#18a058] hover:border-[#b9e5c9] hover:bg-[#edf8f1]',
     warning:
-      'border-transparent bg-transparent text-warning hover:border-warning/25 hover:bg-warning/10',
+      'border-transparent bg-transparent text-[#966f15] hover:border-[#ead7aa] hover:bg-[#fdf7ea]',
     danger:
-      'border-transparent bg-transparent text-error hover:border-error/25 hover:bg-error/10',
+      'border-transparent bg-transparent text-[#d1331b] hover:border-[#f1c2ba] hover:bg-[#fff1ee]',
   },
 };
 

@@ -181,6 +181,8 @@ export interface ApiShafaAuthStatus {
   account_id: string;
   connected: boolean;
   cookies_count: number;
+  email: string;
+  phone: string;
   message: string;
 }
 

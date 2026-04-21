@@ -1,7 +1,9 @@
 import {
   buildAccountLogsWebSocketUrl,
+  clearLogs as clearLogsRequest,
   createAccount as createAccountRequest,
   deleteAccount as deleteAccountRequest,
+  getAccount as getAccountRequest,
   listAccountLogs,
   listAccounts,
   startAccount as startAccountRequest,
@@ -31,7 +33,7 @@ import { MetricCard } from './components/MetricCard';
 import { PageHeader } from './components/PageHeader';
 import { Panel } from './components/Panel';
 import { StatusPill } from './components/StatusPill';
-import { navItems, settingToggles } from './data/mockData';
+import { navItems } from './data/mockData';
 import type {
   AccountRow,
   ApiAccountCreate,
@@ -46,7 +48,6 @@ import type {
   ChartPoint,
   Metric,
   PageId,
-  SettingToggle,
   StatusItem,
   StatusTone,
   TelegramChannel,
@@ -69,15 +70,16 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
-  Ellipsis,
   FileJson,
   FolderOpen,
+  Info,
   LayoutGrid,
   Link2,
   LoaderCircle,
   LockKeyhole,
   LogIn,
   LogOut,
+  Mail,
   PencilLine,
   Phone,
   Plus,
@@ -94,6 +96,9 @@ import {
   Users,
   X,
   Send,
+  SlidersHorizontal,
+  EllipsisVertical,
+  Wrench,
 } from 'lucide-react';
 import {
   type ChangeEvent,
@@ -104,21 +109,19 @@ import {
   useState,
 } from 'react';
 
-const timerOptions = Array.from(
-  { length: 60 },
-  (_, index) => `${index + 1} мин`,
-);
+const defaultTimerMinutes = 5;
+const minimumTimerMinutes = 1;
+const maximumTimerMinutes = 1440;
+const timerPresetMinutes = [5, 10, 15, 30, 45, 60, 90, 120] as const;
 const accountControlClassName =
-  'h-12 w-full rounded-xl border border-border/25 bg-secondary px-3 text-text outline-none transition focus:border-info/50 focus:ring-2 focus:ring-info/25';
+  'h-[42px] w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 text-[15px] text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
 const accountTextareaClassName =
-  'min-h-36 w-full rounded-xl border border-border/25 bg-secondary px-3 py-3 text-text outline-none transition focus:border-info/50 focus:ring-2 focus:ring-info/25';
-const accountSelectButtonClassName =
-  'flex h-12 w-full cursor-pointer items-center justify-between gap-4 rounded-xl border border-border/25 bg-secondary px-3 text-left text-text outline-none transition hover:border-border/50 focus:border-info/50 focus:ring-2 focus:ring-info/25';
+  'min-h-36 w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 py-3 text-[15px] text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
 const telegramDraftInitialState = {
   handle: '',
 };
 const surfaceCardClassName =
-  'rounded-[18px] border border-border/25 bg-secondary/50 p-4';
+  'rounded-[12px] border border-[#d7dce6] bg-[#f3f5f8] p-4';
 const navItemIcons: Record<PageId, ReactNode> = {
   dashboard: <LayoutGrid className="h-5 w-5" />,
   accounts: <Users className="h-5 w-5" />,
@@ -148,11 +151,13 @@ const accountTableHeaders: Array<{
 const defaultAccountProjectPath =
   window.desktopShell?.cwd?.trim() ||
   '/Users/eeri/coding/python/projects/scripts/shafa';
+const defaultAccountsDirectory = `${defaultAccountProjectPath}/accounts`;
+const defaultLogsDirectory = `${defaultAccountProjectPath}/runtime/logs`;
 const defaultChannelTemplateName = 'default';
 const accountDraftInitialState: AccountDraft = {
   name: '',
   path: defaultAccountProjectPath,
-  timer: timerOptions[4] ?? '5 мин',
+  timer: `${defaultTimerMinutes} мин`,
 };
 const accountPageSizeOptions = [5, 10, 20, 50] as const;
 const allLogAccountsValue = '__all_accounts__';
@@ -166,7 +171,7 @@ const logLevelOptions = [
   { label: 'Debug', value: 'DEBUG' },
 ] as const;
 const logFilterSelectClassName =
-  'h-12 min-w-[220px] appearance-none rounded-xl border border-border/25 bg-secondary/80 px-4 pr-11 text-sm font-medium text-text outline-none transition hover:border-border/50 focus:border-info/50 focus:ring-2 focus:ring-info/20';
+  'h-[42px] min-w-[220px] appearance-none rounded-[8px] border border-[#cfd5e1] bg-white px-4 pr-11 text-[15px] font-normal text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
 const logToolbarButtonClassName = getButtonClassName();
 const logLevelBadgeClassNames: Record<StatusTone, string> = {
   success: 'border-success/35 bg-success/10 text-success',
@@ -193,12 +198,79 @@ const accountLogTimestampFormatter = new Intl.DateTimeFormat('en-US', {
 const dashboardDayLabelFormatter = new Intl.DateTimeFormat('ru-RU', {
   weekday: 'short',
 });
-const dashboardRunTimestampFormatter = new Intl.DateTimeFormat('ru-RU', {
+const accountPanelTimestampFormatter = new Intl.DateTimeFormat('ru-RU', {
   day: '2-digit',
   hour: '2-digit',
+  hour12: false,
   minute: '2-digit',
   month: 'short',
+  year: 'numeric',
 });
+const settingsStorageKey = 'shafa.desktop.settings.v1';
+const settingsFieldClassName =
+  'h-[42px] w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 text-[15px] font-normal text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
+const settingsTextAreaClassName =
+  'h-[42px] w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 text-[13px] font-normal text-[#5b6475] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
+const settingsPageClassName =
+  "min-h-screen bg-[#f8f9fb] text-[#191c1e] antialiased [color-scheme:light] [font-family:'Inter','Avenir_Next','Segoe_UI','Helvetica_Neue',sans-serif]";
+const settingsPanelClassName =
+  'rounded-[12px] border border-[#cfd5e1] bg-white px-6 py-6 shadow-[0_1px_2px_rgba(15,23,42,0.02)]';
+const settingsSubtleCardClassName = 'rounded-[8px] bg-[#f2f4f7] p-4';
+const settingsToggleCardClassName =
+  'rounded-[8px] border border-[#d7dce6] bg-white p-4 transition-colors duration-200 hover:bg-[#fafbfc]';
+const settingsLabelClassName =
+  'text-[12px] font-semibold uppercase tracking-[0.05em] text-[#434654]';
+const settingsDescriptionClassName = 'text-xs leading-[1.25] text-[#737685]';
+
+type InterfaceLanguage = 'ru' | 'uk' | 'en';
+type DateTimeFormatId = 'ru-24' | 'uk-24' | 'en-12' | 'iso';
+
+interface AppPreferences {
+  interfaceLanguage: InterfaceLanguage;
+  dateTimeFormat: DateTimeFormatId;
+  autoRefreshSeconds: number;
+  httpRetries: number;
+  httpRetryDelaySeconds: number;
+  httpRetryJitterEnabled: boolean;
+  persistRawJson: boolean;
+  accountsDirectory: string;
+  logsDirectory: string;
+}
+
+const interfaceLanguageOptions = [
+  { label: 'English', value: 'en' },
+  { label: 'Russian', value: 'ru' },
+  { label: 'Ukrainian', value: 'uk' },
+] as const;
+
+const dateTimeFormatOptions = [
+  { label: 'English 12h', preview: '21 Apr 2026, 14:35', value: 'en-12' },
+  { label: 'Russian 24h', preview: '21 апр 2026, 14:35', value: 'ru-24' },
+  { label: 'Ukrainian 24h', preview: '21 квіт. 2026, 14:35', value: 'uk-24' },
+  { label: 'ISO', preview: '2026-04-21 14:35', value: 'iso' },
+] as const;
+
+const autoRefreshOptions = [15, 30, 60, 120, 300] as const;
+const settingsSectionItems = [
+  { id: 'interface', icon: SlidersHorizontal, label: 'Interface' },
+  { id: 'http-retry', icon: RefreshCw, label: 'HTTP Retry' },
+  { id: 'working-paths', icon: FolderOpen, label: 'Working Paths' },
+  { id: 'maintenance', icon: Wrench, label: 'Maintenance' },
+] as const;
+
+function createDefaultAppPreferences(): AppPreferences {
+  return {
+    interfaceLanguage: 'en',
+    dateTimeFormat: 'en-12',
+    autoRefreshSeconds: 30,
+    httpRetries: 3,
+    httpRetryDelaySeconds: 5,
+    httpRetryJitterEnabled: true,
+    persistRawJson: false,
+    accountsDirectory: defaultAccountsDirectory,
+    logsDirectory: defaultLogsDirectory,
+  };
+}
 
 interface AccountLogEntry {
   id: string;
@@ -215,14 +287,40 @@ function formatTimerLabel(minutes: number) {
   return `${minutes} мин`;
 }
 
-function parseTimerLabel(value: string) {
-  const parsedValue = Number.parseInt(value, 10);
+function extractTimerMinutes(value: string) {
+  const digits = value.replace(/[^\d]/g, '');
 
-  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-    return 5;
+  if (!digits) {
+    return null;
   }
 
-  return parsedValue;
+  const parsedValue = Number.parseInt(digits, 10);
+
+  return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function isTimerValueValid(value: string) {
+  const parsedValue = extractTimerMinutes(value);
+
+  return (
+    parsedValue !== null &&
+    parsedValue >= minimumTimerMinutes &&
+    parsedValue <= maximumTimerMinutes
+  );
+}
+
+function clampTimerMinutes(value: number) {
+  return Math.min(maximumTimerMinutes, Math.max(minimumTimerMinutes, value));
+}
+
+function parseTimerLabel(value: string) {
+  const parsedValue = extractTimerMinutes(value);
+
+  if (parsedValue === null || parsedValue < minimumTimerMinutes) {
+    return defaultTimerMinutes;
+  }
+
+  return Math.min(parsedValue, maximumTimerMinutes);
 }
 
 function formatDashboardDayLabel(value: string) {
@@ -256,7 +354,240 @@ function formatDashboardRunTimestamp(value: string | null) {
     return 'Запусков пока не было';
   }
 
-  return dashboardRunTimestampFormatter.format(parsedValue);
+  return formatAccountPanelDateTime(parsedValue);
+}
+
+function formatAccountDateTime(value: string | null | undefined) {
+  if (!value) {
+    return 'Не найдено';
+  }
+
+  const parsedValue = new Date(value);
+
+  if (Number.isNaN(parsedValue.getTime())) {
+    return 'Не найдено';
+  }
+
+  return formatAccountPanelDateTime(parsedValue);
+}
+
+function formatAccountPanelDateTime(value: Date) {
+  const parts = accountPanelTimestampFormatter.formatToParts(value);
+  const day = parts.find((part) => part.type === 'day')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const hour = parts.find((part) => part.type === 'hour')?.value;
+  const minute = parts.find((part) => part.type === 'minute')?.value;
+
+  if (!day || !month || !year || !hour || !minute) {
+    return accountPanelTimestampFormatter.format(value);
+  }
+
+  return `${day} ${month} ${year}, ${hour}:${minute}`;
+}
+
+function formatAccountTextValue(value: string | null | undefined) {
+  const normalizedValue = String(value ?? '').trim();
+  return normalizedValue || 'Не найдено';
+}
+
+function parseIntegerSetting(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) {
+  const parsedValue =
+    typeof value === 'number'
+      ? value
+      : Number.parseInt(String(value ?? '').trim(), 10);
+
+  if (!Number.isFinite(parsedValue)) {
+    return fallback;
+  }
+
+  return Math.min(maximum, Math.max(minimum, Math.round(parsedValue)));
+}
+
+function parseFloatSetting(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) {
+  const parsedValue =
+    typeof value === 'number'
+      ? value
+      : Number.parseFloat(
+          String(value ?? '')
+            .trim()
+            .replace(',', '.'),
+        );
+
+  if (!Number.isFinite(parsedValue)) {
+    return fallback;
+  }
+
+  return Math.min(maximum, Math.max(minimum, parsedValue));
+}
+
+function parseTextSetting(value: unknown, fallback: string) {
+  const normalizedValue = typeof value === 'string' ? value.trim() : '';
+  return normalizedValue || fallback;
+}
+
+function normalizeAppPreferences(value: unknown): AppPreferences {
+  const defaults = createDefaultAppPreferences();
+
+  if (!value || typeof value !== 'object') {
+    return defaults;
+  }
+
+  const payload = value as Record<string, unknown>;
+  const interfaceLanguage = interfaceLanguageOptions.some(
+    (option) => option.value === payload.interfaceLanguage,
+  )
+    ? (payload.interfaceLanguage as InterfaceLanguage)
+    : defaults.interfaceLanguage;
+  const dateTimeFormat = dateTimeFormatOptions.some(
+    (option) => option.value === payload.dateTimeFormat,
+  )
+    ? (payload.dateTimeFormat as DateTimeFormatId)
+    : defaults.dateTimeFormat;
+
+  return {
+    interfaceLanguage,
+    dateTimeFormat,
+    autoRefreshSeconds: parseIntegerSetting(
+      payload.autoRefreshSeconds,
+      defaults.autoRefreshSeconds,
+      5,
+      3600,
+    ),
+    httpRetries: parseIntegerSetting(
+      payload.httpRetries,
+      defaults.httpRetries,
+      0,
+      5,
+    ),
+    httpRetryDelaySeconds: parseFloatSetting(
+      payload.httpRetryDelaySeconds,
+      defaults.httpRetryDelaySeconds,
+      0.1,
+      30,
+    ),
+    httpRetryJitterEnabled:
+      typeof payload.httpRetryJitterEnabled === 'boolean'
+        ? payload.httpRetryJitterEnabled
+        : defaults.httpRetryJitterEnabled,
+    persistRawJson:
+      typeof payload.persistRawJson === 'boolean'
+        ? payload.persistRawJson
+        : defaults.persistRawJson,
+    accountsDirectory: parseTextSetting(
+      payload.accountsDirectory,
+      defaults.accountsDirectory,
+    ),
+    logsDirectory: parseTextSetting(
+      payload.logsDirectory,
+      defaults.logsDirectory,
+    ),
+  };
+}
+
+function loadStoredAppPreferences() {
+  if (typeof window === 'undefined') {
+    return createDefaultAppPreferences();
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(settingsStorageKey);
+    if (!rawValue) {
+      return createDefaultAppPreferences();
+    }
+
+    return normalizeAppPreferences(JSON.parse(rawValue));
+  } catch {
+    return createDefaultAppPreferences();
+  }
+}
+
+function getInitialActivePage(): PageId {
+  if (typeof window === 'undefined') {
+    return 'dashboard';
+  }
+
+  const hashPage = window.location.hash.replace(/^#/, '') as PageId;
+  return navItems.some((item) => item.id === hashPage) ? hashPage : 'dashboard';
+}
+
+function renderAutoRefreshLabel(seconds: number) {
+  return `${seconds} seconds`;
+}
+
+function renderAutoRefreshSummaryLabel(seconds: number) {
+  return `Every ${seconds} sec`;
+}
+
+function translateSettingsStatusMessage(message: string) {
+  const normalizedMessage = message.trim();
+
+  if (!normalizedMessage) {
+    return '';
+  }
+
+  if (
+    normalizedMessage === 'Параметры панели сброшены к значениям по умолчанию.'
+  ) {
+    return 'Settings were reset to defaults.';
+  }
+
+  if (normalizedMessage === 'Логи уже пусты.') {
+    return 'Logs are already clear.';
+  }
+
+  const clearedLogsMatch = normalizedMessage.match(
+    /^Логи очищены\. Удалено файлов: (\d+)\.$/u,
+  );
+  if (clearedLogsMatch) {
+    return `Logs cleared. Removed files: ${clearedLogsMatch[1]}.`;
+  }
+
+  if (normalizedMessage === 'Не удалось очистить логи.') {
+    return 'Failed to clear logs.';
+  }
+
+  return normalizedMessage;
+}
+
+function extractAccountExtraText(
+  extra: Record<string, unknown>,
+  keys: string[],
+  validator?: (value: string) => boolean,
+) {
+  for (const key of keys) {
+    const nextValue = extra[key];
+
+    if (typeof nextValue !== 'string') {
+      continue;
+    }
+
+    const normalizedValue = nextValue.trim();
+
+    if (!normalizedValue) {
+      continue;
+    }
+
+    if (!validator || validator(normalizedValue)) {
+      return normalizedValue;
+    }
+  }
+
+  return '';
+}
+
+function isLikelyEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(value.trim());
 }
 
 function createEmptyDashboardSeries(): ChartPoint[] {
@@ -801,7 +1132,7 @@ function getAccountDraftFromRow(account: AccountRow): AccountDraft {
 }
 
 function isAccountDraftValid(draft: AccountDraft) {
-  return Boolean(draft.name.trim());
+  return Boolean(draft.name.trim()) && isTimerValueValid(draft.timer);
 }
 
 function formatAccountCount(count: number) {
@@ -824,14 +1155,18 @@ function formatAccountCount(count: number) {
 }
 
 function App() {
-  const [activePage, setActivePage] = useState<PageId>('dashboard');
+  const [activePage, setActivePage] = useState<PageId>(getInitialActivePage);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [isAccountsLoading, setIsAccountsLoading] = useState(false);
   const [accountsError, setAccountsError] = useState('');
   const [isAccountMutationPending, setIsAccountMutationPending] =
     useState(false);
-  const [parsingToggles, setParsingToggles] =
-    useState<SettingToggle[]>(settingToggles);
+  const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
+    loadStoredAppPreferences(),
+  );
+  const [isClearingLogs, setIsClearingLogs] = useState(false);
+  const [settingsFeedback, setSettingsFeedback] = useState('');
+  const [settingsError, setSettingsError] = useState('');
   const [selectedAccountId, setSelectedAccountId] = useState('');
 
   useEffect(() => {
@@ -842,6 +1177,17 @@ function App() {
       setSelectedAccountId('');
     }
   }, [accounts, selectedAccountId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        settingsStorageKey,
+        JSON.stringify(appPreferences),
+      );
+    } catch {
+      return;
+    }
+  }, [appPreferences]);
 
   const loadAccounts = async () => {
     setAccountsError('');
@@ -865,7 +1211,15 @@ function App() {
     }
 
     void loadAccounts();
-  }, [activePage]);
+    const intervalId = window.setInterval(
+      () => void loadAccounts(),
+      appPreferences.autoRefreshSeconds * 1000,
+    );
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activePage, appPreferences.autoRefreshSeconds]);
 
   const handleCreateAccount = async (draft: AccountDraft) => {
     setIsAccountMutationPending(true);
@@ -910,14 +1264,48 @@ function App() {
     }
   };
 
-  const handleToggleParsingOption = (label: string) => {
-    setParsingToggles((currentToggles) =>
-      currentToggles.map((toggle) =>
-        toggle.label === label
-          ? { ...toggle, enabled: !toggle.enabled }
-          : toggle,
-      ),
+  const handleUpdatePreference = (
+    field: keyof AppPreferences,
+    value: string | number | boolean,
+  ) => {
+    setAppPreferences(
+      (currentPreferences) =>
+        ({
+          ...currentPreferences,
+          [field]: value,
+        }) as AppPreferences,
     );
+    setSettingsFeedback('');
+    setSettingsError('');
+  };
+
+  const handleResetPreferences = () => {
+    setAppPreferences(createDefaultAppPreferences());
+    setSettingsFeedback('Settings were reset to defaults.');
+    setSettingsError('');
+  };
+
+  const handleClearLogs = async () => {
+    if (
+      !window.confirm(
+        'Clear all runtime logs and account log files? This action cannot be undone.',
+      )
+    ) {
+      return;
+    }
+
+    setIsClearingLogs(true);
+    setSettingsFeedback('');
+    setSettingsError('');
+
+    try {
+      const response = await clearLogsRequest();
+      setSettingsFeedback(response.detail);
+    } catch (error) {
+      setSettingsError(formatApiError(error, 'Не удалось очистить логи.'));
+    } finally {
+      setIsClearingLogs(false);
+    }
   };
 
   const handleBulkAccountAction = async (
@@ -970,74 +1358,53 @@ function App() {
     }
   };
 
+  if (activePage === 'settings') {
+    return (
+      <SettingsPage
+        feedback={settingsFeedback}
+        isClearingLogs={isClearingLogs}
+        onChangePreference={handleUpdatePreference}
+        onClearLogs={handleClearLogs}
+        onNavigateToPage={setActivePage}
+        onResetPreferences={handleResetPreferences}
+        preferences={appPreferences}
+        settingsError={settingsError}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen font-sans antialiased">
-      <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="bg-foreground min-h-screen w-full p-5">
-          <div className="space-y-4 sticky top-7.5">
-            <h1 className="font-semibold text-text tracking-tight text-3xl">
-              Shafa Control
-            </h1>
+    <div className={settingsPageClassName}>
+      <div className="grid min-h-screen xl:grid-cols-[280px_minmax(0,1fr)]">
+        <AppSidebar activePage={activePage} onNavigate={setActivePage} />
 
-            <nav className="flex flex-col gap-2.5">
-              {navItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition-all duration-200 ${
-                    activePage === item.id
-                      ? 'border border-info/50 bg-secondary text-text'
-                      : 'border border-transparent bg-secondary/50 text-text/75 hover:border-border/25 hover:bg-secondary/75'
-                  }`}
-                  onClick={() => setActivePage(item.id)}
-                >
-                  <span
-                    className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-200 ${
-                      activePage === item.id
-                        ? 'bg-info/15 text-info'
-                        : 'bg-secondary text-text/65'
-                    }`}
-                  >
-                    {navItemIcons[item.id]}
-                  </span>
-                  <span className="text-lg font-medium">{item.label}</span>
-                </button>
-              ))}
-            </nav>
-          </div>
-        </aside>
-
-        <main className="flex min-w-0 flex-col gap-3.5">
-          <section className="min-h-0 overflow-auto px-5 py-15">
-            {activePage === 'dashboard' && <DashboardPage />}
-            {activePage === 'accounts' && (
-              <AccountsPage
-                accounts={accounts}
-                isLoading={isAccountsLoading}
-                isMutationPending={isAccountMutationPending}
-                loadError={accountsError}
-                onBulkAction={handleBulkAccountAction}
-                onCreateAccount={handleCreateAccount}
-                onReload={loadAccounts}
-                onSelectAccount={setSelectedAccountId}
-                onSyncAccountChannels={handleSyncAccountChannels}
-                onUpdateAccount={handleSaveAccount}
-              />
-            )}
-            {activePage === 'logs' && (
-              <LogsPage
-                accounts={accounts}
-                accountsError={accountsError}
-                isAccountsLoading={isAccountsLoading}
-                onReloadAccounts={loadAccounts}
-              />
-            )}
-            {activePage === 'settings' && (
-              <SettingsPage
-                toggles={parsingToggles}
-                onToggleOption={handleToggleParsingOption}
-              />
-            )}
+        <main className="min-w-0 bg-[#f8f9fb]">
+          <section className="min-h-screen overflow-auto">
+            <div className="mx-auto max-w-265 px-10 py-9">
+              {activePage === 'dashboard' && <DashboardPage />}
+              {activePage === 'accounts' && (
+                <AccountsPage
+                  accounts={accounts}
+                  isLoading={isAccountsLoading}
+                  isMutationPending={isAccountMutationPending}
+                  loadError={accountsError}
+                  onBulkAction={handleBulkAccountAction}
+                  onCreateAccount={handleCreateAccount}
+                  onReload={loadAccounts}
+                  onSelectAccount={setSelectedAccountId}
+                  onSyncAccountChannels={handleSyncAccountChannels}
+                  onUpdateAccount={handleSaveAccount}
+                />
+              )}
+              {activePage === 'logs' && (
+                <LogsPage
+                  accounts={accounts}
+                  accountsError={accountsError}
+                  isAccountsLoading={isAccountsLoading}
+                  onReloadAccounts={loadAccounts}
+                />
+              )}
+            </div>
           </section>
         </main>
       </div>
@@ -1086,6 +1453,49 @@ function ActionButton({
   );
 }
 
+interface AppSidebarProps {
+  activePage: PageId;
+  onNavigate: (page: PageId) => void;
+}
+
+function AppSidebar({ activePage, onNavigate }: AppSidebarProps) {
+  return (
+    <aside className="min-h-screen w-full border-r border-[#e2e5ec] bg-[#f8f9fb] p-5">
+      <div className="sticky top-7.5 space-y-4">
+        <h1 className="text-[32px] font-semibold tracking-tight text-info">
+          Shafa Control
+        </h1>
+
+        <nav className="flex flex-col gap-2.5">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition-all duration-200 ${
+                activePage === item.id
+                  ? 'border border-[#8fb5ff] bg-white text-[#191c1e] shadow-[0_1px_2px_rgba(15,23,42,0.02)]'
+                  : 'border border-transparent bg-white/70 text-[#5b616e] hover:border-[#d9dfeb] hover:bg-white'
+              }`}
+              onClick={() => onNavigate(item.id)}
+            >
+              <span
+                className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-200 ${
+                  activePage === item.id
+                    ? 'bg-[#dbe8ff] text-[#377cf6]'
+                    : 'bg-white text-[#6d7280]'
+                }`}
+              >
+                {navItemIcons[item.id]}
+              </span>
+              <span className="text-lg font-medium">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
+    </aside>
+  );
+}
+
 interface ToggleSwitchProps {
   checked: boolean;
 }
@@ -1094,15 +1504,13 @@ function ToggleSwitch({ checked }: ToggleSwitchProps) {
   return (
     <span
       aria-hidden="true"
-      className={`relative inline-flex h-6 w-12 shrink-0 rounded-full border transition-all duration-200 ${
-        checked
-          ? 'border-success/25 bg-success/20 shadow-[inset_0_0_0_1px_rgba(34,197,94,0.06)]'
-          : 'border-border/25 bg-foreground/35'
+      className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-all duration-200 ${
+        checked ? 'bg-[#0c56d0]' : 'bg-[#dde1e7]'
       }`}
     >
       <span
-        className={`absolute top-0.5 left-0.5 h-4.5 w-4.5 rounded-full shadow-[0_8px_20px_rgba(15,23,42,0.16)] transition-transform duration-200 ${
-          checked ? 'translate-x-6 bg-success' : 'bg-white'
+        className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-[0_2px_5px_rgba(15,23,42,0.22)] transition-transform duration-200 ${
+          checked ? 'translate-x-5' : ''
         }`}
       />
     </span>
@@ -1268,7 +1676,7 @@ function DashboardPage() {
   }, []);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <PageHeader
         title="Dashboard"
         actions={
@@ -1305,13 +1713,13 @@ function DashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {dashboardMetrics.map((metric) => (
           <MetricCard key={metric.label} {...metric} />
         ))}
       </div>
 
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-6">
         <Panel
           title="Главная статистика"
           subtitle="Последние 7 дней по реальным runtime-логам аккаунтов"
@@ -1370,21 +1778,34 @@ function AccountsPage({
   } | null>(null);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [bulkFeedback, setBulkFeedback] = useState('');
+  const [infoAccountId, setInfoAccountId] = useState<string | null>(null);
+  const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
+  const [detailsAccountId, setDetailsAccountId] = useState<string | null>(null);
   const [isDetailsDialogOpen, setIsDetailsDialogOpen] = useState(false);
+  const [deleteTargetAccountId, setDeleteTargetAccountId] = useState<
+    string | null
+  >(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [itemsPerPage, setItemsPerPage] = useState<
     (typeof accountPageSizeOptions)[number]
   >(accountPageSizeOptions[0]);
   const [currentPage, setCurrentPage] = useState(1);
-  const detailsAccount =
-    selectedAccountIds.length === 1
-      ? (accounts.find((account) => account.id === selectedAccountIds[0]) ??
-        null)
-      : null;
+  const detailsAccount = detailsAccountId
+    ? (accounts.find((account) => account.id === detailsAccountId) ?? null)
+    : null;
+  const infoAccount = infoAccountId
+    ? (accounts.find((account) => account.id === infoAccountId) ?? null)
+    : null;
+  const deleteTargetAccount = deleteTargetAccountId
+    ? (accounts.find((account) => account.id === deleteTargetAccountId) ?? null)
+    : null;
   const selectedAccounts = accounts.filter((account) =>
     selectedAccountIds.includes(account.id),
   );
+  const deleteDialogAccounts = deleteTargetAccount
+    ? [deleteTargetAccount]
+    : selectedAccounts;
   const shouldShowCloseAction =
     selectedAccounts.length > 0 &&
     selectedAccounts.every((account) => account.statusLabel !== 'stopped');
@@ -1457,6 +1878,12 @@ function AccountsPage({
     );
   };
 
+  const openAccountInfo = (accountId: string) => {
+    setInfoAccountId(accountId);
+    onSelectAccount(accountId);
+    setIsInfoDialogOpen(true);
+  };
+
   const toggleAllVisibleAccounts = () => {
     const visibleIdSet = new Set(visibleAccountIds);
 
@@ -1505,6 +1932,17 @@ function AccountsPage({
     }
   };
 
+  const openAccountDetails = (accountId: string) => {
+    setDetailsAccountId(accountId);
+    onSelectAccount(accountId);
+    setIsDetailsDialogOpen(true);
+  };
+
+  const openDeleteAccountsDialog = (accountId?: string) => {
+    setDeleteTargetAccountId(accountId ?? null);
+    setIsDeleteDialogOpen(true);
+  };
+
   useEffect(() => {
     if (currentPage <= totalPages) {
       return;
@@ -1542,19 +1980,28 @@ function AccountsPage({
   }, [bulkFeedback]);
 
   useEffect(() => {
+    if (!infoAccount && isInfoDialogOpen) {
+      setInfoAccountId(null);
+      setIsInfoDialogOpen(false);
+    }
+  }, [infoAccount, isInfoDialogOpen]);
+
+  useEffect(() => {
     if (!detailsAccount && isDetailsDialogOpen) {
+      setDetailsAccountId(null);
       setIsDetailsDialogOpen(false);
     }
   }, [detailsAccount, isDetailsDialogOpen]);
 
   useEffect(() => {
-    if (isDeleteDialogOpen && selectedAccounts.length === 0) {
+    if (isDeleteDialogOpen && deleteDialogAccounts.length === 0) {
+      setDeleteTargetAccountId(null);
       setIsDeleteDialogOpen(false);
     }
-  }, [isDeleteDialogOpen, selectedAccounts.length]);
+  }, [deleteDialogAccounts.length, isDeleteDialogOpen]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <PageHeader title="Аккаунты" />
 
       {loadError ? (
@@ -1586,7 +2033,7 @@ function AccountsPage({
         </div>
       ) : null}
 
-      <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-6">
         <Panel
           title="Каталог аккаунтов"
           actions={
@@ -1620,18 +2067,9 @@ function AccountsPage({
                     selectedAccountIds.length === 0 || isMutationPending
                   }
                   type="button"
-                  onClick={() => setIsDeleteDialogOpen(true)}
+                  onClick={() => openDeleteAccountsDialog()}
                 >
                   <Trash2 className="h-4.5 w-4.5" />
-                </button>
-                <button
-                  aria-label="Открыть настройки аккаунта"
-                  className={getButtonClassName({ size: 'icon-sm' })}
-                  disabled={!detailsAccount || isMutationPending}
-                  type="button"
-                  onClick={() => setIsDetailsDialogOpen(true)}
-                >
-                  <Ellipsis className="h-4.5 w-4.5" />
                 </button>
                 <button
                   aria-label="Добавить аккаунт"
@@ -1699,12 +2137,15 @@ function AccountsPage({
                         </button>
                       </th>
                     ))}
+                    <th className="w-16 border-b border-border/20 px-4 pb-2 text-right">
+                      <span className="sr-only">Действия</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {isLoading && accounts.length === 0 ? (
                     <tr>
-                      <td colSpan={accountTableHeaders.length + 1}>
+                      <td colSpan={accountTableHeaders.length + 2}>
                         <div className="rounded-2xl border border-dashed border-border/20 bg-secondary/45 px-6 py-10 text-center">
                           <strong className="block text-base text-text">
                             Загружаем аккаунты
@@ -1717,7 +2158,7 @@ function AccountsPage({
                     </tr>
                   ) : sortedAccounts.length === 0 ? (
                     <tr>
-                      <td colSpan={accountTableHeaders.length + 1}>
+                      <td colSpan={accountTableHeaders.length + 2}>
                         <div className="rounded-2xl border border-dashed border-border/20 bg-secondary/45 px-6 py-10 text-center">
                           <strong className="block text-base text-text">
                             Пока нет аккаунтов
@@ -1741,13 +2182,13 @@ function AccountsPage({
                         <tr
                           key={account.id}
                           className="group cursor-pointer text-sm"
-                          onClick={() => onSelectAccount(account.id)}
+                          onClick={() => openAccountInfo(account.id)}
                         >
                           <td
                             className={`${rowCellClassName} w-16 rounded-l-2xl`}
                             onClick={(event) => {
                               event.stopPropagation();
-                              onSelectAccount(account.id);
+                              toggleAccountSelection(account.id);
                             }}
                           >
                             <SelectionCheckbox
@@ -1779,7 +2220,7 @@ function AccountsPage({
                               {account.statusLabel}
                             </AccountStatusBadge>
                           </td>
-                          <td className={`${rowCellClassName} rounded-r-2xl`}>
+                          <td className={rowCellClassName}>
                             <span
                               className={
                                 hasErrors
@@ -1789,6 +2230,21 @@ function AccountsPage({
                             >
                               {account.errors}
                             </span>
+                          </td>
+                          <td
+                            className={`${rowCellClassName} w-16 rounded-r-2xl`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                            }}
+                          >
+                            <div className="flex justify-end">
+                              <AccountRowActionMenu
+                                account={account}
+                                disabled={isMutationPending}
+                                onDelete={openDeleteAccountsDialog}
+                                onEdit={openAccountDetails}
+                              />
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1882,10 +2338,22 @@ function AccountsPage({
         accounts={accounts}
         isOpen={isDetailsDialogOpen}
         isSubmitting={isMutationPending}
-        onClose={() => setIsDetailsDialogOpen(false)}
+        onClose={() => {
+          setIsDetailsDialogOpen(false);
+          setDetailsAccountId(null);
+        }}
         onReloadAccounts={onReload}
         onSyncAccountChannels={onSyncAccountChannels}
         onUpdateAccount={onUpdateAccount}
+      />
+      <AccountInfoDialog
+        accountId={infoAccountId}
+        fallbackAccount={infoAccount}
+        isOpen={isInfoDialogOpen}
+        onClose={() => {
+          setIsInfoDialogOpen(false);
+          setInfoAccountId(null);
+        }}
       />
       <CreateAccountDialog
         isOpen={isCreateDialogOpen}
@@ -1894,12 +2362,20 @@ function AccountsPage({
         onCreateAccount={onCreateAccount}
       />
       <DeleteAccountsDialog
-        accounts={selectedAccounts}
+        accounts={deleteDialogAccounts}
         isOpen={isDeleteDialogOpen}
         isSubmitting={isMutationPending}
-        onClose={() => setIsDeleteDialogOpen(false)}
+        onClose={() => {
+          setIsDeleteDialogOpen(false);
+          setDeleteTargetAccountId(null);
+        }}
         onConfirm={async () => {
-          await runBulkAction('delete');
+          if (deleteTargetAccountId) {
+            await onBulkAction('delete', [deleteTargetAccountId]);
+            setDeleteTargetAccountId(null);
+          } else {
+            await runBulkAction('delete');
+          }
           setIsDeleteDialogOpen(false);
         }}
         onRemoveAccount={(accountId) =>
@@ -1981,6 +2457,651 @@ function AccountDialogShell({
         </div>
 
         {children}
+      </div>
+    </div>
+  );
+}
+
+interface AccountRowActionMenuProps {
+  account: AccountRow;
+  disabled: boolean;
+  onDelete: (accountId: string) => void;
+  onEdit: (accountId: string) => void;
+}
+
+function AccountRowActionMenu({
+  account,
+  disabled,
+  onDelete,
+  onEdit,
+}: AccountRowActionMenuProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        menuRef.current &&
+        event.target instanceof Node &&
+        !menuRef.current.contains(event.target)
+      ) {
+        setIsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (disabled) {
+      setIsOpen(false);
+    }
+  }, [disabled]);
+
+  return (
+    <div
+      className="relative"
+      ref={menuRef}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+        aria-label={`Действия для аккаунта ${account.name}`}
+        className={getButtonClassName({
+          size: 'icon-sm',
+          variant: 'ghost',
+          className: 'text-text-muted hover:text-text',
+        })}
+        disabled={disabled}
+        type="button"
+        onClick={() => setIsOpen((currentValue) => !currentValue)}
+      >
+        <EllipsisVertical className="h-4.5 w-4.5" />
+      </button>
+
+      {isOpen ? (
+        <div
+          className="absolute top-full right-0 z-20 mt-2 w-52 rounded-2xl border border-border/20 bg-foreground p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
+          role="menu"
+        >
+          <button
+            className={getButtonClassName({
+              size: 'row',
+              variant: 'ghost',
+              fullWidth: true,
+              align: 'left',
+              className: 'px-3',
+            })}
+            role="menuitem"
+            type="button"
+            onClick={() => {
+              setIsOpen(false);
+              onEdit(account.id);
+            }}
+          >
+            <PencilLine className="h-4 w-4" />
+            Редактировать
+          </button>
+          <button
+            className={getButtonClassName({
+              tone: 'danger',
+              size: 'row',
+              variant: 'ghost',
+              fullWidth: true,
+              align: 'left',
+              className: 'px-3',
+            })}
+            role="menuitem"
+            type="button"
+            onClick={() => {
+              setIsOpen(false);
+              onDelete(account.id);
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            Удалить
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface AccountInfoDialogProps {
+  accountId: string | null;
+  fallbackAccount: AccountRow | null;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+function AccountInfoDialog({
+  accountId,
+  fallbackAccount,
+  isOpen,
+  onClose,
+}: AccountInfoDialogProps) {
+  const [account, setAccount] = useState<ApiAccountRead | null>(null);
+  const [telegramStatus, setTelegramStatus] =
+    useState<ApiTelegramAuthStatus | null>(null);
+  const [shafaStatus, setShafaStatus] = useState<ApiShafaAuthStatus | null>(
+    null,
+  );
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen || !accountId) {
+      setAccount(null);
+      setTelegramStatus(null);
+      setShafaStatus(null);
+      setLoadError('');
+      setIsLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+
+    setIsLoading(true);
+    setLoadError('');
+    setTelegramStatus(null);
+    setShafaStatus(null);
+
+    void (async () => {
+      const [accountResult, telegramResult, shafaResult] =
+        await Promise.allSettled([
+          getAccountRequest(accountId),
+          getTelegramAuthStatus(accountId),
+          getShafaAuthStatus(accountId),
+        ]);
+
+      if (isCancelled) {
+        return;
+      }
+
+      if (accountResult.status === 'fulfilled') {
+        setAccount(accountResult.value);
+      } else {
+        setAccount(null);
+        setLoadError(
+          formatApiError(
+            accountResult.reason,
+            'Не удалось загрузить информацию об аккаунте.',
+          ),
+        );
+      }
+
+      if (telegramResult.status === 'fulfilled') {
+        setTelegramStatus(telegramResult.value);
+      }
+
+      if (shafaResult.status === 'fulfilled') {
+        setShafaStatus(shafaResult.value);
+      }
+
+      setIsLoading(false);
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [accountId, isOpen, reloadKey]);
+
+  if (!isOpen || !accountId) {
+    return null;
+  }
+
+  const title = account?.name || fallbackAccount?.name || 'Аккаунт';
+  const statusMeta = account
+    ? getAccountStatusMeta(account.status)
+    : {
+        statusLabel: fallbackAccount?.statusLabel || 'загрузка',
+        statusTone: fallbackAccount?.statusTone || 'neutral',
+      };
+  const isStarted = statusMeta.statusTone === 'success';
+  const statusCopy = isStarted ? 'АКТИВЕН' : 'ОСТАНОВЛЕН';
+  const statusDescription = isStarted ? 'Рабочий сценарий' : 'Ожидает запуска';
+  const accountExtra = isRecord(account?.extra) ? account.extra : {};
+  const shafaEmail = extractAccountExtraText(
+    accountExtra,
+    ['email', 'shafa_email', 'shafaEmail', 'login_email'],
+    isLikelyEmail,
+  );
+  const shafaPhone = extractAccountExtraText(accountExtra, [
+    'shafa_phone',
+    'shafaPhone',
+    'phone_shafa',
+    'phone',
+  ]);
+  const telegramPhone =
+    telegramStatus?.phone_number?.trim() ||
+    account?.phone?.trim() ||
+    fallbackAccount?.phone?.trim() ||
+    '';
+  const shafaEmailValue = shafaStatus?.email?.trim() || shafaEmail;
+  const shafaPhoneValue = shafaStatus?.phone?.trim() || shafaPhone;
+  const primaryChannelTemplate = account
+    ? getPrimaryChannelTemplate(account.channel_templates)
+    : null;
+  const accountChannels = account
+    ? mapLinksToTelegramChannels(
+        account.id,
+        primaryChannelTemplate?.links.length
+          ? primaryChannelTemplate.links
+          : account.channel_links,
+        primaryChannelTemplate,
+      )
+    : (fallbackAccount?.telegramChannels ?? []);
+  const templateCount =
+    account?.channel_templates.length ??
+    fallbackAccount?.channelTemplates?.length ??
+    0;
+  const channelTemplateNames = account?.channel_templates.length
+    ? account.channel_templates.map((template) => template.name).join(', ')
+    : fallbackAccount?.channelTemplates?.length
+      ? fallbackAccount.channelTemplates
+          .map((template) => template.name)
+          .join(', ')
+      : 'Шаблоны ещё не добавлены';
+  const timerValue = account
+    ? formatTimerLabel(account.timer_minutes)
+    : formatAccountTextValue(fallbackAccount?.timer);
+  const errorsValue = String(account?.errors ?? fallbackAccount?.errors ?? '0');
+  const errorCount = Number.parseInt(errorsValue, 10) || 0;
+  const lastRunValue = formatDashboardRunTimestamp(account?.last_run ?? null);
+  const createdAtValue = formatAccountDateTime(account?.created_at);
+  const updatedAtValue = formatAccountDateTime(account?.updated_at);
+  const lastSyncValue = account
+    ? formatAccountDateTime(
+        account.updated_at ?? account.created_at ?? account.last_run,
+      )
+    : isLoading
+      ? 'Загрузка...'
+      : '—';
+  const subtitle = telegramPhone
+    ? telegramPhone
+    : accountChannels.length > 0
+      ? `${accountChannels.length} каналов подключено`
+      : 'Параметры аккаунта';
+  const statusBadgeClassName = isStarted
+    ? 'border-success/20 bg-success/12 text-success'
+    : 'border-border/20 bg-foreground/70 text-text-muted';
+  const infoTileClassName =
+    'rounded-[24px] border border-border/10 bg-secondary/70 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]';
+  const detailLabelClassName =
+    'text-[11px] font-semibold uppercase tracking-[0.22em] text-text-muted/85';
+  const detailSectionIconClassName =
+    'flex h-11 w-11 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info';
+  const valueToneClassNames: Record<StatusTone, string> = {
+    success: 'text-success',
+    warning: 'text-warning',
+    info: 'text-info',
+    danger: 'text-error',
+    neutral: 'text-text',
+  };
+  const renderIdentitySection = (isMobile = false) => (
+    <div
+      className={cx(
+        'flex flex-col gap-6 rounded-[30px] bg-secondary/75 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]',
+        !isMobile && 'h-full',
+      )}
+    >
+      <div className="space-y-4">
+        <div className="space-y-3">
+          <h2 className="max-w-[12ch] text-3xl font-semibold tracking-tight text-text md:text-[2.35rem] md:leading-[1.05]">
+            {title}
+          </h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <span
+              className={cx(
+                'inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em]',
+                statusBadgeClassName,
+              )}
+            >
+              {statusCopy}
+            </span>
+          </div>
+        </div>
+
+        <p className="text-pretty leading-5.5 text-text-muted">
+          {statusDescription}. В панели оставлены только рабочие параметры,
+          активность и конфигурация каналов аккаунта.
+        </p>
+      </div>
+
+      <div className="mt-auto space-y-4">
+        <div className="rounded-3xl bg-secondary/75 border-border/12.5 border p-5 shadow-[0_20px_45px_rgba(15,23,42,0.12)]">
+          <p className={detailLabelClassName}>Таймер запуска</p>
+          <strong className="mt-3 block text-3xl font-semibold tracking-tight text-text">
+            {timerValue}
+          </strong>
+          <p
+            className={cx(
+              'mt-3 text-sm font-medium',
+              account?.last_run ? 'text-info' : 'text-text-muted',
+            )}
+          >
+            {account?.last_run
+              ? `Последний запуск ${lastRunValue}`
+              : 'Запусков пока не было'}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-2xl border-border/12.5 border bg-secondary/75 p-5 shadow-[0_20px_45px_rgba(15,23,42,0.09)]">
+            <p className={detailLabelClassName}>Каналы</p>
+            <strong className="mt-3 block text-2xl font-semibold tracking-tight text-text">
+              {accountChannels.length}
+            </strong>
+          </div>
+          <div className="rounded-2xl border-border/12.5 border bg-secondary/75 p-5 shadow-[0_20px_45px_rgba(15,23,42,0.09)]">
+            <p className={detailLabelClassName}>Ошибки</p>
+            <strong
+              className={cx(
+                'mt-3 block text-2xl font-semibold tracking-tight',
+                errorCount > 0 ? 'text-error' : 'text-text',
+              )}
+            >
+              {errorsValue}
+            </strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-4 backdrop-blur-sm md:p-8"
+      role="dialog"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[calc(100vh-32px)] w-full max-w-295 overflow-hidden rounded-[34px] border border-border/15 bg-foreground shadow-[0_32px_90px_rgba(15,23,42,0.24)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <aside className="hidden w-[320px] shrink-0 border-r border-border/25 md:flex lg:w-90">
+          {renderIdentitySection()}
+        </aside>
+
+        <div className="flex min-h-0 flex-1 flex-col bg-foreground">
+          <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-border/25 bg-foreground/75 p-5 backdrop-blur">
+            <h3 className="text-2xl font-semibold tracking-tight text-text">
+              Детали аккаунта
+            </h3>
+
+            <button
+              aria-label="Закрыть просмотр аккаунта"
+              className={getButtonClassName({
+                size: 'icon-sm',
+                variant: 'ghost',
+                className: 'rounded-full',
+              })}
+              type="button"
+              onClick={onClose}
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </header>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-5 md:px-8 md:pb-8">
+            <div className="mb-8 md:hidden">{renderIdentitySection(true)}</div>
+
+            <div className="space-y-8 md:space-y-10">
+              {loadError ? (
+                <div className="rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
+                  {loadError}
+                </div>
+              ) : null}
+
+              {isLoading && !account ? (
+                <div className="rounded-2xl border border-border/15 bg-secondary/60 px-4 py-3 text-sm text-text-muted">
+                  Загружаем данные аккаунта...
+                </div>
+              ) : null}
+
+              <section className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <div className={detailSectionIconClassName}>
+                    <User className="h-5 w-5" />
+                  </div>
+                  <h4 className="text-xl font-semibold tracking-tight text-text">
+                    Профиль аккаунта
+                  </h4>
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className={infoTileClassName}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className={detailLabelClassName}>Телефон Telegram</p>
+                        <strong className="mt-3 block text-lg leading-7 text-text">
+                          {formatAccountTextValue(telegramPhone)}
+                        </strong>
+                      </div>
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
+                        <Phone className="h-4.5 w-4.5" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={infoTileClassName}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className={detailLabelClassName}>Shafa email</p>
+                        <strong className="mt-3 block text-lg leading-7 text-text">
+                          {formatAccountTextValue(shafaEmailValue)}
+                        </strong>
+                      </div>
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
+                        <Mail className="h-4.5 w-4.5" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={infoTileClassName}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className={detailLabelClassName}>Телефон Shafa</p>
+                        <strong className="mt-3 block text-lg leading-7 text-text">
+                          {formatAccountTextValue(shafaPhoneValue)}
+                        </strong>
+                      </div>
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
+                        <Phone className="h-4.5 w-4.5" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={infoTileClassName}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className={detailLabelClassName}>Шаблоны каналов</p>
+                        <strong className="mt-3 block text-lg leading-7 text-text">
+                          {templateCount > 0
+                            ? `${templateCount} шаблонов`
+                            : 'Не найдены'}
+                        </strong>
+                      </div>
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
+                        <Link2 className="h-4.5 w-4.5" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <div className={detailSectionIconClassName}>
+                    <Clock3 className="h-5 w-5" />
+                  </div>
+                  <h4 className="text-xl font-semibold tracking-tight text-text">
+                    Тайминг и активность
+                  </h4>
+                </div>
+
+                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] md:p-6">
+                  <div className="space-y-1">
+                    {[
+                      {
+                        label: 'Статус аккаунта',
+                        value: statusCopy,
+                        tone: statusMeta.statusTone,
+                      },
+                      {
+                        label: 'Таймер запуска',
+                        value: timerValue,
+                        tone: 'neutral' as const,
+                      },
+                      {
+                        label: 'Последний запуск',
+                        value: lastRunValue,
+                        tone: account?.last_run
+                          ? ('info' as const)
+                          : ('neutral' as const),
+                      },
+                      {
+                        label: 'Создан',
+                        value: createdAtValue,
+                        tone: 'neutral' as const,
+                      },
+                      {
+                        label: 'Обновлён',
+                        value: updatedAtValue,
+                        tone: 'neutral' as const,
+                      },
+                    ].map((item, index, items) => (
+                      <div key={item.label}>
+                        <div className="flex flex-col gap-2 py-4 sm:flex-row sm:items-center sm:justify-between">
+                          <span className="text-sm font-medium text-text-muted">
+                            {item.label}
+                          </span>
+                          <strong
+                            className={cx(
+                              'text-base font-semibold',
+                              valueToneClassNames[item.tone],
+                            )}
+                          >
+                            {item.value}
+                          </strong>
+                        </div>
+                        {index < items.length - 1 ? (
+                          <div className="h-px w-full bg-border/10" />
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <div className={detailSectionIconClassName}>
+                    <Link2 className="h-5 w-5" />
+                  </div>
+                  <h4 className="text-xl font-semibold tracking-tight text-text">
+                    Telegram-каналы
+                  </h4>
+                </div>
+
+                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] md:p-6">
+                  <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <p className={detailLabelClassName}>Количество каналов</p>
+                      <strong className="mt-3 block text-2xl font-semibold tracking-tight text-text">
+                        {accountChannels.length}
+                      </strong>
+                    </div>
+                  </div>
+
+                  {accountChannels.length > 0 ? (
+                    <div className="flex flex-wrap gap-2.5">
+                      {accountChannels.map((channel) => (
+                        <span
+                          key={channel.id}
+                          className="inline-flex items-center rounded-full border border-info/16 bg-info/10 px-3.5 py-2 text-sm font-medium text-info"
+                        >
+                          {channel.title}
+                          {channel.handle ? ` · ${channel.handle}` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm leading-6 text-text-muted">
+                      Каналы ещё не настроены.
+                    </p>
+                  )}
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <footer className="border-t border-border/10 bg-foreground/92 px-5 py-4 md:px-8">
+            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <ActionButton
+                icon={
+                  <RefreshCw
+                    className={cx('h-4 w-4', isLoading && 'animate-spin')}
+                  />
+                }
+                size="sm"
+                variant="ghost"
+                className="h-11"
+                disabled={isLoading}
+                onClick={() => setReloadKey((value) => value + 1)}
+              >
+                Обновить данные
+              </ActionButton>
+              <ActionButton
+                icon={<X className="h-4 w-4" />}
+                size="sm"
+                tone="info"
+                variant="solid"
+                className="h-11"
+                onClick={onClose}
+              >
+                Закрыть
+              </ActionButton>
+            </div>
+          </footer>
+        </div>
       </div>
     </div>
   );
@@ -2160,7 +3281,7 @@ function AccountAuthPanel({
   }, [account.id]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {statusError ? (
         <div className="rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
           {statusError}
@@ -2931,8 +4052,7 @@ function AccountDetailsDialog({
         <div className="flex flex-wrap justify-end gap-2">
           <ActionButton
             icon={<X className="h-4 w-4" />}
-            size="sm"
-            className="h-12"
+            size="md"
             onClick={onClose}
           >
             Отмена
@@ -3028,7 +4148,7 @@ function CreateAccountDialog({
         <div className="flex flex-wrap justify-end gap-2">
           <ActionButton
             icon={<X className="h-4 w-4" />}
-            size="sm"
+            size="md"
             onClick={onClose}
           >
             Отмена
@@ -3170,7 +4290,7 @@ function DeleteAccountsDialog({
         <div className="flex flex-wrap justify-end gap-2">
           <ActionButton
             icon={<X className="h-4 w-4" />}
-            size="sm"
+            size="md"
             onClick={onClose}
           >
             Отмена
@@ -3772,7 +4892,7 @@ function LogsPage({
     <div className="space-y-4">
       <PageHeader title="Логи" />
 
-      <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-6">
         <Panel
           title="Лента событий"
           actions={
@@ -3951,55 +5071,636 @@ function LogsPage({
 }
 
 interface SettingsPageProps {
-  toggles: SettingToggle[];
-  onToggleOption: (label: string) => void;
+  feedback: string;
+  isClearingLogs: boolean;
+  onChangePreference: (
+    field: keyof AppPreferences,
+    value: string | number | boolean,
+  ) => void;
+  onClearLogs: () => Promise<void>;
+  onNavigateToPage: (page: PageId) => void;
+  onResetPreferences: () => void;
+  preferences: AppPreferences;
+  settingsError: string;
 }
 
-function SettingsPage({ toggles, onToggleOption }: SettingsPageProps) {
-  return (
-    <div className="space-y-4">
-      <PageHeader title="Настройки" />
+function SettingsPage({
+  feedback,
+  isClearingLogs,
+  onChangePreference,
+  onClearLogs,
+  onNavigateToPage,
+  onResetPreferences,
+  preferences,
+  settingsError,
+}: SettingsPageProps) {
+  const [activeSection, setActiveSection] = useState<
+    (typeof settingsSectionItems)[number]['id']
+  >(settingsSectionItems[0].id);
+  const selectedDateTimeFormat =
+    dateTimeFormatOptions.find(
+      (option) => option.value === preferences.dateTimeFormat,
+    ) ?? dateTimeFormatOptions[0];
+  const statusMessage = translateSettingsStatusMessage(
+    settingsError || feedback,
+  );
 
-      <div className="grid gap-4">
-        <Panel title="Общие параметры">
-          <div className="grid grid-cols-2 gap-3">
-            {toggles.map((toggle) => (
+  useEffect(() => {
+    const sections = settingsSectionItems
+      .map((item) => document.getElementById(`settings-${item.id}`))
+      .filter(
+        (section): section is HTMLElement => section instanceof HTMLElement,
+      );
+
+    if (sections.length === 0) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visibleEntry = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort(
+            (left, right) => right.intersectionRatio - left.intersectionRatio,
+          )[0];
+
+        if (!visibleEntry) {
+          return;
+        }
+
+        const matchedSection = settingsSectionItems.find(
+          (item) => visibleEntry.target.id === `settings-${item.id}`,
+        );
+
+        if (matchedSection) {
+          setActiveSection(matchedSection.id);
+        }
+      },
+      {
+        rootMargin: '-80px 0px -55% 0px',
+        threshold: [0.2, 0.45, 0.7],
+      },
+    );
+
+    sections.forEach((section) => observer.observe(section));
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  return (
+    <div className={settingsPageClassName}>
+      <div className="grid min-h-screen xl:grid-cols-[280px_minmax(0,1fr)]">
+        <AppSidebar activePage="settings" onNavigate={onNavigateToPage} />
+
+        <main className="min-w-0">
+          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-[#e2e5ec] bg-white px-6">
+            <nav className="flex min-w-0 items-center gap-1 overflow-x-auto">
+              {settingsSectionItems.map(({ id, icon: Icon, label }) => {
+                const isActive = activeSection === id;
+
+                return (
+                  <a
+                    key={id}
+                    className={`inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-[14px] font-medium transition-colors duration-150 ${
+                      isActive
+                        ? 'border-[#0c56d0] text-[#0c56d0]'
+                        : 'border-transparent text-[#6f7786] hover:text-[#1f2430]'
+                    }`}
+                    href={`#settings-${id}`}
+                    onClick={() => setActiveSection(id)}
+                  >
+                    <Icon className="h-4.25 w-4.25 shrink-0" />
+                    <span>{label}</span>
+                  </a>
+                );
+              })}
+            </nav>
+
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2 text-[#18a058]">
+                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#18a058] text-white">
+                  <Check className="h-3 w-3 stroke-3" />
+                </span>
+                <span className="text-[13px] font-medium">
+                  All changes saved
+                </span>
+              </div>
               <button
-                key={toggle.label}
-                aria-checked={toggle.enabled}
-                className={`${surfaceCardClassName} flex w-full cursor-pointer items-center justify-between gap-3.5 text-left transition-all duration-200 hover:border-border/50 hover:bg-secondary/75 focus:border-info/50 focus:ring-2 focus:ring-info/25`}
-                role="switch"
+                className="cursor-pointer rounded-lg px-3 py-1.5 text-[14px] font-semibold text-[#0c56d0] transition-colors duration-200 hover:bg-[#f4f7ff]"
                 type="button"
-                onClick={() => onToggleOption(toggle.label)}
+                onClick={onResetPreferences}
               >
-                <div>
-                  <h1 className={cardTitleClassName}>{toggle.label}</h1>
-                  <span className="leading-6 text-text-muted">
-                    {toggle.copy}
-                  </span>
-                </div>
-                <ToggleSwitch checked={toggle.enabled} />
+                Reset to Defaults
               </button>
-            ))}
+            </div>
+          </header>
+
+          <div className="mx-auto flex max-w-265 flex-col px-10 py-9">
+            <div className="space-y-6">
+              <nav className="flex items-center gap-2 text-[15px]">
+                <button
+                  className="cursor-pointer text-[#8f96a5] transition-colors duration-150 hover:text-[#191c1e]"
+                  type="button"
+                  onClick={() => onNavigateToPage('dashboard')}
+                >
+                  Application
+                </button>
+                <ChevronRight className="h-4 w-4 text-[#a5abb7]" />
+                <span className="font-medium text-[#191c1e]">Settings</span>
+              </nav>
+
+              <div className="grid gap-6">
+                <section
+                  id="settings-interface"
+                  className={`${settingsPanelClassName} scroll-mt-20`}
+                >
+                  <SettingsSectionHeader
+                    icon={<SlidersHorizontal className="h-4.5 w-4.5" />}
+                    title="Interface"
+                  />
+
+                  <div className="grid gap-5 lg:grid-cols-3">
+                    <SettingsSelectField
+                      description="Select the primary display language for the application."
+                      label="INTERFACE LANGUAGE"
+                      options={interfaceLanguageOptions}
+                      value={preferences.interfaceLanguage}
+                      onChange={(value) =>
+                        onChangePreference('interfaceLanguage', value)
+                      }
+                    />
+                    <SettingsSelectField
+                      description="Preferred timestamp display across all logs and tables."
+                      label="DATE/TIME FORMAT"
+                      options={dateTimeFormatOptions.map((option) => ({
+                        label: option.label,
+                        value: option.value,
+                      }))}
+                      value={preferences.dateTimeFormat}
+                      onChange={(value) =>
+                        onChangePreference('dateTimeFormat', value)
+                      }
+                    />
+                    <SettingsSelectField
+                      description="How frequently data tables poll the server for updates."
+                      label="AUTO-REFRESH INTERVAL"
+                      options={autoRefreshOptions.map((option) => ({
+                        label: renderAutoRefreshLabel(option),
+                        value: String(option),
+                      }))}
+                      value={String(preferences.autoRefreshSeconds)}
+                      onChange={(value) =>
+                        onChangePreference(
+                          'autoRefreshSeconds',
+                          parseIntegerSetting(
+                            value,
+                            preferences.autoRefreshSeconds,
+                            5,
+                            3600,
+                          ),
+                        )
+                      }
+                    />
+                  </div>
+
+                  <div className="mt-6 grid gap-4 border-t border-[#eceff4] pt-6 md:grid-cols-2">
+                    <SettingsSummaryCard
+                      icon={<Clock3 className="h-4.5 w-4.5" />}
+                      label="ACTIVE TIME FORMAT"
+                      value={selectedDateTimeFormat.preview}
+                    />
+                    <SettingsSummaryCard
+                      icon={<RefreshCw className="h-4.5 w-4.5" />}
+                      label="DATA REFRESH"
+                      value={renderAutoRefreshSummaryLabel(
+                        preferences.autoRefreshSeconds,
+                      )}
+                    />
+                  </div>
+                </section>
+
+                <section
+                  id="settings-http-retry"
+                  className={`${settingsPanelClassName} scroll-mt-20`}
+                >
+                  <SettingsSectionHeader
+                    icon={<RefreshCw className="h-4.5 w-4.5" />}
+                    title="HTTP Retry"
+                  />
+
+                  <div className="grid gap-5 md:grid-cols-2">
+                    <SettingsNumberField
+                      description="Maximum number of attempts for failed network requests."
+                      label="HTTP RETRY COUNT"
+                      maximum={5}
+                      minimum={0}
+                      step={1}
+                      value={preferences.httpRetries}
+                      onChange={(value) =>
+                        onChangePreference('httpRetries', value)
+                      }
+                    />
+                    <SettingsNumberField
+                      description="Wait time before the first retry attempt."
+                      label="BASE RETRY DELAY"
+                      maximum={30}
+                      minimum={0.1}
+                      step={0.1}
+                      suffix="sec"
+                      value={preferences.httpRetryDelaySeconds}
+                      onChange={(value) =>
+                        onChangePreference('httpRetryDelaySeconds', value)
+                      }
+                    />
+                  </div>
+
+                  <div className="mt-6 grid gap-4 md:grid-cols-2">
+                    <SettingsToggleCard
+                      checked={preferences.httpRetryJitterEnabled}
+                      description="Add randomness to delay to prevent sync spikes."
+                      icon={
+                        <RefreshCw className="h-4.5 w-4.5 text-[#7b8293]" />
+                      }
+                      label="Optional jitter"
+                      onToggle={() =>
+                        onChangePreference(
+                          'httpRetryJitterEnabled',
+                          !preferences.httpRetryJitterEnabled,
+                        )
+                      }
+                    />
+                    <SettingsToggleCard
+                      checked={preferences.persistRawJson}
+                      description="Log the full payload for debugging purposes."
+                      icon={<FileJson className="h-4.5 w-4.5 text-[#7b8293]" />}
+                      label="Save raw JSON"
+                      onToggle={() =>
+                        onChangePreference(
+                          'persistRawJson',
+                          !preferences.persistRawJson,
+                        )
+                      }
+                    />
+                  </div>
+                </section>
+
+                <section
+                  id="settings-working-paths"
+                  className={`${settingsPanelClassName} scroll-mt-20`}
+                >
+                  <SettingsSectionHeader
+                    icon={<FolderOpen className="h-4.5 w-4.5" />}
+                    title="Working Paths"
+                  />
+
+                  <div className="grid gap-6">
+                    <SettingsTextAreaField
+                      description="Directory where encrypted account credentials are stored."
+                      label="ACCOUNTS FOLDER"
+                      value={preferences.accountsDirectory}
+                      onChange={(value) =>
+                        onChangePreference('accountsDirectory', value)
+                      }
+                    />
+                    <SettingsTextAreaField
+                      description="Target location for session logs and error reports."
+                      label="LOGS FOLDER"
+                      value={preferences.logsDirectory}
+                      onChange={(value) =>
+                        onChangePreference('logsDirectory', value)
+                      }
+                    />
+                  </div>
+                </section>
+
+                <section
+                  id="settings-maintenance"
+                  className={`${settingsPanelClassName} scroll-mt-20`}
+                >
+                  <SettingsSectionHeader
+                    icon={<Wrench className="h-4.5 w-4.5" />}
+                    title="Maintenance"
+                  />
+
+                  <div className="rounded-[10px] border border-[#d7dce5] bg-[#f3f5f8] p-4">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#ffdcd6] text-[#cb381f]">
+                          <Trash2 className="h-5 w-5" />
+                        </div>
+                        <div className="max-w-155 space-y-1 flex flex-col justify-center">
+                          <h3 className="font-semibold text-[#191c1e]">
+                            Clear logs
+                          </h3>
+                          <p className={`${settingsDescriptionClassName}`}>
+                            Removes runtime and account logs, and clears the
+                            live log feed. This action cannot be undone.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        className="inline-flex h-10.5 min-w-35.5 cursor-pointer items-center justify-center rounded-md bg-[#d1331b] px-6 text-[15px] font-semibold text-white transition-colors duration-200 hover:bg-[#b02c17] disabled:cursor-not-allowed disabled:opacity-70"
+                        disabled={isClearingLogs}
+                        type="button"
+                        onClick={() => void onClearLogs()}
+                      >
+                        {isClearingLogs ? (
+                          <LoaderCircle className="h-4 w-4 animate-spin" />
+                        ) : (
+                          'Clear logs'
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <SettingsStatusBar
+                    error={settingsError}
+                    message={
+                      statusMessage ||
+                      'Last cleared: 2 hours ago. Total reclaimed: 4.2 MB'
+                    }
+                  />
+                </section>
+              </div>
+            </div>
           </div>
-        </Panel>
+        </main>
       </div>
     </div>
   );
 }
 
-interface FieldProps {
+interface SettingsFieldShellProps {
+  children: ReactNode;
+  description?: string;
+  label: string;
+}
+
+function SettingsFieldShell({
+  children,
+  description,
+  label,
+}: SettingsFieldShellProps) {
+  return (
+    <label className="flex flex-col gap-2.5">
+      <span className={settingsLabelClassName}>{label}</span>
+      {children}
+      {description ? (
+        <span className={settingsDescriptionClassName}>{description}</span>
+      ) : null}
+    </label>
+  );
+}
+
+interface SettingsSectionHeaderProps {
+  icon: ReactNode;
+  title: string;
+}
+
+function SettingsSectionHeader({ icon, title }: SettingsSectionHeaderProps) {
+  return (
+    <div className="mb-5 flex items-center gap-3 text-[#0c56d0]">
+      <span className="flex h-5 w-5 items-center justify-center">{icon}</span>
+      <h2 className="text-[17px] font-medium text-[#191c1e]">{title}</h2>
+    </div>
+  );
+}
+
+interface SettingsSummaryCardProps {
+  icon: ReactNode;
   label: string;
   value: string;
 }
 
-interface EditableFieldProps extends FieldProps {
-  icon?: ReactNode;
+function SettingsSummaryCard({ icon, label, value }: SettingsSummaryCardProps) {
+  return (
+    <div className={`${settingsSubtleCardClassName} flex items-start gap-4`}>
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white text-[#0c56d0] shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
+        {icon}
+      </span>
+      <div>
+        <p className={settingsLabelClassName}>{label}</p>
+        <p className="mt-1 text-[15px] font-semibold text-[#191c1e]">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+interface SettingsStatusBarProps {
+  error?: string;
+  message: string;
+}
+
+function SettingsStatusBar({ error, message }: SettingsStatusBarProps) {
+  const isError = Boolean(error);
+  const isSuccess =
+    message.startsWith('Logs cleared') ||
+    message.startsWith('Settings were reset');
+
+  return (
+    <div
+      className={`mt-4 flex items-center gap-2 rounded-lg px-4 py-3 text-[14px] ${
+        isError
+          ? 'bg-[#fff0ee] text-[#b42318]'
+          : isSuccess
+            ? 'bg-[#edf8f1] text-[#1f7a42]'
+            : 'bg-[#f1f3f6] text-[#9ca2ad]'
+      }`}
+    >
+      <Info className="h-4 w-4 shrink-0" />
+      <span>{message}</span>
+    </div>
+  );
+}
+
+interface SettingsSelectFieldProps {
+  description?: string;
+  label: string;
+  options: ReadonlyArray<{
+    label: string;
+    value: string;
+  }>;
+  value: string;
   onChange: (value: string) => void;
 }
 
-interface SelectFieldProps extends EditableFieldProps {
-  options: string[];
+function SettingsSelectField({
+  description,
+  label,
+  options,
+  value,
+  onChange,
+}: SettingsSelectFieldProps) {
+  return (
+    <SettingsFieldShell description={description} label={label}>
+      <div className="relative">
+        <select
+          className={`${settingsFieldClassName} appearance-none pr-11`}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-[#7f8796]" />
+      </div>
+    </SettingsFieldShell>
+  );
+}
+
+interface SettingsNumberFieldProps {
+  description?: string;
+  label: string;
+  maximum: number;
+  minimum: number;
+  step: number;
+  suffix?: string;
+  value: number;
+  onChange: (value: number) => void;
+}
+
+function SettingsNumberField({
+  description,
+  label,
+  maximum,
+  minimum,
+  step,
+  suffix,
+  value,
+  onChange,
+}: SettingsNumberFieldProps) {
+  return (
+    <SettingsFieldShell description={description} label={label}>
+      <div className="relative">
+        <input
+          className={`${settingsFieldClassName} ${suffix ? 'pr-16' : ''}`}
+          inputMode="decimal"
+          max={maximum}
+          min={minimum}
+          step={step}
+          type="number"
+          value={String(value)}
+          onChange={(event) => {
+            const nextValue = event.target.value.trim();
+            if (!nextValue) {
+              return;
+            }
+
+            const parsedValue =
+              step < 1
+                ? Number.parseFloat(nextValue)
+                : Number.parseInt(nextValue, 10);
+
+            if (!Number.isFinite(parsedValue)) {
+              return;
+            }
+
+            const normalizedValue =
+              step < 1
+                ? parseFloatSetting(parsedValue, value, minimum, maximum)
+                : parseIntegerSetting(parsedValue, value, minimum, maximum);
+            onChange(normalizedValue);
+          }}
+        />
+        {suffix ? (
+          <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-[15px] font-normal text-[#7f8796]">
+            {suffix}
+          </span>
+        ) : null}
+      </div>
+    </SettingsFieldShell>
+  );
+}
+
+interface SettingsTextAreaFieldProps {
+  description?: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function SettingsTextAreaField({
+  description,
+  label,
+  value,
+  onChange,
+}: SettingsTextAreaFieldProps) {
+  return (
+    <SettingsFieldShell description={description} label={label}>
+      <div className="relative">
+        <input
+          className={`${settingsTextAreaClassName} pr-12`}
+          type="text"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button
+          aria-label={`Browse ${label.toLowerCase()}`}
+          className="absolute top-1/2 right-2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-[#7f8796] transition-colors duration-150 hover:bg-[#eef2f8] hover:text-[#0c56d0]"
+          type="button"
+        >
+          <FolderOpen className="h-4 w-4" />
+        </button>
+      </div>
+    </SettingsFieldShell>
+  );
+}
+
+interface SettingsToggleCardProps {
+  checked: boolean;
+  description: string;
+  icon?: ReactNode;
+  label: string;
+  onToggle: () => void;
+}
+
+function SettingsToggleCard({
+  checked,
+  description,
+  icon,
+  label,
+  onToggle,
+}: SettingsToggleCardProps) {
+  return (
+    <button
+      aria-checked={checked}
+      className={`${settingsToggleCardClassName} flex w-full cursor-pointer items-center justify-between gap-3.5 text-left focus:ring-2 focus:ring-[#0c56d0]/10`}
+      role="switch"
+      type="button"
+      onClick={onToggle}
+    >
+      <div className="flex items-center gap-3">
+        {icon ? (
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#f5f6f8]">
+            {icon}
+          </span>
+        ) : null}
+        <div>
+          <h3 className="text-[15px] font-semibold text-[#191c1e]">{label}</h3>
+          <span className={settingsDescriptionClassName}>{description}</span>
+        </div>
+      </div>
+      <ToggleSwitch checked={checked} />
+    </button>
+  );
+}
+
+interface FieldProps {
+  label: string;
+  value: ReactNode;
+}
+
+interface EditableFieldProps {
+  icon?: ReactNode;
+  onChange: (value: string) => void;
+  label: string;
+  value: string;
 }
 
 interface AccountFormFieldsProps {
@@ -4031,10 +5732,9 @@ function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
         }
         onChange={(value) => onFieldChange('name', value)}
       />
-      <SelectField
+      <MinutesTimePickerField
         label="Таймер"
         value={values.timer}
-        options={timerOptions}
         icon={
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
             <Clock3 className="h-3.5 w-3.5 text-info/75" />
@@ -4053,25 +5753,40 @@ function TextInputField({ label, value, onChange, icon }: EditableFieldProps) {
         {icon}
         {label}
       </span>
-      <input
-        className={accountControlClassName}
-        type="text"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <div className="relative overflow-hidden rounded-xl border border-border/25 bg-secondary transition-all duration-200 focus-within:border-info/55 focus-within:ring-4 focus-within:ring-info/10">
+        <input
+          className="h-12 w-full bg-transparent px-4 text-[17px] text-text outline-none placeholder:text-text-muted/45"
+          type="text"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </div>
     </label>
   );
 }
 
-function SelectField({
+function MinutesTimePickerField({
   label,
   value,
-  options,
   onChange,
   icon,
-}: SelectFieldProps) {
+}: EditableFieldProps) {
+  const [inputValue, setInputValue] = useState(() => {
+    const parsedValue = extractTimerMinutes(value);
+    return parsedValue === null ? '' : String(parsedValue);
+  });
   const [isOpen, setIsOpen] = useState(false);
   const fieldRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const parsedValue = extractTimerMinutes(value);
+    const normalizedValue = parsedValue === null ? '' : String(parsedValue);
+
+    setInputValue((currentValue) =>
+      currentValue === normalizedValue ? currentValue : normalizedValue,
+    );
+  }, [value]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -4099,6 +5814,47 @@ function SelectField({
     };
   }, [isOpen]);
 
+  const parsedMinutes = extractTimerMinutes(inputValue);
+  const hasValue = inputValue.trim().length > 0;
+  const hasError = hasValue && !isTimerValueValid(inputValue);
+  const helperText = hasError
+    ? `Введите значение от ${minimumTimerMinutes} до ${maximumTimerMinutes}`
+    : null;
+  const timerUnitOffset = `${Math.max(inputValue.length, 1)}ch`;
+  const isCustomValue =
+    parsedMinutes !== null &&
+    !timerPresetMinutes.some((presetValue) => presetValue === parsedMinutes);
+
+  const setMinutes = (minutes: number) => {
+    const nextMinutes = clampTimerMinutes(minutes);
+    setInputValue(String(nextMinutes));
+    onChange(formatTimerLabel(nextMinutes));
+  };
+
+  const handleInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextValue = event.target.value.replace(/[^\d]/g, '').slice(0, 4);
+    setInputValue(nextValue);
+
+    if (!nextValue) {
+      onChange('');
+      return;
+    }
+
+    onChange(formatTimerLabel(Number.parseInt(nextValue, 10)));
+  };
+
+  const handleStep = (delta: number) => {
+    const baseValue =
+      parsedMinutes === null
+        ? delta > 0
+          ? defaultTimerMinutes - 1
+          : minimumTimerMinutes + 1
+        : parsedMinutes;
+
+    setMinutes(baseValue + delta);
+    setIsOpen(true);
+  };
+
   return (
     <div className="flex flex-col gap-3">
       <span className={fieldLabelClassName}>
@@ -4106,65 +5862,204 @@ function SelectField({
         {label}
       </span>
       <div className="relative" ref={fieldRef}>
-        <button
-          aria-expanded={isOpen}
-          aria-haspopup="listbox"
-          className={accountSelectButtonClassName}
-          type="button"
-          onClick={() => setIsOpen((current) => !current)}
+        <div
+          className={cx(
+            'relative overflow-hidden rounded-xl border bg-secondary transition-all duration-200',
+            hasError
+              ? 'border-error ring-2 ring-error/10'
+              : isOpen
+                ? 'border-info/55 ring-4 ring-info/10'
+                : 'border-border/25',
+          )}
         >
-          <span className="truncate text-text">{value}</span>
-
-          <ChevronDown
-            className={`h-4 w-4 shrink-0 text-text/75 transition-transform duration-200 ${
-              isOpen ? 'rotate-180' : ''
-            }`}
+          <input
+            ref={inputRef}
+            className="h-12 w-full bg-transparent pr-18 pl-4 text-[17px] text-text outline-none placeholder:text-text-muted/45"
+            inputMode="numeric"
+            placeholder="Введите минуты"
+            type="text"
+            value={inputValue}
+            onChange={handleInputChange}
+            onFocus={() => setIsOpen(true)}
           />
-        </button>
+          {hasValue ? (
+            <span
+              className="pointer-events-none absolute top-1/2 -translate-y-1/2 text-sm font-semibold text-text-muted"
+              style={{ left: `calc(1rem + ${timerUnitOffset} + 0.55rem)` }}
+            >
+              мин
+            </span>
+          ) : null}
+          <div
+            className={cx(
+              'absolute inset-y-0 right-0 flex w-10 flex-col border-l',
+              hasError ? 'border-error/20' : 'border-border/15',
+            )}
+          >
+            <button
+              className={cx(
+                'flex flex-1 items-center justify-center text-sm font-bold transition-colors',
+                hasError
+                  ? 'text-error hover:bg-error/8'
+                  : 'text-text-muted hover:bg-foreground/45 hover:text-text',
+              )}
+              type="button"
+              onClick={() => handleStep(1)}
+            >
+              +
+            </button>
+            <button
+              className={cx(
+                'flex flex-1 items-center justify-center border-t text-sm font-bold transition-colors',
+                hasError
+                  ? 'border-error/20 text-error hover:bg-error/8'
+                  : 'border-border/15 text-text-muted hover:bg-foreground/45 hover:text-text',
+              )}
+              type="button"
+              onClick={() => handleStep(-1)}
+            >
+              -
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-1 flex items-start justify-between gap-3 px-1">
+          <p
+            className={cx(
+              'text-sm leading-6',
+              hasError ? 'text-error' : 'text-text-muted',
+            )}
+          >
+            {hasError ? (
+              <span className="inline-flex items-center gap-1.5">
+                <TriangleAlert className="h-4 w-4" />
+                {helperText}
+              </span>
+            ) : (
+              helperText
+            )}
+          </p>
+          <button
+            className="cursor-pointer text-xs font-semibold text-info transition-colors hover:text-info/80"
+            type="button"
+            onClick={() => {
+              setIsOpen((currentValue) => !currentValue);
+              inputRef.current?.focus();
+            }}
+          >
+            {isCustomValue ? 'Своё значение' : 'Быстрый выбор'}
+          </button>
+        </div>
 
         {isOpen ? (
-          <div className="absolute inset-x-0 bottom-[calc(100%+10px)] z-30 overflow-hidden rounded-xl border border-border/25 bg-secondary p-1.5 shadow-[0_24px_64px_rgba(15,23,42,0.1)]">
-            <div
-              className={`${
-                options.length > 8 ? 'max-h-80 overflow-y-auto pr-1' : ''
-              }`}
-              role="listbox"
-            >
-              {options.map((option, index) => {
-                const isSelected = option === value;
+          <div className="absolute inset-x-0 top-[calc(100%+12px)] z-30 overflow-hidden rounded-[22px] border border-border/20 bg-foreground p-4 shadow-[0_24px_64px_rgba(15,23,42,0.14)]">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold uppercase tracking-widest text-text-muted">
+                Быстрые значения
+              </span>
+              <span className="text-xs font-semibold text-info">
+                {isCustomValue ? 'Произвольное значение' : 'Текущее значение'}
+              </span>
+            </div>
+
+            <div className="mt-3 grid grid-cols-4 gap-2">
+              {timerPresetMinutes.map((presetValue) => {
+                const isSelected = parsedMinutes === presetValue;
 
                 return (
                   <button
-                    key={option}
-                    aria-selected={isSelected}
-                    className={getButtonClassName({
-                      size: 'row',
-                      variant: 'ghost',
-                      fullWidth: true,
-                      align: 'left',
-                      className: cx(
-                        'justify-between px-4',
-                        isSelected ? 'bg-foreground' : 'hover:bg-foreground/50',
-                        index < options.length - 1 && 'mb-1',
-                      ),
-                    })}
-                    role="option"
+                    key={presetValue}
+                    className={cx(
+                      'rounded-xl px-3 py-2 text-sm font-semibold transition-all duration-200',
+                      isSelected
+                        ? 'bg-info/16 text-info ring-2 ring-info/15'
+                        : 'bg-secondary text-text-muted hover:bg-secondary/75 hover:text-text',
+                    )}
                     type="button"
-                    onClick={() => {
-                      onChange(option);
-                      setIsOpen(false);
-                    }}
+                    onClick={() => setMinutes(presetValue)}
                   >
-                    <span className="truncate text-[17px] text-text">
-                      {option}
-                    </span>
-
-                    {isSelected ? (
-                      <Check className="h-4 w-4 shrink-0 text-text/75" />
-                    ) : null}
+                    {presetValue}
                   </button>
                 );
               })}
+            </div>
+
+            <div className="mt-4 rounded-[18px] border border-border/15 bg-secondary/65 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  className={getButtonClassName({
+                    size: 'icon-sm',
+                    variant: 'ghost',
+                    className: 'text-text-muted hover:text-text',
+                  })}
+                  type="button"
+                  onClick={() => handleStep(-1)}
+                >
+                  -
+                </button>
+
+                <div className="min-w-0 flex-1 text-center">
+                  <div className="flex items-end justify-center gap-2">
+                    <span
+                      className={cx(
+                        'text-4xl font-semibold tracking-tight',
+                        hasError ? 'text-error' : 'text-info',
+                      )}
+                    >
+                      {inputValue || '—'}
+                    </span>
+                    <span className="pb-1 text-sm font-semibold text-text-muted">
+                      мин
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-text-muted">
+                    {hasError
+                      ? 'Значение вне допустимого диапазона'
+                      : 'Можно печатать руками или выбрать пресет'}
+                  </p>
+                </div>
+
+                <button
+                  className={getButtonClassName({
+                    size: 'icon-sm',
+                    variant: 'ghost',
+                    className: 'text-text-muted hover:text-text',
+                  })}
+                  type="button"
+                  onClick={() => handleStep(1)}
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                className={getButtonClassName({
+                  size: 'sm',
+                  className: 'min-w-0 flex-1',
+                })}
+                type="button"
+                onClick={() => {
+                  setMinutes(defaultTimerMinutes);
+                  inputRef.current?.focus();
+                }}
+              >
+                Сбросить
+              </button>
+              <button
+                className={getButtonClassName({
+                  tone: 'info',
+                  variant: 'solid',
+                  size: 'sm',
+                  className: 'min-w-0 flex-1',
+                })}
+                disabled={!hasValue || hasError}
+                type="button"
+                onClick={() => setIsOpen(false)}
+              >
+                Готово
+              </button>
             </div>
           </div>
         ) : null}

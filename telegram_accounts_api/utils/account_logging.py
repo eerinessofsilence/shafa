@@ -55,6 +55,17 @@ class AccountLogStore:
             self._next_index.clear()
             self._subscribers.clear()
 
+    def clear_entries(self, account_id: str | int | None = None) -> None:
+        with self._lock:
+            if account_id is None:
+                self._entries.clear()
+                self._next_index.clear()
+                return
+
+            normalized_account_id = str(account_id)
+            self._entries.pop(normalized_account_id, None)
+            self._next_index.pop(normalized_account_id, None)
+
     def append(
         self,
         account_id: str | int,

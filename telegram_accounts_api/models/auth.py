@@ -63,4 +63,6 @@ class ShafaAuthStatusResponse(BaseModel):
     account_id: str
     connected: bool
     cookies_count: int = 0
+    email: str = ""
+    phone: str = ""
     message: str

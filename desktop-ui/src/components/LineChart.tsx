@@ -29,19 +29,19 @@ function getErrorsDomain(data: ChartPoint[]) {
 export function LineChart({ data, height = 280 }: LineChartProps) {
   return (
     <div className="flex flex-col gap-3.5">
-      <div className="flex justify-center gap-4 text-text-muted/75">
+      <div className="flex justify-center gap-4 text-[#737685]">
         <span className="inline-flex items-center gap-2">
-          <i className="h-2 w-2 rounded-full bg-success/70" />
+          <i className="h-2 w-2 rounded-full bg-[#45b99a]" />
           Items
         </span>
         <span className="inline-flex items-center gap-2">
-          <i className="h-2 w-2 rounded-full bg-error/70" />
+          <i className="h-2 w-2 rounded-full bg-[#ef6b7c]" />
           Errors
         </span>
       </div>
 
       <div
-        className="overflow-hidden rounded-[20px] border border-border/20 bg-[radial-gradient(circle_at_top,rgba(69,214,195,0.14),transparent_32%),linear-gradient(180deg,rgba(15,23,33,0.95),rgba(9,15,23,0.98))] px-3 py-4"
+        className="overflow-hidden rounded-[12px] border border-[#d7dce6] bg-[radial-gradient(circle_at_top,rgba(69,214,195,0.08),transparent_32%),linear-gradient(180deg,#24303d,#18212c)] px-3 py-4"
         style={{ height }}
       >
         <ResponsiveContainer width="100%" height="100%">

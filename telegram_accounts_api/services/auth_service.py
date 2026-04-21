@@ -8,6 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib import error, request
 
 from fastapi import UploadFile
 
@@ -20,6 +21,7 @@ from shafa_control import (
     preferred_project_dir,
     project_main_path,
 )
+from shafa_logic.data.const import API_BATCH_URL, APP_PLATFORM, APP_VERSION, ORIGIN_URL
 
 from telegram_accounts_api.models.auth import (
     ShafaAuthStatusResponse,
@@ -45,6 +47,31 @@ def _preferred_project_dir(project_dir: Path) -> Path:
     if shafa_logic_dir.is_dir() and _project_main_path(shafa_logic_dir).is_file():
         return shafa_logic_dir
     return project_dir
+
+
+SHAFA_SETTINGS_REFERER_URL = "https://shafa.ua/uk/my/settings"
+SHAFA_PROFILE_OPERATION_NAME = "WEB_MainInfoSettingsFormData"
+SHAFA_PROFILE_QUERY = """query WEB_MainInfoSettingsFormData {
+  viewer {
+    id
+    thumbnail
+    firstName
+    lastName
+    patronymic
+    email
+    phone
+    showRealName
+    showSocialWebSite
+    city {
+      id
+      name
+      __typename
+    }
+    gender
+    about
+    __typename
+  }
+}"""
 
 
 class AccountAuthService:
@@ -314,19 +341,39 @@ class AccountAuthService:
         account = await self._get_account(account_id)
         auth_path = self.store.auth_file(account)
         cookies_count = 0
+        cookies: list[dict[str, Any]] = []
         if auth_path.exists():
             try:
                 payload = json.loads(auth_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 payload = {}
-            cookies = payload.get("cookies")
-            if isinstance(cookies, list):
+            raw_cookies = payload.get("cookies")
+            if isinstance(raw_cookies, list):
+                cookies = [
+                    cookie
+                    for cookie in raw_cookies
+                    if isinstance(cookie, dict)
+                ]
                 cookies_count = len(cookies)
         connected = self.store.is_valid_shafa_session(account)
+        email = ""
+        phone = ""
+
+        if connected and cookies:
+            try:
+                profile = self._fetch_shafa_profile(cookies)
+            except Exception as exc:
+                log(account_id, "WARNING", f"Failed to fetch Shafa profile data: {exc}")
+            else:
+                email = str(profile.get("email") or "").strip()
+                phone = str(profile.get("phone") or "").strip()
+
         return ShafaAuthStatusResponse(
             account_id=account.id,
             connected=connected,
             cookies_count=cookies_count,
+            email=email,
+            phone=phone,
             message="Shafa cookies are ready." if connected else "Shafa cookies are missing or invalid.",
         )
 
@@ -564,6 +611,92 @@ class AccountAuthService:
             if normalized_phone.startswith("+")
             else f"+{normalized_phone}"
         )
+
+    def _fetch_shafa_profile(self, cookies: list[dict[str, Any]]) -> dict[str, Any]:
+        csrftoken = self._get_csrftoken_from_cookies(cookies)
+        if not csrftoken:
+            raise BadRequestError("Shafa cookies must include csrftoken.")
+
+        payload = json.dumps(
+            [
+                {
+                    "operationName": SHAFA_PROFILE_OPERATION_NAME,
+                    "variables": {},
+                    "query": SHAFA_PROFILE_QUERY,
+                }
+            ]
+        ).encode("utf-8")
+        request_headers = {
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Content-Type": "application/json",
+            "Cookie": self._build_cookie_header(cookies),
+            "Origin": ORIGIN_URL,
+            "Referer": SHAFA_SETTINGS_REFERER_URL,
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:149.0) "
+                "Gecko/20100101 Firefox/149.0"
+            ),
+            "batch": "true",
+            "x-app-platform": APP_PLATFORM,
+            "x-app-version": APP_VERSION,
+            "x-csrftoken": csrftoken,
+        }
+        http_request = request.Request(
+            API_BATCH_URL,
+            data=payload,
+            headers=request_headers,
+            method="POST",
+        )
+
+        try:
+            with request.urlopen(http_request, timeout=20) as response:
+                response_body = response.read().decode("utf-8", errors="replace")
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Shafa profile request failed with HTTP {exc.code}: {detail[:300]}"
+            ) from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Shafa profile request failed: {exc.reason}") from exc
+
+        try:
+            parsed_response = json.loads(response_body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Shafa profile response is not valid JSON.") from exc
+
+        if isinstance(parsed_response, list):
+            for item in parsed_response:
+                if not isinstance(item, dict):
+                    continue
+                viewer = item.get("data", {}).get("viewer")
+                if isinstance(viewer, dict):
+                    return viewer
+        elif isinstance(parsed_response, dict):
+            viewer = parsed_response.get("data", {}).get("viewer")
+            if isinstance(viewer, dict):
+                return viewer
+
+        raise RuntimeError("Shafa profile response does not contain viewer data.")
+
+    @staticmethod
+    def _get_csrftoken_from_cookies(cookies: list[dict[str, Any]]) -> str:
+        for cookie in cookies:
+            name = str(cookie.get("name") or "").strip()
+            if name == "csrftoken":
+                return str(cookie.get("value") or "").strip()
+        return ""
+
+    @staticmethod
+    def _build_cookie_header(cookies: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for cookie in cookies:
+            name = str(cookie.get("name") or "").strip()
+            value = cookie.get("value")
+            if not name or value in (None, ""):
+                continue
+            parts.append(f"{name}={value}")
+        return "; ".join(parts)
 
     def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
         project_path = _preferred_project_dir(Path(account.path).expanduser())

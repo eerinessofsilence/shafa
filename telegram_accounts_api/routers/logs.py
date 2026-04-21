@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 
 from telegram_accounts_api.dependencies import get_account_log_store, get_account_service
+from telegram_accounts_api.models.common import ActionResponse
 from telegram_accounts_api.models.logs import AccountLogEntryRead
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.utils.account_logging import (
@@ -57,6 +59,27 @@ async def get_account_logs(
     ]
 
 
+@router.post("/logs/clear", response_model=ActionResponse)
+async def clear_logs(
+    service: AccountService = Depends(get_account_service),
+    store: AccountLogStore = Depends(get_account_log_store),
+) -> ActionResponse:
+    removed_files = 0
+    removed_files += _clear_log_directory(service.log_store.root_dir)
+
+    accounts = await service.list_accounts()
+    for account in accounts:
+        removed_files += _clear_log_directory(service.account_dir(account.id) / "logs")
+
+    service.log_store.replace([])
+    store.clear_entries()
+
+    if removed_files == 0:
+        return ActionResponse(detail="Логи уже пусты.")
+
+    return ActionResponse(detail=f"Логи очищены. Удалено файлов: {removed_files}.")
+
+
 @router.websocket("/ws/logs/{account_id}")
 async def stream_account_logs(
     websocket: WebSocket,
@@ -101,3 +124,22 @@ def _parse_since(value: str | None) -> tuple[int | None, datetime | None]:
         return None, datetime.fromisoformat(normalized)
     except ValueError as exc:
         raise BadRequestError("Query param 'since' must be a log index or ISO-8601 timestamp.") from exc
+
+
+def _clear_log_directory(log_dir: Path) -> int:
+    if not log_dir.exists() or not log_dir.is_dir():
+        return 0
+
+    removed_files = 0
+
+    for path in sorted(log_dir.rglob("*"), reverse=True):
+        try:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+                removed_files += 1
+            elif path.is_dir():
+                path.rmdir()
+        except OSError:
+            continue
+
+    return removed_files
