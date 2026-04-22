@@ -115,6 +115,8 @@ const defaultTimerMinutes = 5;
 const minimumTimerMinutes = 1;
 const maximumTimerMinutes = 1440;
 const timerPresetMinutes = [5, 10, 15, 30, 45, 60, 90, 120] as const;
+const productName = 'Shafa Control';
+const productTagline = 'control deck';
 const accountControlClassName =
   'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[15px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const accountTextareaClassName =
@@ -223,7 +225,8 @@ const settingsToggleCardClassName =
   'rounded-[8px] border border-border bg-foreground p-4 transition-colors duration-200 hover:bg-secondary';
 const settingsLabelClassName =
   'text-[12px] font-semibold uppercase tracking-[0.05em] text-text-subtle';
-const settingsDescriptionClassName = 'text-xs leading-[1.25] text-text-muted';
+const settingsDescriptionClassName =
+  'text-[11px] leading-[1.25] text-text-muted/75';
 
 type ThemeMode = 'dark' | 'light';
 
@@ -1501,6 +1504,88 @@ function ActionButton({
   );
 }
 
+interface TelegramChannelCardProps {
+  channel: TelegramChannel;
+  action?: ReactNode;
+  compact?: boolean;
+}
+
+function TelegramChannelCard({
+  channel,
+  action,
+  compact = false,
+}: TelegramChannelCardProps) {
+  const normalizedHandle = normalizeTelegramHandle(channel.handle);
+  const channelUrl = normalizedHandle ? `https://${normalizedHandle}` : '';
+  const isClickable = compact && !action && Boolean(channelUrl);
+  const cardClassName = cx(
+    'border',
+    compact
+      ? cx(
+          'block w-full px-3.5 py-3 sm:w-fit sm:max-w-[36rem]',
+          isClickable
+            ? 'cursor-pointer rounded-2xl border-border/22 bg-foreground/92 transition-[transform,border-color,background-color] duration-150 hover:border-info/32 hover:bg-foreground active:scale-[0.985] focus-visible:border-info/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/18'
+            : 'rounded-2xl border-border/20 bg-foreground/92',
+        )
+      : 'rounded-xl border-border/25 bg-secondary/50 p-2.5 shadow-[0_18px_48px_rgba(15,23,42,0.04)]',
+  );
+  const content = (
+    <div
+      className={cx(
+        'flex items-center justify-between',
+        compact ? 'gap-3' : 'gap-4',
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <img
+          alt=""
+          className={cx(
+            'shrink-0 rounded-full',
+            compact
+              ? 'h-9 w-9'
+              : 'h-10 w-10 shadow-[0_6px_18px_rgba(19,120,198,0.2)]',
+          )}
+          src="/tg_logo.png"
+        />
+        <div className="min-w-0">
+          <h5
+            className={cx(
+              'truncate font-semibold tracking-tight text-text',
+              compact ? 'text-[15px] leading-5' : 'text-[18px] leading-6',
+            )}
+          >
+            {channel.title}
+          </h5>
+          <p
+            className={cx(
+              'truncate text-text-muted',
+              compact ? 'mt-0.5 text-[13px]' : 'text-sm',
+            )}
+          >
+            {formatChannelBadge(channel.handle)}
+          </p>
+        </div>
+      </div>
+
+      {action ? <div className="shrink-0">{action}</div> : null}
+    </div>
+  );
+
+  return isClickable ? (
+    <a
+      aria-label={`Открыть Telegram-канал ${channel.title}`}
+      className={cardClassName}
+      href={channelUrl}
+      rel="noreferrer"
+      target="_blank"
+    >
+      {content}
+    </a>
+  ) : (
+    <article className={cardClassName}>{content}</article>
+  );
+}
+
 interface AppSidebarProps {
   activePage: PageId;
   onNavigate: (page: PageId) => void;
@@ -1520,9 +1605,21 @@ function AppSidebar({
     <aside className="min-h-screen w-full border-r border-border-soft bg-sidebar p-5">
       <div className="sticky top-7.5 flex min-h-[calc(100vh-60px)] flex-col justify-between gap-6">
         <div className="space-y-4">
-          <h1 className="text-[32px] font-semibold tracking-tight text-info">
-            Shafa Control
-          </h1>
+          <div className="relative overflow-hidden rounded-xl border border-info/12 bg-sidebar-card/65 px-4 py-4">
+            <div className="pointer-events-none absolute -top-7 right-3 h-20 w-20 rounded-full bg-info/12 blur-2xl" />
+            <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-linear-to-r from-transparent via-info/45 to-transparent" />
+
+            <div className="relative inline-flex items-center gap-2">
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-0 translate-y-1 text-[34px] font-semibold leading-none tracking-[-0.05em] text-info/18 blur-md">
+                  {productName}
+                </span>
+                <h1 className="relative text-[34px] font-semibold leading-none tracking-[-0.05em] text-info">
+                  {productName}
+                </h1>
+              </div>
+            </div>
+          </div>
 
           <nav className="flex flex-col gap-2.5">
             {navItems.map((item) => (
@@ -1553,13 +1650,13 @@ function AppSidebar({
 
         <button
           aria-checked={isDarkTheme}
-          className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-2xl border border-border bg-sidebar-card px-4 py-3 text-left transition-all duration-200 hover:border-border-strong hover:bg-sidebar-card-hover focus:ring-2 focus:ring-info/15"
+          className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-2xl border border-border bg-sidebar-card/50 px-4 py-3 text-left transition-all duration-200 hover:border-border-strong hover:bg-sidebar-card-hover focus:ring-2 focus:ring-info/15"
           role="switch"
           type="button"
           onClick={onToggleTheme}
         >
           <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sidebar-icon text-info">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sidebar-icon text-info">
               {isDarkTheme ? (
                 <Moon className="h-5 w-5" />
               ) : (
@@ -1567,7 +1664,7 @@ function AppSidebar({
               )}
             </span>
             <div>
-              <p className="text-[15px] font-semibold text-text">Dark mode</p>
+              <p className="text-[15px] font-semibold text-text">Light theme</p>
               <p className="text-sm text-text-muted">
                 {isDarkTheme ? 'Enabled' : 'Disabled'}
               </p>
@@ -1672,10 +1769,10 @@ function SelectionCheckbox({
     <button
       aria-checked={indeterminate ? 'mixed' : checked}
       aria-label={label}
-      className={`flex h-6 w-6 cursor-pointer items-center justify-center rounded-md border transition-all duration-200 ${
+      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border-2 outline-none transition-all duration-200 focus-visible:ring-4 focus-visible:ring-info/18 focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
         isActive
-          ? 'border-info bg-info text-white shadow-[0_10px_20px_rgba(37,99,235,0.18)]'
-          : 'border-border/20 bg-secondary/90 text-transparent hover:border-info/35 hover:bg-secondary'
+          ? 'border-info bg-info text-foreground shadow-[0_8px_16px_rgba(25,25,25,0.1)]'
+          : 'border-border bg-foreground text-transparent hover:border-info/50 hover:bg-foreground hover:shadow-[0_4px_8px_rgba(50,50,50,0.1)]'
       }`}
       role="checkbox"
       type="button"
@@ -1685,9 +1782,9 @@ function SelectionCheckbox({
       }}
     >
       {checked ? (
-        <Check className="h-3.5 w-3.5" />
+        <Check className="h-4 w-4" strokeWidth={3} />
       ) : indeterminate ? (
-        <span className="h-0.5 w-2.5 rounded-full bg-current" />
+        <span className="h-0.75 w-3 rounded-full bg-current" />
       ) : null}
     </button>
   );
@@ -2295,7 +2392,7 @@ function AccountsPage({
                             </div>
                           </td>
                           <td className={rowCellClassName}>
-                            <span className="inline-flex min-w-8 items-center justify-center rounded-full bg-info/12 px-2.5 py-1 text-sm font-semibold text-info">
+                            <span className="inline-flex min-w-8 items-center justify-center rounded-full bg-info/5 p-1.5 text-sm font-semibold text-info">
                               {account.telegramChannels.length}
                             </span>
                           </td>
@@ -2532,11 +2629,17 @@ function AccountDialogShell({
 
           <button
             aria-label={closeLabel}
-            className={getButtonClassName({ size: 'icon-sm' })}
+            className={getButtonClassName({
+              tone: 'info',
+              variant: 'soft',
+              size: 'icon-sm',
+              className:
+                'border-info/22 bg-info/10 text-info shadow-[0_8px_22px_rgba(12,86,208,0.16)] hover:border-info/35 hover:bg-info/16 hover:text-info',
+            })}
             type="button"
             onClick={onClose}
           >
-            <X className="h-5 w-5" />
+            <X className="h-5 w-5 stroke-[2.6]" />
           </button>
         </div>
 
@@ -2560,22 +2663,11 @@ function AccountRowActionMenu({
   onEdit,
 }: AccountRowActionMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!isOpen) {
       return;
     }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (
-        menuRef.current &&
-        event.target instanceof Node &&
-        !menuRef.current.contains(event.target)
-      ) {
-        setIsOpen(false);
-      }
-    };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -2583,11 +2675,9 @@ function AccountRowActionMenu({
       }
     };
 
-    document.addEventListener('mousedown', handlePointerDown);
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen]);
@@ -2601,8 +2691,28 @@ function AccountRowActionMenu({
   return (
     <div
       className="relative"
-      ref={menuRef}
       onClick={(event) => event.stopPropagation()}
+      onMouseEnter={() => {
+        if (!disabled) {
+          setIsOpen(true);
+        }
+      }}
+      onMouseLeave={() => setIsOpen(false)}
+      onFocusCapture={() => {
+        if (!disabled) {
+          setIsOpen(true);
+        }
+      }}
+      onBlurCapture={(event) => {
+        const nextTarget = event.relatedTarget;
+
+        if (
+          !(nextTarget instanceof Node) ||
+          !event.currentTarget.contains(nextTarget)
+        ) {
+          setIsOpen(false);
+        }
+      }}
     >
       <button
         aria-expanded={isOpen}
@@ -2615,53 +2725,54 @@ function AccountRowActionMenu({
         })}
         disabled={disabled}
         type="button"
-        onClick={() => setIsOpen((currentValue) => !currentValue)}
       >
         <EllipsisVertical className="h-4.5 w-4.5" />
       </button>
 
       {isOpen ? (
-        <div
-          className="absolute top-full right-0 z-20 mt-2 w-52 rounded-2xl border border-border/20 bg-foreground p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
-          role="menu"
-        >
-          <button
-            className={getButtonClassName({
-              size: 'row',
-              variant: 'ghost',
-              fullWidth: true,
-              align: 'left',
-              className: 'px-3',
-            })}
-            role="menuitem"
-            type="button"
-            onClick={() => {
-              setIsOpen(false);
-              onEdit(account.id);
-            }}
+        <div className="absolute top-full right-0 z-20 pt-2">
+          <div
+            className="w-52 rounded-2xl border border-border/20 bg-foreground p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
+            role="menu"
           >
-            <PencilLine className="h-4 w-4" />
-            Редактировать
-          </button>
-          <button
-            className={getButtonClassName({
-              tone: 'danger',
-              size: 'row',
-              variant: 'ghost',
-              fullWidth: true,
-              align: 'left',
-              className: 'px-3',
-            })}
-            role="menuitem"
-            type="button"
-            onClick={() => {
-              setIsOpen(false);
-              onDelete(account.id);
-            }}
-          >
-            <Trash2 className="h-4 w-4" />
-            Удалить
-          </button>
+            <button
+              className={getButtonClassName({
+                size: 'row',
+                variant: 'ghost',
+                fullWidth: true,
+                align: 'left',
+                className: 'px-3',
+              })}
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                onEdit(account.id);
+              }}
+            >
+              <PencilLine className="h-4 w-4" />
+              Редактировать
+            </button>
+            <button
+              className={getButtonClassName({
+                tone: 'danger',
+                size: 'row',
+                variant: 'ghost',
+                fullWidth: true,
+                align: 'left',
+                className: 'px-3',
+              })}
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                onDelete(account.id);
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+              Удалить
+            </button>
+          </div>
         </div>
       ) : null}
     </div>
@@ -2837,6 +2948,8 @@ function AccountInfoDialog({
     : isLoading
       ? 'Загрузка...'
       : '—';
+  const shouldShowInlineLoadingState =
+    isLoading && !account && !fallbackAccount;
   const subtitle = telegramPhone
     ? telegramPhone
     : accountChannels.length > 0
@@ -2861,7 +2974,7 @@ function AccountInfoDialog({
   const renderIdentitySection = (isMobile = false) => (
     <div
       className={cx(
-        'flex flex-col gap-6 rounded-[30px] bg-secondary/75 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]',
+        'flex flex-col gap-5 bg-secondary/75 p-5',
         !isMobile && 'h-full',
       )}
     >
@@ -2946,16 +3059,24 @@ function AccountInfoDialog({
 
         <div className="flex min-h-0 flex-1 flex-col bg-foreground">
           <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-border/25 bg-foreground/75 p-5 backdrop-blur">
-            <h3 className="text-2xl font-semibold tracking-tight text-text">
-              Детали аккаунта
-            </h3>
+            <div className="flex min-w-0 items-center gap-3">
+              <h3 className="text-2xl font-semibold tracking-tight text-text">
+                Детали аккаунта
+              </h3>
+              {isLoading ? (
+                <span className="inline-flex shrink-0 items-center rounded-full border border-border/20 bg-secondary/70 px-3 py-1 text-xs font-medium text-text-muted">
+                  Обновляем данные…
+                </span>
+              ) : null}
+            </div>
 
             <button
               aria-label="Закрыть просмотр аккаунта"
               className={getButtonClassName({
                 size: 'icon-sm',
-                variant: 'ghost',
-                className: 'rounded-full',
+                variant: 'solid',
+                tone: 'info',
+                className: 'rounded-xl',
               })}
               type="button"
               onClick={onClose}
@@ -2974,7 +3095,7 @@ function AccountInfoDialog({
                 </div>
               ) : null}
 
-              {isLoading && !account ? (
+              {shouldShowInlineLoadingState ? (
                 <div className="rounded-2xl border border-border/15 bg-secondary/60 px-4 py-3 text-sm text-text-muted">
                   Загружаем данные аккаунта...
                 </div>
@@ -3136,15 +3257,13 @@ function AccountInfoDialog({
                   </div>
 
                   {accountChannels.length > 0 ? (
-                    <div className="flex flex-wrap gap-2.5">
+                    <div className="space-y-2.5">
                       {accountChannels.map((channel) => (
-                        <span
+                        <TelegramChannelCard
                           key={channel.id}
-                          className="inline-flex items-center rounded-full border border-info/16 bg-info/10 px-3.5 py-2 text-sm font-medium text-info"
-                        >
-                          {channel.title}
-                          {channel.handle ? ` · ${channel.handle}` : ''}
-                        </span>
+                          channel={channel}
+                          compact
+                        />
                       ))}
                     </div>
                   ) : (
@@ -3156,35 +3275,6 @@ function AccountInfoDialog({
               </section>
             </div>
           </div>
-
-          <footer className="border-t border-border/10 bg-foreground/92 px-5 py-4 md:px-8">
-            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <ActionButton
-                icon={
-                  <RefreshCw
-                    className={cx('h-4 w-4', isLoading && 'animate-spin')}
-                  />
-                }
-                size="sm"
-                variant="ghost"
-                className="h-11"
-                disabled={isLoading}
-                onClick={() => setReloadKey((value) => value + 1)}
-              >
-                Обновить данные
-              </ActionButton>
-              <ActionButton
-                icon={<X className="h-4 w-4" />}
-                size="sm"
-                tone="info"
-                variant="solid"
-                className="h-11"
-                onClick={onClose}
-              >
-                Закрыть
-              </ActionButton>
-            </div>
-          </footer>
         </div>
       </div>
     </div>
@@ -3537,26 +3627,36 @@ function ShafaSessionCard({
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <ActionButton
-            disabled={isAuthActionDisabled}
-            icon={
-              isSubmitting ? (
+        <div className="flex flex-wrap gap-4">
+          {isConnected ? (
+            <button
+              className="inline-flex items-center gap-2 self-center px-1 text-sm text-error/75 transition-colors hover:text-error cursor-pointer font-medium disabled:cursor-not-allowed disabled:text-error/45"
+              disabled={isAuthActionDisabled}
+              type="button"
+              onClick={() => void handleLogout()}
+            >
+              {isSubmitting ? (
                 <LoaderCircle className="h-4 w-4 animate-spin" />
-              ) : isConnected ? (
-                <LogOut className="h-4 w-4" />
-              ) : (
-                <LogIn className="h-4 w-4" />
-              )
-            }
-            tone={isConnected ? 'neutral' : 'info'}
-            variant={isConnected ? 'soft' : 'solid'}
-            onClick={() =>
-              void (isConnected ? handleLogout() : handleBrowserLogin())
-            }
-          >
-            {isConnected ? 'Выйти' : 'Войти через браузер'}
-          </ActionButton>
+              ) : null}
+              Выйти
+            </button>
+          ) : (
+            <ActionButton
+              disabled={isAuthActionDisabled}
+              icon={
+                isSubmitting ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <LogIn className="h-4 w-4" />
+                )
+              }
+              tone="info"
+              variant="solid"
+              onClick={() => void handleBrowserLogin()}
+            >
+              Войти через браузер
+            </ActionButton>
+          )}
           <input
             ref={fileInputRef}
             accept=".json,application/json"
@@ -4691,41 +4791,25 @@ function TelegramChannelsPanel({
               }
 
               return (
-                <article
+                <TelegramChannelCard
                   key={channel.id}
-                  className={`rounded-xl border border-border/25 p-2.5 bg-secondary/50 shadow-[0_18px_48px_rgba(15,23,42,0.04)]`}
-                >
-                  <div className="flex flex-col gap-4">
-                    <div className="flex gap-4 items-center justify-between">
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-3">
-                          <img src="/tg_logo.png" className="h-10 w-10" />
-                          <div>
-                            <h1 className={cardTitleClassName}>
-                              {channel.title}
-                            </h1>
-                            <span className="text-sm text-text-muted">
-                              {formatChannelBadge(channel.handle)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          className={getButtonClassName({
-                            tone: 'warning',
-                            size: 'icon-sm',
-                          })}
-                          disabled={isActionDisabled}
-                          type="button"
-                          onClick={() => startEditing(channel)}
-                        >
-                          <PencilLine className="text-text h-4 w-4" />
-                        </button>
-                      </div>
+                  action={
+                    <div className="flex items-center gap-2">
+                      <button
+                        className={getButtonClassName({
+                          tone: 'warning',
+                          size: 'icon-sm',
+                        })}
+                        disabled={isActionDisabled}
+                        type="button"
+                        onClick={() => startEditing(channel)}
+                      >
+                        <PencilLine className="text-text h-4 w-4" />
+                      </button>
                     </div>
-                  </div>
-                </article>
+                  }
+                  channel={channel}
+                />
               );
             })}
           </div>
@@ -5413,7 +5497,9 @@ function SettingsPage({
                     <SettingsToggleCard
                       checked={preferences.httpRetryJitterEnabled}
                       description="Add randomness to delay to prevent sync spikes."
-                      icon={<RefreshCw className="h-4.5 w-4.5 text-text-faint" />}
+                      icon={
+                        <RefreshCw className="h-4.5 w-4.5 text-text-faint" />
+                      }
                       label="Optional jitter"
                       onToggle={() =>
                         onChangePreference(
@@ -5425,7 +5511,9 @@ function SettingsPage({
                     <SettingsToggleCard
                       checked={preferences.persistRawJson}
                       description="Log the full payload for debugging purposes."
-                      icon={<FileJson className="h-4.5 w-4.5 text-text-faint" />}
+                      icon={
+                        <FileJson className="h-4.5 w-4.5 text-text-faint" />
+                      }
                       label="Save raw JSON"
                       onToggle={() =>
                         onChangePreference(
@@ -5482,7 +5570,9 @@ function SettingsPage({
                           <Trash2 className="h-5 w-5" />
                         </div>
                         <div className="max-w-155 space-y-1 flex flex-col justify-center">
-                          <h3 className="font-semibold text-text">Clear logs</h3>
+                          <h3 className="font-semibold text-text">
+                            Clear logs
+                          </h3>
                           <p className={`${settingsDescriptionClassName}`}>
                             Removes runtime and account logs, and clears the
                             live log feed. This action cannot be undone.
@@ -5979,37 +6069,6 @@ function MinutesTimePickerField({
               мин
             </span>
           ) : null}
-          <div
-            className={cx(
-              'absolute inset-y-0 right-0 flex w-10 flex-col border-l',
-              hasError ? 'border-error/20' : 'border-border/15',
-            )}
-          >
-            <button
-              className={cx(
-                'flex flex-1 items-center justify-center text-sm font-bold transition-colors',
-                hasError
-                  ? 'text-error hover:bg-error/8'
-                  : 'text-text-muted hover:bg-foreground/45 hover:text-text',
-              )}
-              type="button"
-              onClick={() => handleStep(1)}
-            >
-              +
-            </button>
-            <button
-              className={cx(
-                'flex flex-1 items-center justify-center border-t text-sm font-bold transition-colors',
-                hasError
-                  ? 'border-error/20 text-error hover:bg-error/8'
-                  : 'border-border/15 text-text-muted hover:bg-foreground/45 hover:text-text',
-              )}
-              type="button"
-              onClick={() => handleStep(-1)}
-            >
-              -
-            </button>
-          </div>
         </div>
 
         <div className="mt-1 flex items-start justify-between gap-3 px-1">
@@ -6028,58 +6087,17 @@ function MinutesTimePickerField({
               helperText
             )}
           </p>
-          <button
-            className="cursor-pointer text-xs font-semibold text-info transition-colors hover:text-info/80"
-            type="button"
-            onClick={() => {
-              setIsOpen((currentValue) => !currentValue);
-              inputRef.current?.focus();
-            }}
-          >
-            {isCustomValue ? 'Своё значение' : 'Быстрый выбор'}
-          </button>
         </div>
 
         {isOpen ? (
           <div className="absolute inset-x-0 top-[calc(100%+12px)] z-30 overflow-hidden rounded-[22px] border border-border/20 bg-foreground p-4 shadow-[0_24px_64px_rgba(15,23,42,0.14)]">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-semibold uppercase tracking-widest text-text-muted">
-                Быстрые значения
-              </span>
-              <span className="text-xs font-semibold text-info">
-                {isCustomValue ? 'Произвольное значение' : 'Текущее значение'}
-              </span>
-            </div>
-
-            <div className="mt-3 grid grid-cols-4 gap-2">
-              {timerPresetMinutes.map((presetValue) => {
-                const isSelected = parsedMinutes === presetValue;
-
-                return (
-                  <button
-                    key={presetValue}
-                    className={cx(
-                      'rounded-xl px-3 py-2 text-sm font-semibold transition-all duration-200',
-                      isSelected
-                        ? 'bg-info/16 text-info ring-2 ring-info/15'
-                        : 'bg-secondary text-text-muted hover:bg-secondary/75 hover:text-text',
-                    )}
-                    type="button"
-                    onClick={() => setMinutes(presetValue)}
-                  >
-                    {presetValue}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-4 rounded-[18px] border border-border/15 bg-secondary/65 p-4">
+            <div className="rounded-2xl border border-border/15 bg-secondary/65 p-4">
               <div className="flex items-center justify-between gap-3">
                 <button
                   className={getButtonClassName({
-                    size: 'icon-sm',
-                    variant: 'ghost',
-                    className: 'text-text-muted hover:text-text',
+                    size: 'icon-md',
+                    className:
+                      'font-semibold text-text/75 text-xl hover:text-text',
                   })}
                   type="button"
                   onClick={() => handleStep(-1)}
@@ -6101,18 +6119,13 @@ function MinutesTimePickerField({
                       мин
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-text-muted">
-                    {hasError
-                      ? 'Значение вне допустимого диапазона'
-                      : 'Можно печатать руками или выбрать пресет'}
-                  </p>
                 </div>
 
                 <button
                   className={getButtonClassName({
-                    size: 'icon-sm',
-                    variant: 'ghost',
-                    className: 'text-text-muted hover:text-text',
+                    size: 'icon-md',
+                    className:
+                      'font-semibold text-text/75 text-xl hover:text-text',
                   })}
                   type="button"
                   onClick={() => handleStep(1)}
