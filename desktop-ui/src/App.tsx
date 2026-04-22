@@ -116,7 +116,6 @@ const minimumTimerMinutes = 1;
 const maximumTimerMinutes = 1440;
 const timerPresetMinutes = [5, 10, 15, 30, 45, 60, 90, 120] as const;
 const productName = 'Shafa Control';
-const productTagline = 'control deck';
 const accountControlClassName =
   'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[15px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const accountTextareaClassName =
@@ -225,8 +224,7 @@ const settingsToggleCardClassName =
   'rounded-[8px] border border-border bg-foreground p-4 transition-colors duration-200 hover:bg-secondary';
 const settingsLabelClassName =
   'text-[12px] font-semibold uppercase tracking-[0.05em] text-text-subtle';
-const settingsDescriptionClassName =
-  'text-[11px] leading-[1.25] text-text-muted/75';
+const settingsDescriptionClassName = 'text-[11px] text-text-muted/75';
 
 type ThemeMode = 'dark' | 'light';
 
@@ -252,24 +250,23 @@ const interfaceLanguageOptions = [
 ] as const;
 
 const dateTimeFormatOptions = [
-  { label: 'English 12h', preview: '21 Apr 2026, 14:35', value: 'en-12' },
-  { label: 'Russian 24h', preview: '21 апр 2026, 14:35', value: 'ru-24' },
-  { label: 'Ukrainian 24h', preview: '21 квіт. 2026, 14:35', value: 'uk-24' },
+  { label: 'Английский 12ч', preview: '21 Apr 2026, 2:35 PM', value: 'en-12' },
+  { label: 'Русский 24ч', preview: '21 апр 2026, 14:35', value: 'ru-24' },
+  { label: 'Украинский 24ч', preview: '21 квіт. 2026, 14:35', value: 'uk-24' },
   { label: 'ISO', preview: '2026-04-21 14:35', value: 'iso' },
 ] as const;
 
 const autoRefreshOptions = [15, 30, 60, 120, 300] as const;
 const settingsSectionItems = [
-  { id: 'interface', icon: SlidersHorizontal, label: 'Interface' },
-  { id: 'http-retry', icon: RefreshCw, label: 'HTTP Retry' },
-  { id: 'working-paths', icon: FolderOpen, label: 'Working Paths' },
-  { id: 'maintenance', icon: Wrench, label: 'Maintenance' },
+  { id: 'interface', icon: SlidersHorizontal, label: 'Интерфейс' },
+  { id: 'http-retry', icon: RefreshCw, label: 'Повторы HTTP' },
+  { id: 'working-paths', icon: FolderOpen, label: 'Пути' },
 ] as const;
 
 function createDefaultAppPreferences(): AppPreferences {
   return {
-    interfaceLanguage: 'en',
-    dateTimeFormat: 'en-12',
+    interfaceLanguage: 'ru',
+    dateTimeFormat: 'ru-24',
     autoRefreshSeconds: 30,
     httpRetries: 3,
     httpRetryDelaySeconds: 5,
@@ -546,11 +543,11 @@ function getInitialActivePage(): PageId {
 }
 
 function renderAutoRefreshLabel(seconds: number) {
-  return `${seconds} seconds`;
+  return `${seconds} сек.`;
 }
 
 function renderAutoRefreshSummaryLabel(seconds: number) {
-  return `Every ${seconds} sec`;
+  return `Каждые ${seconds} сек.`;
 }
 
 function translateSettingsStatusMessage(message: string) {
@@ -561,27 +558,39 @@ function translateSettingsStatusMessage(message: string) {
   }
 
   if (
-    normalizedMessage === 'Параметры панели сброшены к значениям по умолчанию.'
+    normalizedMessage ===
+      'Параметры панели сброшены к значениям по умолчанию.' ||
+    normalizedMessage === 'Settings were reset to defaults.'
   ) {
-    return 'Settings were reset to defaults.';
+    return 'Настройки сброшены к значениям по умолчанию.';
   }
 
-  if (normalizedMessage === 'Логи уже пусты.') {
-    return 'Logs are already clear.';
+  if (
+    normalizedMessage === 'Логи уже пусты.' ||
+    normalizedMessage === 'Logs are already clear.'
+  ) {
+    return 'Логи уже пусты.';
   }
 
-  const clearedLogsMatch = normalizedMessage.match(
-    /^Логи очищены\. Удалено файлов: (\d+)\.$/u,
-  );
+  const clearedLogsMatch =
+    normalizedMessage.match(/^Логи очищены\. Удалено файлов: (\d+)\.$/u) ??
+    normalizedMessage.match(/^Logs cleared\. Removed files: (\d+)\.$/);
   if (clearedLogsMatch) {
-    return `Logs cleared. Removed files: ${clearedLogsMatch[1]}.`;
+    return `Логи очищены. Удалено файлов: ${clearedLogsMatch[1]}.`;
   }
 
-  if (normalizedMessage === 'Не удалось очистить логи.') {
-    return 'Failed to clear logs.';
+  if (
+    normalizedMessage === 'Не удалось очистить логи.' ||
+    normalizedMessage === 'Failed to clear logs.'
+  ) {
+    return 'Не удалось очистить логи.';
   }
 
   return normalizedMessage;
+}
+
+function getBrowseLabel(label: string) {
+  return `Выбрать путь для поля «${label.toLowerCase()}»`;
 }
 
 function extractAccountExtraText(
@@ -1319,7 +1328,7 @@ function App() {
 
   const handleResetPreferences = () => {
     setAppPreferences(createDefaultAppPreferences());
-    setSettingsFeedback('Settings were reset to defaults.');
+    setSettingsFeedback('Настройки сброшены к значениям по умолчанию.');
     setSettingsError('');
   };
 
@@ -1606,14 +1615,8 @@ function AppSidebar({
       <div className="sticky top-7.5 flex min-h-[calc(100vh-60px)] flex-col justify-between gap-6">
         <div className="space-y-4">
           <div className="relative overflow-hidden rounded-xl border border-info/12 bg-sidebar-card/65 px-4 py-4">
-            <div className="pointer-events-none absolute -top-7 right-3 h-20 w-20 rounded-full bg-info/12 blur-2xl" />
-            <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-linear-to-r from-transparent via-info/45 to-transparent" />
-
             <div className="relative inline-flex items-center gap-2">
               <div className="relative">
-                <span className="pointer-events-none absolute inset-0 translate-y-1 text-[34px] font-semibold leading-none tracking-[-0.05em] text-info/18 blur-md">
-                  {productName}
-                </span>
                 <h1 className="relative text-[34px] font-semibold leading-none tracking-[-0.05em] text-info">
                   {productName}
                 </h1>
@@ -1664,9 +1667,9 @@ function AppSidebar({
               )}
             </span>
             <div>
-              <p className="text-[15px] font-semibold text-text">Light theme</p>
+              <p className="text-[15px] font-semibold text-text">Тёмная тема</p>
               <p className="text-sm text-text-muted">
-                {isDarkTheme ? 'Enabled' : 'Disabled'}
+                {isDarkTheme ? 'Включена' : 'Выключена'}
               </p>
             </div>
           </div>
@@ -2631,10 +2634,9 @@ function AccountDialogShell({
             aria-label={closeLabel}
             className={getButtonClassName({
               tone: 'info',
-              variant: 'soft',
+              variant: 'solid',
               size: 'icon-sm',
-              className:
-                'border-info/22 bg-info/10 text-info shadow-[0_8px_22px_rgba(12,86,208,0.16)] hover:border-info/35 hover:bg-info/16 hover:text-info',
+              className: 'rounded-xl',
             })}
             type="button"
             onClick={onClose}
@@ -2718,11 +2720,7 @@ function AccountRowActionMenu({
         aria-expanded={isOpen}
         aria-haspopup="menu"
         aria-label={`Действия для аккаунта ${account.name}`}
-        className={getButtonClassName({
-          size: 'icon-sm',
-          variant: 'ghost',
-          className: 'text-text-muted hover:text-text',
-        })}
+        className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-transparent text-text-muted transition-colors duration-200 hover:bg-foreground hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
         disabled={disabled}
         type="button"
       >
@@ -2959,7 +2957,7 @@ function AccountInfoDialog({
     ? 'border-success/20 bg-success/12 text-success'
     : 'border-border/20 bg-foreground/70 text-text-muted';
   const infoTileClassName =
-    'rounded-[24px] border border-border/10 bg-secondary/70 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]';
+    'rounded-[24px] border border-border/10 bg-secondary/70 p-4';
   const detailLabelClassName =
     'text-[11px] font-semibold uppercase tracking-[0.22em] text-text-muted/85';
   const detailSectionIconClassName =
@@ -3113,59 +3111,59 @@ function AccountInfoDialog({
 
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className={infoTileClassName}>
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-1 min-w-0">
                         <p className={detailLabelClassName}>Телефон Telegram</p>
-                        <strong className="mt-3 block text-lg leading-7 text-text">
+                        <strong className="block text-lg leading-7 text-text">
                           {formatAccountTextValue(telegramPhone)}
                         </strong>
                       </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
-                        <Phone className="h-4.5 w-4.5" />
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-info/15 bg-info/10 text-info">
+                        <Phone className="h-5 w-5" />
                       </div>
                     </div>
                   </div>
 
                   <div className={infoTileClassName}>
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-1 min-w-0">
                         <p className={detailLabelClassName}>Shafa email</p>
-                        <strong className="mt-3 block text-lg leading-7 text-text">
+                        <strong className="block text-lg leading-7 text-text">
                           {formatAccountTextValue(shafaEmailValue)}
                         </strong>
                       </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
-                        <Mail className="h-4.5 w-4.5" />
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-info/15 bg-info/10 text-info">
+                        <Mail className="h-5 w-5" />
                       </div>
                     </div>
                   </div>
 
                   <div className={infoTileClassName}>
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-1 min-w-0">
                         <p className={detailLabelClassName}>Телефон Shafa</p>
-                        <strong className="mt-3 block text-lg leading-7 text-text">
+                        <strong className="block text-lg leading-7 text-text">
                           {formatAccountTextValue(shafaPhoneValue)}
                         </strong>
                       </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
-                        <Phone className="h-4.5 w-4.5" />
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-info/15 bg-info/10 text-info">
+                        <Phone className="h-5 w-5" />
                       </div>
                     </div>
                   </div>
 
                   <div className={infoTileClassName}>
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-1 min-w-0">
                         <p className={detailLabelClassName}>Шаблоны каналов</p>
-                        <strong className="mt-3 block text-lg leading-7 text-text">
+                        <strong className="block text-lg leading-7 text-text">
                           {templateCount > 0
                             ? `${templateCount} шаблонов`
                             : 'Не найдены'}
                         </strong>
                       </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info">
-                        <Link2 className="h-4.5 w-4.5" />
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-info/15 bg-info/10 text-info">
+                        <Link2 className="h-5 w-5" />
                       </div>
                     </div>
                   </div>
@@ -3182,7 +3180,7 @@ function AccountInfoDialog({
                   </h4>
                 </div>
 
-                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] md:p-6">
+                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5">
                   <div className="space-y-1">
                     {[
                       {
@@ -3228,7 +3226,7 @@ function AccountInfoDialog({
                           </strong>
                         </div>
                         {index < items.length - 1 ? (
-                          <div className="h-px w-full bg-border/10" />
+                          <div className="h-px w-full bg-border/25" />
                         ) : null}
                       </div>
                     ))}
@@ -3246,7 +3244,7 @@ function AccountInfoDialog({
                   </h4>
                 </div>
 
-                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] md:p-6">
+                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5">
                   <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                       <p className={detailLabelClassName}>Количество каналов</p>
@@ -5361,7 +5359,7 @@ function SettingsPage({
                   <Check className="h-3 w-3 stroke-3" />
                 </span>
                 <span className="text-[13px] font-medium">
-                  All changes saved
+                  Все изменения сохранены
                 </span>
               </div>
               <button
@@ -5369,7 +5367,7 @@ function SettingsPage({
                 type="button"
                 onClick={onResetPreferences}
               >
-                Reset to Defaults
+                Сбросить настройки
               </button>
             </div>
           </header>
@@ -5382,10 +5380,10 @@ function SettingsPage({
                   type="button"
                   onClick={() => onNavigateToPage('dashboard')}
                 >
-                  Application
+                  Приложение
                 </button>
                 <ChevronRight className="h-4 w-4 text-text-faint/70" />
-                <span className="font-medium text-text">Settings</span>
+                <span className="font-medium text-text">Настройки</span>
               </nav>
 
               <div className="grid gap-6">
@@ -5395,22 +5393,17 @@ function SettingsPage({
                 >
                   <SettingsSectionHeader
                     icon={<SlidersHorizontal className="h-4.5 w-4.5" />}
-                    title="Interface"
+                    title="Интерфейс"
                   />
 
-                  <div className="grid gap-5 lg:grid-cols-3">
-                    <SettingsSelectField
-                      description="Select the primary display language for the application."
-                      label="INTERFACE LANGUAGE"
-                      options={interfaceLanguageOptions}
-                      value={preferences.interfaceLanguage}
-                      onChange={(value) =>
-                        onChangePreference('interfaceLanguage', value)
-                      }
+                  <div className="grid gap-5 lg:grid-cols-2">
+                    <SettingsSummaryCard
+                      icon={<Clock3 className="h-5 w-5" />}
+                      label="ТЕКУЩИЙ ФОРМАТ ВРЕМЕНИ"
+                      value={selectedDateTimeFormat.preview}
                     />
                     <SettingsSelectField
-                      description="Preferred timestamp display across all logs and tables."
-                      label="DATE/TIME FORMAT"
+                      label="ФОРМАТ ДАТЫ И ВРЕМЕНИ"
                       options={dateTimeFormatOptions.map((option) => ({
                         label: option.label,
                         value: option.value,
@@ -5419,41 +5412,6 @@ function SettingsPage({
                       onChange={(value) =>
                         onChangePreference('dateTimeFormat', value)
                       }
-                    />
-                    <SettingsSelectField
-                      description="How frequently data tables poll the server for updates."
-                      label="AUTO-REFRESH INTERVAL"
-                      options={autoRefreshOptions.map((option) => ({
-                        label: renderAutoRefreshLabel(option),
-                        value: String(option),
-                      }))}
-                      value={String(preferences.autoRefreshSeconds)}
-                      onChange={(value) =>
-                        onChangePreference(
-                          'autoRefreshSeconds',
-                          parseIntegerSetting(
-                            value,
-                            preferences.autoRefreshSeconds,
-                            5,
-                            3600,
-                          ),
-                        )
-                      }
-                    />
-                  </div>
-
-                  <div className="mt-6 grid gap-4 border-t border-border-subtle pt-6 md:grid-cols-2">
-                    <SettingsSummaryCard
-                      icon={<Clock3 className="h-4.5 w-4.5" />}
-                      label="ACTIVE TIME FORMAT"
-                      value={selectedDateTimeFormat.preview}
-                    />
-                    <SettingsSummaryCard
-                      icon={<RefreshCw className="h-4.5 w-4.5" />}
-                      label="DATA REFRESH"
-                      value={renderAutoRefreshSummaryLabel(
-                        preferences.autoRefreshSeconds,
-                      )}
                     />
                   </div>
                 </section>
@@ -5464,13 +5422,13 @@ function SettingsPage({
                 >
                   <SettingsSectionHeader
                     icon={<RefreshCw className="h-4.5 w-4.5" />}
-                    title="HTTP Retry"
+                    title="Повторы HTTP"
                   />
 
                   <div className="grid gap-5 md:grid-cols-2">
                     <SettingsNumberField
-                      description="Maximum number of attempts for failed network requests."
-                      label="HTTP RETRY COUNT"
+                      description="Максимальное количество повторных попыток для неудачных сетевых запросов."
+                      label="КОЛИЧЕСТВО ПОВТОРОВ HTTP"
                       maximum={5}
                       minimum={0}
                       step={1}
@@ -5480,12 +5438,12 @@ function SettingsPage({
                       }
                     />
                     <SettingsNumberField
-                      description="Wait time before the first retry attempt."
-                      label="BASE RETRY DELAY"
+                      description="Базовая задержка перед первой повторной попыткой."
+                      label="БАЗОВАЯ ЗАДЕРЖКА ПОВТОРА"
                       maximum={30}
                       minimum={0.1}
                       step={0.1}
-                      suffix="sec"
+                      suffix="сек"
                       value={preferences.httpRetryDelaySeconds}
                       onChange={(value) =>
                         onChangePreference('httpRetryDelaySeconds', value)
@@ -5496,11 +5454,11 @@ function SettingsPage({
                   <div className="mt-6 grid gap-4 md:grid-cols-2">
                     <SettingsToggleCard
                       checked={preferences.httpRetryJitterEnabled}
-                      description="Add randomness to delay to prevent sync spikes."
+                      description="Добавлять случайное отклонение к задержке, чтобы не создавать синхронные пики."
                       icon={
                         <RefreshCw className="h-4.5 w-4.5 text-text-faint" />
                       }
-                      label="Optional jitter"
+                      label="Джиттер задержки"
                       onToggle={() =>
                         onChangePreference(
                           'httpRetryJitterEnabled',
@@ -5510,11 +5468,11 @@ function SettingsPage({
                     />
                     <SettingsToggleCard
                       checked={preferences.persistRawJson}
-                      description="Log the full payload for debugging purposes."
+                      description="Сохранять полный JSON payload для отладки и разбора ошибок."
                       icon={
                         <FileJson className="h-4.5 w-4.5 text-text-faint" />
                       }
-                      label="Save raw JSON"
+                      label="Сохранять исходный JSON"
                       onToggle={() =>
                         onChangePreference(
                           'persistRawJson',
@@ -5531,77 +5489,27 @@ function SettingsPage({
                 >
                   <SettingsSectionHeader
                     icon={<FolderOpen className="h-4.5 w-4.5" />}
-                    title="Working Paths"
+                    title="Рабочие пути"
                   />
 
                   <div className="grid gap-6">
                     <SettingsTextAreaField
-                      description="Directory where encrypted account credentials are stored."
-                      label="ACCOUNTS FOLDER"
+                      description="Папка, в которой хранятся зашифрованные учётные данные аккаунтов."
+                      label="ПАПКА АККАУНТОВ"
                       value={preferences.accountsDirectory}
                       onChange={(value) =>
                         onChangePreference('accountsDirectory', value)
                       }
                     />
                     <SettingsTextAreaField
-                      description="Target location for session logs and error reports."
-                      label="LOGS FOLDER"
+                      description="Путь для логов сессий, runtime-логов и отчётов об ошибках."
+                      label="ПАПКА ЛОГОВ"
                       value={preferences.logsDirectory}
                       onChange={(value) =>
                         onChangePreference('logsDirectory', value)
                       }
                     />
                   </div>
-                </section>
-
-                <section
-                  id="settings-maintenance"
-                  className={`${settingsPanelClassName} scroll-mt-20`}
-                >
-                  <SettingsSectionHeader
-                    icon={<Wrench className="h-4.5 w-4.5" />}
-                    title="Maintenance"
-                  />
-
-                  <div className="rounded-[10px] border border-border bg-secondary p-4">
-                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-error/12 text-error">
-                          <Trash2 className="h-5 w-5" />
-                        </div>
-                        <div className="max-w-155 space-y-1 flex flex-col justify-center">
-                          <h3 className="font-semibold text-text">
-                            Clear logs
-                          </h3>
-                          <p className={`${settingsDescriptionClassName}`}>
-                            Removes runtime and account logs, and clears the
-                            live log feed. This action cannot be undone.
-                          </p>
-                        </div>
-                      </div>
-
-                      <button
-                        className="inline-flex h-10.5 min-w-35.5 cursor-pointer items-center justify-center rounded-md bg-error px-6 text-[15px] font-semibold text-white transition-colors duration-200 hover:bg-error/90 disabled:cursor-not-allowed disabled:opacity-70"
-                        disabled={isClearingLogs}
-                        type="button"
-                        onClick={() => void onClearLogs()}
-                      >
-                        {isClearingLogs ? (
-                          <LoaderCircle className="h-4 w-4 animate-spin" />
-                        ) : (
-                          'Clear logs'
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  <SettingsStatusBar
-                    error={settingsError}
-                    message={
-                      statusMessage ||
-                      'Last cleared: 2 hours ago. Total reclaimed: 4.2 MB'
-                    }
-                  />
                 </section>
               </div>
             </div>
@@ -5656,13 +5564,15 @@ interface SettingsSummaryCardProps {
 
 function SettingsSummaryCard({ icon, label, value }: SettingsSummaryCardProps) {
   return (
-    <div className={`${settingsSubtleCardClassName} flex items-start gap-4`}>
+    <div
+      className={`${settingsSubtleCardClassName} h-fit flex items-center gap-4`}
+    >
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-foreground text-info shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
         {icon}
       </span>
-      <div>
+      <div className="flex flex-col justify-center">
         <p className={settingsLabelClassName}>{label}</p>
-        <p className="mt-1 text-[15px] font-semibold text-text">{value}</p>
+        <p className="text-[15px] font-semibold text-text">{value}</p>
       </div>
     </div>
   );
@@ -5676,8 +5586,8 @@ interface SettingsStatusBarProps {
 function SettingsStatusBar({ error, message }: SettingsStatusBarProps) {
   const isError = Boolean(error);
   const isSuccess =
-    message.startsWith('Logs cleared') ||
-    message.startsWith('Settings were reset');
+    message.startsWith('Логи очищены') ||
+    message.startsWith('Настройки сброшены');
 
   return (
     <div
@@ -5820,7 +5730,7 @@ function SettingsTextAreaField({
           onChange={(event) => onChange(event.target.value)}
         />
         <button
-          aria-label={`Browse ${label.toLowerCase()}`}
+          aria-label={getBrowseLabel(label)}
           className="absolute top-1/2 right-2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-text-faint transition-colors duration-150 hover:bg-secondary hover:text-info"
           type="button"
         >
