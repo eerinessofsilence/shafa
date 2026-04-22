@@ -162,25 +162,64 @@ class DashboardApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        self.assertEqual(payload["range_start"], (self.now.date() - timedelta(days=8)).isoformat())
+        self.assertEqual(payload["range_end"], self.now.date().isoformat())
         self.assertEqual(payload["total_accounts"], 2)
         self.assertEqual(payload["active_accounts"], 0)
         self.assertEqual(payload["ready_accounts"], 1)
         self.assertEqual(payload["attention_accounts"], 2)
-        self.assertEqual(payload["item_successes_last_7_days"], 2)
-        self.assertEqual(payload["error_events_last_7_days"], 2)
+        self.assertEqual(payload["item_successes_in_range"], 3)
+        self.assertEqual(payload["error_events_in_range"], 2)
         self.assertEqual(payload["latest_run_account_name"], "Alpha")
         self.assertEqual(payload["top_error_account_name"], "Alpha")
         self.assertEqual(payload["top_error_account_errors"], 2)
-        self.assertEqual(len(payload["series"]), 7)
+        self.assertEqual(len(payload["series"]), 9)
 
         points = {point["date"]: point for point in payload["series"]}
+        eight_days_ago = (self.now.date() - timedelta(days=8)).isoformat()
         yesterday = (self.now.date() - timedelta(days=1)).isoformat()
         two_days_ago = (self.now.date() - timedelta(days=2)).isoformat()
         today = self.now.date().isoformat()
+        self.assertEqual(points[eight_days_ago]["items"], 1)
         self.assertEqual(points[yesterday]["items"], 1)
         self.assertEqual(points[yesterday]["errors"], 1)
         self.assertEqual(points[two_days_ago]["items"], 1)
         self.assertEqual(points[today]["errors"], 1)
+
+    def test_dashboard_summary_supports_week_period(self) -> None:
+        response = self.client.get("/dashboard/summary?period=week")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["range_start"], (self.now.date() - timedelta(days=6)).isoformat())
+        self.assertEqual(payload["range_end"], self.now.date().isoformat())
+        self.assertEqual(payload["item_successes_in_range"], 2)
+        self.assertEqual(payload["error_events_in_range"], 2)
+        self.assertEqual(len(payload["series"]), 7)
+
+    def test_dashboard_summary_supports_custom_range(self) -> None:
+        range_start = (self.now.date() - timedelta(days=2)).isoformat()
+        range_end = self.now.date().isoformat()
+
+        response = self.client.get(
+            f"/dashboard/summary?period=custom&date_from={range_start}&date_to={range_end}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["range_start"], range_start)
+        self.assertEqual(payload["range_end"], range_end)
+        self.assertEqual(payload["item_successes_in_range"], 2)
+        self.assertEqual(payload["error_events_in_range"], 2)
+        self.assertEqual(len(payload["series"]), 3)
+
+    def test_dashboard_summary_rejects_invalid_custom_range(self) -> None:
+        response = self.client.get(
+            "/dashboard/summary?period=custom&date_from=2026-05-01&date_to=2026-04-01"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Дата начала", response.json()["detail"])
 
 
 if __name__ == "__main__":

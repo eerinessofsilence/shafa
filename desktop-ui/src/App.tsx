@@ -46,6 +46,7 @@ import type {
   ApiTelegramAuthStatus,
   ApiAccountUpdate,
   ChartPoint,
+  DashboardRangePreset,
   Metric,
   PageId,
   StatusItem,
@@ -126,11 +127,11 @@ const telegramDraftInitialState = {
 const surfaceCardClassName =
   'rounded-[12px] border border-border bg-secondary p-4';
 const navItemIcons: Record<PageId, ReactNode> = {
-  dashboard: <LayoutGrid className="h-5 w-5" />,
-  accounts: <Users className="h-5 w-5" />,
-  parsing: <Power className="h-5 w-5" />,
-  logs: <BarChart3 className="h-5 w-5" />,
-  settings: <Settings className="h-5 w-5" />,
+  dashboard: <LayoutGrid className="h-4 w-4" />,
+  accounts: <Users className="h-4 w-4" />,
+  parsing: <Power className="h-4 w-4" />,
+  logs: <BarChart3 className="h-4 w-4" />,
+  settings: <Settings className="h-4 w-4" />,
 };
 
 type TelegramChannelDraft = Pick<TelegramChannel, 'handle'>;
@@ -198,8 +199,12 @@ const accountLogTimestampFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   year: 'numeric',
 });
-const dashboardDayLabelFormatter = new Intl.DateTimeFormat('ru-RU', {
+const dashboardWeekdayLabelFormatter = new Intl.DateTimeFormat('ru-RU', {
   weekday: 'short',
+});
+const dashboardDateLabelFormatter = new Intl.DateTimeFormat('ru-RU', {
+  day: 'numeric',
+  month: 'short',
 });
 const accountPanelTimestampFormatter = new Intl.DateTimeFormat('ru-RU', {
   day: '2-digit',
@@ -218,13 +223,23 @@ const settingsTextAreaClassName =
 const settingsPageClassName =
   "min-h-screen bg-background text-text antialiased transition-colors duration-200 [font-family:'Inter','Avenir_Next','Segoe_UI','Helvetica_Neue',sans-serif]";
 const settingsPanelClassName =
-  'rounded-[12px] border border-border bg-foreground px-6 py-6 shadow-[0_1px_2px_rgba(15,23,42,0.02)]';
+  'rounded-[12px] border border-border bg-foreground px-6 py-6';
 const settingsSubtleCardClassName = 'rounded-[8px] bg-secondary p-4';
 const settingsToggleCardClassName =
   'rounded-[8px] border border-border bg-foreground p-4 transition-colors duration-200 hover:bg-secondary';
 const settingsLabelClassName =
   'text-[12px] font-semibold uppercase tracking-[0.05em] text-text-subtle';
 const settingsDescriptionClassName = 'text-[11px] text-text-muted/75';
+const dashboardRangeOptions: Array<{
+  id: DashboardRangePreset;
+  label: string;
+}> = [
+  { id: 'all', label: 'Все дни' },
+  { id: 'week', label: 'Неделя' },
+  { id: 'month', label: 'Месяц' },
+  { id: 'quarter', label: '3 мес.' },
+  { id: 'custom', label: 'Кастом' },
+];
 
 type ThemeMode = 'dark' | 'light';
 
@@ -252,15 +267,13 @@ const interfaceLanguageOptions = [
 const dateTimeFormatOptions = [
   { label: 'Английский 12ч', preview: '21 Apr 2026, 2:35 PM', value: 'en-12' },
   { label: 'Русский 24ч', preview: '21 апр 2026, 14:35', value: 'ru-24' },
-  { label: 'Украинский 24ч', preview: '21 квіт. 2026, 14:35', value: 'uk-24' },
   { label: 'ISO', preview: '2026-04-21 14:35', value: 'iso' },
 ] as const;
 
-const autoRefreshOptions = [15, 30, 60, 120, 300] as const;
 const settingsSectionItems = [
-  { id: 'interface', icon: SlidersHorizontal, label: 'Интерфейс' },
+  { id: 'interface', icon: SlidersHorizontal, label: 'Время и часовой пояс' },
   { id: 'http-retry', icon: RefreshCw, label: 'Повторы HTTP' },
-  { id: 'working-paths', icon: FolderOpen, label: 'Пути' },
+  { id: 'working-paths', icon: FolderOpen, label: 'Рабочие пути' },
 ] as const;
 
 function createDefaultAppPreferences(): AppPreferences {
@@ -328,7 +341,42 @@ function parseTimerLabel(value: string) {
   return Math.min(parsedValue, maximumTimerMinutes);
 }
 
-function formatDashboardDayLabel(value: string) {
+function formatDateInputValue(value: Date) {
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, '0'),
+    String(value.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function createDefaultDashboardCustomRange() {
+  const today = new Date();
+  const rangeStart = new Date(today);
+  rangeStart.setDate(today.getDate() - 6);
+
+  return {
+    start: formatDateInputValue(rangeStart),
+    end: formatDateInputValue(today),
+  };
+}
+
+function getDashboardPresetDays(
+  preset: Exclude<DashboardRangePreset, 'all' | 'custom'>,
+) {
+  switch (preset) {
+    case 'week':
+      return 7;
+    case 'month':
+      return 30;
+    case 'quarter':
+      return 90;
+  }
+}
+
+function formatDashboardSeriesLabel(
+  value: string,
+  preset: DashboardRangePreset,
+) {
   const normalizedValue = value.trim();
 
   if (!normalizedValue) {
@@ -341,11 +389,82 @@ function formatDashboardDayLabel(value: string) {
     return normalizedValue;
   }
 
-  const formattedValue = dashboardDayLabelFormatter
-    .format(parsedValue)
-    .replace('.', '');
+  const formattedValue =
+    preset === 'week'
+      ? dashboardWeekdayLabelFormatter.format(parsedValue).replace('.', '')
+      : dashboardDateLabelFormatter.format(parsedValue).replace('.', '');
 
   return formattedValue.charAt(0).toUpperCase() + formattedValue.slice(1);
+}
+
+function formatDashboardRangeCaption(value: string) {
+  const normalizedValue = value.trim();
+
+  if (!normalizedValue) {
+    return '—';
+  }
+
+  const parsedValue = new Date(`${normalizedValue}T00:00:00`);
+
+  if (Number.isNaN(parsedValue.getTime())) {
+    return normalizedValue;
+  }
+
+  return dashboardDateLabelFormatter.format(parsedValue).replace('.', '');
+}
+
+function formatDashboardMetricWindowLabel(preset: DashboardRangePreset) {
+  switch (preset) {
+    case 'all':
+      return 'за все дни';
+    case 'week':
+      return 'за неделю';
+    case 'month':
+      return 'за месяц';
+    case 'quarter':
+      return 'за 3 месяца';
+    case 'custom':
+      return 'за период';
+  }
+}
+
+function formatDashboardTrendBadge(
+  summary: ApiDashboardSummary | null,
+  key: 'items' | 'errors',
+) {
+  if (!summary || summary.series.length < 2) {
+    return 'Стабильно';
+  }
+
+  const baseline = summary.series[0]?.[key] ?? 0;
+  const current = summary.series[summary.series.length - 1]?.[key] ?? 0;
+
+  if (baseline === 0) {
+    if (current === 0) {
+      return 'Стабильно';
+    }
+
+    return `+${current}`;
+  }
+
+  const percent = Math.round(((current - baseline) / Math.abs(baseline)) * 100);
+
+  if (percent === 0) {
+    return 'Стабильно';
+  }
+
+  return `${percent > 0 ? '+' : ''}${percent}%`;
+}
+
+function formatDashboardSummarySubtitle(summary: ApiDashboardSummary | null) {
+  if (!summary) {
+    return 'Период runtime-логов аккаунтов загружается.';
+  }
+
+  const startLabel = formatDashboardRangeCaption(summary.range_start);
+  const endLabel = formatDashboardRangeCaption(summary.range_end);
+
+  return `Период ${startLabel} - ${endLabel} по реальным runtime-логам аккаунтов`;
 }
 
 function formatDashboardRunTimestamp(value: string | null) {
@@ -565,6 +684,10 @@ function translateSettingsStatusMessage(message: string) {
     return 'Настройки сброшены к значениям по умолчанию.';
   }
 
+  if (normalizedMessage === 'Настройки сохранены.') {
+    return 'Настройки сохранены.';
+  }
+
   if (
     normalizedMessage === 'Логи уже пусты.' ||
     normalizedMessage === 'Logs are already clear.'
@@ -623,46 +746,102 @@ function isLikelyEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(value.trim());
 }
 
-function createEmptyDashboardSeries(): ChartPoint[] {
+function createEmptyDashboardSeries(
+  preset: DashboardRangePreset,
+  customRange?: { end: string; start: string },
+): ChartPoint[] {
   const today = new Date();
+  const resolvedPreset =
+    preset === 'all' || preset === 'custom' ? 'week' : preset;
+  const rangeEnd = new Date(
+    `${preset === 'custom' ? (customRange?.end ?? formatDateInputValue(today)) : formatDateInputValue(today)}T00:00:00`,
+  );
+  const rangeStart =
+    preset === 'custom' && customRange
+      ? new Date(`${customRange.start}T00:00:00`)
+      : (() => {
+          const nextStart = new Date(rangeEnd);
+          nextStart.setDate(
+            rangeEnd.getDate() - (getDashboardPresetDays(resolvedPreset) - 1),
+          );
+          return nextStart;
+        })();
+  const daysCount = Math.max(
+    1,
+    Math.round(
+      (rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000),
+    ) + 1,
+  );
 
-  return Array.from({ length: 7 }, (_, index) => {
-    const pointDate = new Date(today);
-    pointDate.setDate(today.getDate() - (6 - index));
-    const pointDateLabel = [
-      pointDate.getFullYear(),
-      String(pointDate.getMonth() + 1).padStart(2, '0'),
-      String(pointDate.getDate()).padStart(2, '0'),
-    ].join('-');
+  return Array.from({ length: daysCount }, (_, index) => {
+    const pointDate = new Date(rangeStart);
+    pointDate.setDate(rangeStart.getDate() + index);
+    const pointDateLabel = formatDateInputValue(pointDate);
 
     return {
-      label: formatDashboardDayLabel(pointDateLabel),
+      date: pointDateLabel,
+      label: formatDashboardSeriesLabel(pointDateLabel, preset),
       items: 0,
       errors: 0,
     };
   });
 }
 
-function createDashboardMetrics(summary: ApiDashboardSummary | null): Metric[] {
+function createDashboardMetrics(
+  summary: ApiDashboardSummary | null,
+  preset: DashboardRangePreset,
+): Metric[] {
+  const rangeLabel = formatDashboardMetricWindowLabel(preset);
+  const hasItems = (summary?.item_successes_in_range ?? 0) > 0;
+  const hasErrors = (summary?.error_events_in_range ?? 0) > 0;
+
   return [
     {
+      kind: 'accounts',
       label: 'Всего аккаунтов',
       value: summary ? String(summary.total_accounts) : '—',
+      unit: 'шт.',
+      badge: summary
+        ? summary.total_accounts > 0
+          ? summary.ready_accounts === summary.total_accounts
+            ? 'Все готовы'
+            : `${summary.ready_accounts} готовы`
+          : 'Пусто'
+        : 'Загрузка',
+      badgeTone: summary && summary.total_accounts > 0 ? 'teal' : 'neutral',
       accent: 'teal',
     },
     {
+      kind: 'active',
       label: 'Активные сейчас',
       value: summary ? String(summary.active_accounts) : '—',
+      unit: 'онлайн',
+      badge: summary
+        ? summary.active_accounts > 0
+          ? `${summary.active_accounts} онлайн`
+          : 'Стабильно'
+        : 'Загрузка',
+      badgeTone: 'neutral',
       accent: 'amber',
     },
     {
-      label: 'Товаров за 7 дней',
-      value: summary ? String(summary.item_successes_last_7_days) : '—',
+      kind: 'items',
+      label: `Товаров ${rangeLabel}`,
+      value: summary ? String(summary.item_successes_in_range) : '—',
+      unit: 'ед.',
+      badge: hasItems
+        ? formatDashboardTrendBadge(summary, 'items')
+        : 'Стабильно',
+      badgeTone: hasItems ? 'blue' : 'neutral',
       accent: 'blue',
     },
     {
-      label: 'Ошибок за 7 дней',
-      value: summary ? String(summary.error_events_last_7_days) : '—',
+      kind: 'errors',
+      label: `Ошибок ${rangeLabel}`,
+      value: summary ? String(summary.error_events_in_range) : '—',
+      unit: 'лог.',
+      badge: hasErrors ? formatDashboardTrendBadge(summary, 'errors') : 'Чисто',
+      badgeTone: hasErrors ? 'rose' : 'neutral',
       accent: 'rose',
     },
   ];
@@ -670,13 +849,16 @@ function createDashboardMetrics(summary: ApiDashboardSummary | null): Metric[] {
 
 function createDashboardSeries(
   summary: ApiDashboardSummary | null,
+  preset: DashboardRangePreset,
+  customRange?: { end: string; start: string },
 ): ChartPoint[] {
   if (!summary || summary.series.length === 0) {
-    return createEmptyDashboardSeries();
+    return createEmptyDashboardSeries(preset, customRange);
   }
 
   return summary.series.map((point) => ({
-    label: formatDashboardDayLabel(point.date),
+    date: point.date,
+    label: formatDashboardSeriesLabel(point.date, preset),
     items: point.items,
     errors: point.errors,
   }));
@@ -1200,6 +1382,9 @@ function App() {
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
     loadStoredAppPreferences(),
   );
+  const [settingsDraft, setSettingsDraft] = useState<AppPreferences>(() =>
+    loadStoredAppPreferences(),
+  );
   const [isClearingLogs, setIsClearingLogs] = useState(false);
   const [settingsFeedback, setSettingsFeedback] = useState('');
   const [settingsError, setSettingsError] = useState('');
@@ -1223,6 +1408,10 @@ function App() {
     } catch {
       return;
     }
+  }, [appPreferences]);
+
+  useEffect(() => {
+    setSettingsDraft(appPreferences);
   }, [appPreferences]);
 
   useEffect(() => {
@@ -1315,7 +1504,7 @@ function App() {
     field: keyof AppPreferences,
     value: string | number | boolean,
   ) => {
-    setAppPreferences(
+    setSettingsDraft(
       (currentPreferences) =>
         ({
           ...currentPreferences,
@@ -1326,8 +1515,16 @@ function App() {
     setSettingsError('');
   };
 
+  const handleSavePreferences = () => {
+    setAppPreferences(settingsDraft);
+    setSettingsFeedback('Настройки сохранены.');
+    setSettingsError('');
+  };
+
   const handleResetPreferences = () => {
-    setAppPreferences(createDefaultAppPreferences());
+    const nextDefaults = createDefaultAppPreferences();
+    setAppPreferences(nextDefaults);
+    setSettingsDraft(nextDefaults);
     setSettingsFeedback('Настройки сброшены к значениям по умолчанию.');
     setSettingsError('');
   };
@@ -1412,16 +1609,21 @@ function App() {
   };
 
   if (activePage === 'settings') {
+    const hasUnsavedChanges =
+      JSON.stringify(settingsDraft) !== JSON.stringify(appPreferences);
+
     return (
       <SettingsPage
         feedback={settingsFeedback}
+        hasUnsavedChanges={hasUnsavedChanges}
         isClearingLogs={isClearingLogs}
         onChangePreference={handleUpdatePreference}
         onClearLogs={handleClearLogs}
         onNavigateToPage={setActivePage}
         onResetPreferences={handleResetPreferences}
+        onSavePreferences={handleSavePreferences}
         onToggleTheme={handleToggleTheme}
-        preferences={appPreferences}
+        preferences={settingsDraft}
         settingsError={settingsError}
         themeMode={themeMode}
       />
@@ -1614,15 +1816,9 @@ function AppSidebar({
     <aside className="min-h-screen w-full border-r border-border-soft bg-sidebar p-5">
       <div className="sticky top-7.5 flex min-h-[calc(100vh-60px)] flex-col justify-between gap-6">
         <div className="space-y-4">
-          <div className="relative overflow-hidden rounded-xl border border-info/12 bg-sidebar-card/65 px-4 py-4">
-            <div className="relative inline-flex items-center gap-2">
-              <div className="relative">
-                <h1 className="relative text-[34px] font-semibold leading-none tracking-[-0.05em] text-info">
-                  {productName}
-                </h1>
-              </div>
-            </div>
-          </div>
+          <h1 className="relative text-4xl font-semibold leading-none tracking-[-0.05em] text-info">
+            {productName}
+          </h1>
 
           <nav className="flex flex-col gap-2.5">
             {navItems.map((item) => (
@@ -1637,7 +1833,7 @@ function AppSidebar({
                 onClick={() => onNavigate(item.id)}
               >
                 <span
-                  className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-200 ${
+                  className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-200 ${
                     activePage === item.id
                       ? 'bg-info/12 text-info'
                       : 'bg-sidebar-icon text-text-faint'
@@ -1645,7 +1841,7 @@ function AppSidebar({
                 >
                   {navItemIcons[item.id]}
                 </span>
-                <span className="text-lg font-medium">{item.label}</span>
+                <span className="font-medium">{item.label}</span>
               </button>
             ))}
           </nav>
@@ -1830,22 +2026,130 @@ function BulkActionButton({
   );
 }
 
+interface DashboardRangePickerProps {
+  customRange: {
+    end: string;
+    start: string;
+  };
+  isLoading: boolean;
+  preset: DashboardRangePreset;
+  onApplyCustomRange: () => void;
+  onCustomRangeChange: (field: 'end' | 'start', value: string) => void;
+  onPresetChange: (preset: DashboardRangePreset) => void;
+}
+
+function DashboardRangePicker({
+  customRange,
+  isLoading,
+  preset,
+  onApplyCustomRange,
+  onCustomRangeChange,
+  onPresetChange,
+}: DashboardRangePickerProps) {
+  const isCustomActive = preset === 'custom';
+  const isCustomRangeValid =
+    Boolean(customRange.start) &&
+    Boolean(customRange.end) &&
+    customRange.start <= customRange.end;
+
+  return (
+    <div className="flex w-full flex-wrap items-center justify-start gap-3 sm:w-auto sm:justify-end">
+      <div className="flex flex-wrap items-center gap-1 rounded-2xl border border-border bg-foreground p-1.5 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
+        {dashboardRangeOptions.map((option) => {
+          const isActive = option.id === preset;
+
+          return (
+            <button
+              key={option.id}
+              className={cx(
+                'h-10 rounded-xl px-3.5 text-[14px] font-medium transition-colors duration-150',
+                isActive
+                  ? 'bg-info text-white'
+                  : 'text-text-muted hover:bg-secondary hover:text-text',
+              )}
+              disabled={isLoading}
+              type="button"
+              onClick={() => onPresetChange(option.id)}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {isCustomActive ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-foreground px-3 py-2 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
+          <input
+            className="h-10 rounded-[10px] border border-border bg-background px-3 text-[14px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10"
+            max={customRange.end || undefined}
+            type="date"
+            value={customRange.start}
+            onChange={(event) =>
+              onCustomRangeChange('start', event.target.value)
+            }
+          />
+          <span className="text-text-faint">-</span>
+          <input
+            className="h-10 rounded-[10px] border border-border bg-background px-3 text-[14px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10"
+            min={customRange.start || undefined}
+            type="date"
+            value={customRange.end}
+            onChange={(event) => onCustomRangeChange('end', event.target.value)}
+          />
+          <button
+            className={getButtonClassName({
+              tone: 'info',
+              size: 'sm',
+            })}
+            disabled={isLoading || !isCustomRangeValid}
+            type="button"
+            onClick={onApplyCustomRange}
+          >
+            Применить
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DashboardPage() {
   const [summary, setSummary] = useState<ApiDashboardSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const dashboardMetrics = createDashboardMetrics(summary);
-  const dashboardSeries = createDashboardSeries(summary);
-  const dashboardStatus = createDashboardStatus(summary);
+  const defaultCustomRange = createDefaultDashboardCustomRange();
+  const [dashboardRangePreset, setDashboardRangePreset] =
+    useState<DashboardRangePreset>('all');
+  const [customRangeDraft, setCustomRangeDraft] = useState(defaultCustomRange);
+  const [appliedCustomRange, setAppliedCustomRange] =
+    useState(defaultCustomRange);
+  const dashboardMetrics = createDashboardMetrics(
+    summary,
+    dashboardRangePreset,
+  );
+  const dashboardSeries = createDashboardSeries(
+    summary,
+    dashboardRangePreset,
+    appliedCustomRange,
+  );
   const shouldShowEmptyAccounts =
     Boolean(summary) && (summary?.total_accounts ?? 0) === 0 && !isLoading;
 
-  const loadDashboard = async () => {
+  const loadDashboard = async (
+    preset: DashboardRangePreset,
+    customRange: { end: string; start: string },
+  ) => {
     setIsLoading(true);
     setLoadError('');
 
     try {
-      setSummary(await getDashboardSummary());
+      setSummary(
+        await getDashboardSummary({
+          period: preset,
+          dateFrom: preset === 'custom' ? customRange.start : undefined,
+          dateTo: preset === 'custom' ? customRange.end : undefined,
+        }),
+      );
     } catch (error) {
       setLoadError(
         formatApiError(error, 'Не удалось загрузить сводку дэшборда из API.'),
@@ -1856,29 +2160,25 @@ function DashboardPage() {
   };
 
   useEffect(() => {
-    void loadDashboard();
-  }, []);
+    void loadDashboard(dashboardRangePreset, appliedCustomRange);
+  }, [appliedCustomRange, dashboardRangePreset]);
+
+  const handleApplyCustomRange = () => {
+    if (
+      !customRangeDraft.start ||
+      !customRangeDraft.end ||
+      customRangeDraft.start > customRangeDraft.end
+    ) {
+      setLoadError('Укажи корректный диапазон дат для дэшборда.');
+      return;
+    }
+
+    setAppliedCustomRange(customRangeDraft);
+  };
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Dashboard"
-        actions={
-          <ActionButton
-            disabled={isLoading}
-            icon={
-              <RefreshCw
-                className={`h-4 w-4 text-text ${isLoading ? 'animate-spin' : ''}`}
-              />
-            }
-            size="sm"
-            tone="info"
-            onClick={() => void loadDashboard()}
-          >
-            Обновить
-          </ActionButton>
-        }
-      />
+      <PageHeader title="Dashboard" />
 
       {loadError ? (
         <div className="flex items-center justify-between gap-3 rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
@@ -1890,7 +2190,9 @@ function DashboardPage() {
             })}
             disabled={isLoading}
             type="button"
-            onClick={() => void loadDashboard()}
+            onClick={() =>
+              void loadDashboard(dashboardRangePreset, appliedCustomRange)
+            }
           >
             Повторить
           </button>
@@ -1906,7 +2208,21 @@ function DashboardPage() {
       <div className="flex flex-col gap-6">
         <Panel
           title="Главная статистика"
-          subtitle="Последние 7 дней по реальным runtime-логам аккаунтов"
+          actions={
+            <DashboardRangePicker
+              customRange={customRangeDraft}
+              isLoading={isLoading}
+              preset={dashboardRangePreset}
+              onApplyCustomRange={handleApplyCustomRange}
+              onCustomRangeChange={(field, value) =>
+                setCustomRangeDraft((previousValue) => ({
+                  ...previousValue,
+                  [field]: value,
+                }))
+              }
+              onPresetChange={(preset) => setDashboardRangePreset(preset)}
+            />
+          }
         >
           {shouldShowEmptyAccounts ? (
             <div className="rounded-[22px] border border-dashed border-border/30 bg-secondary/40 p-6 text-center">
@@ -1917,7 +2233,19 @@ function DashboardPage() {
               </p>
             </div>
           ) : (
-            <LineChart data={dashboardSeries} height={260} />
+            <div className="flex flex-col gap-4">
+              <LineChart data={dashboardSeries} height={260} />
+              <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-[15px] text-text-muted">
+                <span className="inline-flex items-center gap-2">
+                  <i className="h-2.5 w-2.5 rounded-full bg-[#45b99a]" />
+                  Товары
+                </span>
+                <span className="inline-flex items-center gap-2">
+                  <i className="h-2.5 w-2.5 rounded-full bg-[#ef6b7c]" />
+                  Ошибки
+                </span>
+              </div>
+            </div>
           )}
         </Panel>
       </div>
@@ -5238,6 +5566,7 @@ function LogsPage({
 
 interface SettingsPageProps {
   feedback: string;
+  hasUnsavedChanges: boolean;
   isClearingLogs: boolean;
   onChangePreference: (
     field: keyof AppPreferences,
@@ -5246,6 +5575,7 @@ interface SettingsPageProps {
   onClearLogs: () => Promise<void>;
   onNavigateToPage: (page: PageId) => void;
   onResetPreferences: () => void;
+  onSavePreferences: () => void;
   onToggleTheme: () => void;
   preferences: AppPreferences;
   settingsError: string;
@@ -5254,11 +5584,13 @@ interface SettingsPageProps {
 
 function SettingsPage({
   feedback,
+  hasUnsavedChanges,
   isClearingLogs,
   onChangePreference,
   onClearLogs,
   onNavigateToPage,
   onResetPreferences,
+  onSavePreferences,
   onToggleTheme,
   preferences,
   settingsError,
@@ -5353,38 +5685,49 @@ function SettingsPage({
               })}
             </nav>
 
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 text-success">
-                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-success text-white">
-                  <Check className="h-3 w-3 stroke-3" />
-                </span>
-                <span className="text-[13px] font-medium">
-                  Все изменения сохранены
-                </span>
-              </div>
-              <button
-                className="cursor-pointer rounded-lg px-3 py-1.5 text-[14px] font-semibold text-info transition-colors duration-200 hover:bg-info/10"
-                type="button"
-                onClick={onResetPreferences}
-              >
-                Сбросить настройки
-              </button>
-            </div>
+            <button
+              className={getButtonClassName({
+                tone: 'info',
+                variant: 'solid',
+                size: 'sm',
+              })}
+              disabled={!hasUnsavedChanges}
+              type="button"
+              onClick={onSavePreferences}
+            >
+              <Save className="h-4 w-4" />
+              Сохранить
+            </button>
           </header>
 
           <div className="mx-auto flex max-w-265 flex-col px-10 py-9">
             <div className="space-y-6">
-              <nav className="flex items-center gap-2 text-[15px]">
+              <div className="flex items-center gap-3">
                 <button
-                  className="cursor-pointer text-text-faint transition-colors duration-150 hover:text-text"
+                  aria-label="Вернуться назад"
+                  className={getButtonClassName({
+                    size: 'icon-sm',
+                    variant: 'soft',
+                    className:
+                      'border-border bg-foreground/75 text-text hover:bg-foreground hover:text-text',
+                  })}
                   type="button"
                   onClick={() => onNavigateToPage('dashboard')}
                 >
-                  Приложение
+                  <ChevronLeft className="h-5 stroke-2 w-5" />
                 </button>
-                <ChevronRight className="h-4 w-4 text-text-faint/70" />
-                <span className="font-medium text-text">Настройки</span>
-              </nav>
+                <nav className="flex items-center gap-2 text-[15px]">
+                  <button
+                    className="cursor-pointer text-text-faint transition-colors duration-150 hover:text-text"
+                    type="button"
+                    onClick={() => onNavigateToPage('dashboard')}
+                  >
+                    Приложение
+                  </button>
+                  <ChevronRight className="h-4 w-4 text-text-faint/70" />
+                  <span className="font-medium text-text">Настройки</span>
+                </nav>
+              </div>
 
               <div className="grid gap-6">
                 <section
@@ -5393,7 +5736,7 @@ function SettingsPage({
                 >
                   <SettingsSectionHeader
                     icon={<SlidersHorizontal className="h-4.5 w-4.5" />}
-                    title="Интерфейс"
+                    title="Время и часовой пояс"
                   />
 
                   <div className="grid gap-5 lg:grid-cols-2">
@@ -5404,6 +5747,7 @@ function SettingsPage({
                     />
                     <SettingsSelectField
                       label="ФОРМАТ ДАТЫ И ВРЕМЕНИ"
+                      labelTooltip="Как отображать дату и время в логах, карточках и таблицах."
                       options={dateTimeFormatOptions.map((option) => ({
                         label: option.label,
                         value: option.value,
@@ -5427,8 +5771,8 @@ function SettingsPage({
 
                   <div className="grid gap-5 md:grid-cols-2">
                     <SettingsNumberField
-                      description="Максимальное количество повторных попыток для неудачных сетевых запросов."
                       label="КОЛИЧЕСТВО ПОВТОРОВ HTTP"
+                      labelTooltip="Максимальное количество повторных попыток для неудачных сетевых запросов."
                       maximum={5}
                       minimum={0}
                       step={1}
@@ -5438,8 +5782,8 @@ function SettingsPage({
                       }
                     />
                     <SettingsNumberField
-                      description="Базовая задержка перед первой повторной попыткой."
                       label="БАЗОВАЯ ЗАДЕРЖКА ПОВТОРА"
+                      labelTooltip="Базовая задержка перед первой повторной попыткой."
                       maximum={30}
                       minimum={0.1}
                       step={0.1}
@@ -5454,11 +5798,11 @@ function SettingsPage({
                   <div className="mt-6 grid gap-4 md:grid-cols-2">
                     <SettingsToggleCard
                       checked={preferences.httpRetryJitterEnabled}
-                      description="Добавлять случайное отклонение к задержке, чтобы не создавать синхронные пики."
+                      description="Добавлять случайное отклонение к задержке(jitter), чтобы не создавать синхронные пики."
                       icon={
                         <RefreshCw className="h-4.5 w-4.5 text-text-faint" />
                       }
-                      label="Джиттер задержки"
+                      label="Отклонение задержки"
                       onToggle={() =>
                         onChangePreference(
                           'httpRetryJitterEnabled',
@@ -5494,16 +5838,16 @@ function SettingsPage({
 
                   <div className="grid gap-6">
                     <SettingsTextAreaField
-                      description="Папка, в которой хранятся зашифрованные учётные данные аккаунтов."
                       label="ПАПКА АККАУНТОВ"
+                      labelTooltip="Папка, в которой хранятся зашифрованные учётные данные аккаунтов."
                       value={preferences.accountsDirectory}
                       onChange={(value) =>
                         onChangePreference('accountsDirectory', value)
                       }
                     />
                     <SettingsTextAreaField
-                      description="Путь для логов сессий, runtime-логов и отчётов об ошибках."
                       label="ПАПКА ЛОГОВ"
+                      labelTooltip="Путь для логов сессий, runtime-логов и отчётов об ошибках."
                       value={preferences.logsDirectory}
                       onChange={(value) =>
                         onChangePreference('logsDirectory', value)
@@ -5511,6 +5855,16 @@ function SettingsPage({
                     />
                   </div>
                 </section>
+
+                <div className="flex justify-center">
+                  <button
+                    className="text-sm text-error/75 hover:text-error cursor-pointer"
+                    type="button"
+                    onClick={onResetPreferences}
+                  >
+                    Сбросить все настройки
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -5524,16 +5878,35 @@ interface SettingsFieldShellProps {
   children: ReactNode;
   description?: string;
   label: string;
+  labelTooltip?: string;
 }
 
 function SettingsFieldShell({
   children,
   description,
   label,
+  labelTooltip,
 }: SettingsFieldShellProps) {
   return (
     <label className="flex flex-col gap-2.5">
-      <span className={settingsLabelClassName}>{label}</span>
+      <span className="flex items-center gap-1.5">
+        <span className={settingsLabelClassName}>{label}</span>
+        {labelTooltip ? (
+          <span
+            aria-label={labelTooltip}
+            className="group relative inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-text-faint transition-colors duration-150 outline-none hover:text-info focus:text-info"
+            tabIndex={0}
+          >
+            <Info className="h-3.5 w-3.5" strokeWidth={2.4} />
+            <span
+              className="pointer-events-none absolute top-[calc(100%+8px)] left-0 z-20 hidden w-64 rounded-xl border border-border/20 bg-foreground px-3 py-2 text-[12px] leading-4 text-text-muted shadow-[0_14px_30px_rgba(15,23,42,0.14)] group-hover:block group-focus:block"
+              role="tooltip"
+            >
+              {labelTooltip}
+            </span>
+          </span>
+        ) : null}
+      </span>
       {children}
       {description ? (
         <span className={settingsDescriptionClassName}>{description}</span>
@@ -5567,7 +5940,7 @@ function SettingsSummaryCard({ icon, label, value }: SettingsSummaryCardProps) {
     <div
       className={`${settingsSubtleCardClassName} h-fit flex items-center gap-4`}
     >
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-foreground text-info shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/25 bg-foreground text-info shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
         {icon}
       </span>
       <div className="flex flex-col justify-center">
@@ -5586,6 +5959,7 @@ interface SettingsStatusBarProps {
 function SettingsStatusBar({ error, message }: SettingsStatusBarProps) {
   const isError = Boolean(error);
   const isSuccess =
+    message.startsWith('Настройки сохранены') ||
     message.startsWith('Логи очищены') ||
     message.startsWith('Настройки сброшены');
 
@@ -5608,6 +5982,7 @@ function SettingsStatusBar({ error, message }: SettingsStatusBarProps) {
 interface SettingsSelectFieldProps {
   description?: string;
   label: string;
+  labelTooltip?: string;
   options: ReadonlyArray<{
     label: string;
     value: string;
@@ -5619,12 +5994,17 @@ interface SettingsSelectFieldProps {
 function SettingsSelectField({
   description,
   label,
+  labelTooltip,
   options,
   value,
   onChange,
 }: SettingsSelectFieldProps) {
   return (
-    <SettingsFieldShell description={description} label={label}>
+    <SettingsFieldShell
+      description={description}
+      label={label}
+      labelTooltip={labelTooltip}
+    >
       <div className="relative">
         <select
           className={`${settingsFieldClassName} appearance-none pr-11`}
@@ -5646,6 +6026,7 @@ function SettingsSelectField({
 interface SettingsNumberFieldProps {
   description?: string;
   label: string;
+  labelTooltip?: string;
   maximum: number;
   minimum: number;
   step: number;
@@ -5657,6 +6038,7 @@ interface SettingsNumberFieldProps {
 function SettingsNumberField({
   description,
   label,
+  labelTooltip,
   maximum,
   minimum,
   step,
@@ -5665,10 +6047,14 @@ function SettingsNumberField({
   onChange,
 }: SettingsNumberFieldProps) {
   return (
-    <SettingsFieldShell description={description} label={label}>
+    <SettingsFieldShell
+      description={description}
+      label={label}
+      labelTooltip={labelTooltip}
+    >
       <div className="relative">
         <input
-          className={`${settingsFieldClassName} ${suffix ? 'pr-16' : ''}`}
+          className={`number-input-no-spin ${settingsFieldClassName} ${suffix ? 'pr-16' : ''}`}
           inputMode="decimal"
           max={maximum}
           min={minimum}
@@ -5710,6 +6096,7 @@ function SettingsNumberField({
 interface SettingsTextAreaFieldProps {
   description?: string;
   label: string;
+  labelTooltip?: string;
   value: string;
   onChange: (value: string) => void;
 }
@@ -5717,11 +6104,16 @@ interface SettingsTextAreaFieldProps {
 function SettingsTextAreaField({
   description,
   label,
+  labelTooltip,
   value,
   onChange,
 }: SettingsTextAreaFieldProps) {
   return (
-    <SettingsFieldShell description={description} label={label}>
+    <SettingsFieldShell
+      description={description}
+      label={label}
+      labelTooltip={labelTooltip}
+    >
       <div className="relative">
         <input
           className={`${settingsTextAreaClassName} pr-12`}
@@ -5772,7 +6164,11 @@ function SettingsToggleCard({
         ) : null}
         <div>
           <h3 className="text-[15px] font-semibold text-text">{label}</h3>
-          <span className={settingsDescriptionClassName}>{description}</span>
+          <span
+            className={`${settingsDescriptionClassName} block leading-[1.3]`}
+          >
+            {description}
+          </span>
         </div>
       </div>
       <ToggleSwitch checked={checked} />

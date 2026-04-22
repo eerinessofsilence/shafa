@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, date, datetime, timedelta
-from typing import Callable
+from typing import Callable, Literal
 
 from telegram_accounts_api.models.account import AccountRead
 from telegram_accounts_api.models.dashboard import (
@@ -18,6 +18,14 @@ from telegram_accounts_api.utils.account_logging import (
 )
 
 _PRODUCT_SUCCESS_PATTERN = re.compile(r"товар создан успешно", re.IGNORECASE)
+DashboardPeriod = Literal["all", "week", "month", "quarter", "custom"]
+_DASHBOARD_PERIOD_DAYS: dict[DashboardPeriod, int] = {
+    "all": 0,
+    "week": 7,
+    "month": 30,
+    "quarter": 90,
+    "custom": 0,
+}
 
 
 class DashboardService:
@@ -32,14 +40,43 @@ class DashboardService:
         self.log_store = log_store
         self.now_provider = now_provider or self._default_now
 
-    async def get_summary(self) -> DashboardSummaryRead:
+    async def get_summary(
+        self,
+        *,
+        period: DashboardPeriod = "all",
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> DashboardSummaryRead:
         accounts = await self.account_service.list_accounts()
         current_time = self.now_provider().astimezone()
         local_tz = current_time.tzinfo or UTC
         generated_at = current_time.astimezone(local_tz)
+        account_entries: dict[str, list] = {}
+        earliest_entry_date: date | None = None
+
+        for account in accounts:
+            entries = list(self._load_account_entries(account.id))
+            account_entries[account.id] = entries
+
+            if period != "all":
+                continue
+
+            for entry in entries:
+                entry_time = normalize_log_timestamp(entry.timestamp).astimezone(local_tz)
+                entry_date = entry_time.date()
+                if earliest_entry_date is None or entry_date < earliest_entry_date:
+                    earliest_entry_date = entry_date
+
+        range_start, range_end = self._resolve_date_range(
+            generated_at=generated_at,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            earliest_entry_date=earliest_entry_date,
+        )
         series_dates = [
-            generated_at.date() - timedelta(days=offset)
-            for offset in range(6, -1, -1)
+            range_start + timedelta(days=offset)
+            for offset in range((range_end - range_start).days + 1)
         ]
         series_totals = {
             point_date: {"items": 0, "errors": 0}
@@ -70,7 +107,7 @@ class DashboardService:
                 top_error_account_errors = account.errors
                 top_error_account_name = account.name
 
-            for entry in self._load_account_entries(account.id):
+            for entry in account_entries[account.id]:
                 entry_time = normalize_log_timestamp(entry.timestamp).astimezone(local_tz)
                 entry_date = entry_time.date()
 
@@ -93,12 +130,14 @@ class DashboardService:
 
         return DashboardSummaryRead(
             generated_at=generated_at,
+            range_start=range_start,
+            range_end=range_end,
             total_accounts=len(accounts),
             active_accounts=sum(1 for account in accounts if account.status == "started"),
             ready_accounts=ready_accounts,
             attention_accounts=attention_accounts,
-            item_successes_last_7_days=sum(point.items for point in series),
-            error_events_last_7_days=sum(point.errors for point in series),
+            item_successes_in_range=sum(point.items for point in series),
+            error_events_in_range=sum(point.errors for point in series),
             latest_run_account_name=latest_run_account_name,
             latest_run_at=latest_run_at,
             top_error_account_name=top_error_account_name,
@@ -120,6 +159,33 @@ class DashboardService:
     @staticmethod
     def _default_now() -> datetime:
         return datetime.now().astimezone()
+
+    @staticmethod
+    def _resolve_date_range(
+        *,
+        generated_at: datetime,
+        period: DashboardPeriod,
+        date_from: date | None,
+        date_to: date | None,
+        earliest_entry_date: date | None,
+    ) -> tuple[date, date]:
+        if period == "custom":
+            if date_from is None or date_to is None:
+                raise ValueError("Для кастомного диапазона укажи обе даты.")
+            if date_from > date_to:
+                raise ValueError("Дата начала не может быть позже даты окончания.")
+            return date_from, date_to
+
+        if period == "all":
+            range_end = generated_at.date()
+            if earliest_entry_date is None:
+                return range_end, range_end
+            return min(earliest_entry_date, range_end), range_end
+
+        range_end = generated_at.date()
+        range_days = _DASHBOARD_PERIOD_DAYS[period]
+        range_start = range_end - timedelta(days=range_days - 1)
+        return range_start, range_end
 
     @staticmethod
     def _is_product_success(message: str) -> bool:

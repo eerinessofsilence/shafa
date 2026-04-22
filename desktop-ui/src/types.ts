@@ -7,7 +7,15 @@ export type PageId =
 
 export type StatusTone = 'success' | 'warning' | 'info' | 'danger' | 'neutral';
 
+export type DashboardRangePreset =
+  | 'all'
+  | 'week'
+  | 'month'
+  | 'quarter'
+  | 'custom';
 export type MetricAccent = 'teal' | 'amber' | 'blue' | 'rose';
+export type MetricKind = 'accounts' | 'active' | 'items' | 'errors';
+export type MetricBadgeTone = MetricAccent | 'neutral';
 
 export interface DesktopShellInfo {
   apiBaseUrl: string;
@@ -24,12 +32,17 @@ export interface NavItem {
 }
 
 export interface Metric {
+  kind: MetricKind;
   label: string;
   value: string;
+  unit?: string;
+  badge?: string;
+  badgeTone?: MetricBadgeTone;
   accent: MetricAccent;
 }
 
 export interface ChartPoint {
+  date: string;
   label: string;
   items: number;
   errors: number;
@@ -95,12 +108,14 @@ export interface ApiDashboardSeriesPoint {
 
 export interface ApiDashboardSummary {
   generated_at: string;
+  range_start: string;
+  range_end: string;
   total_accounts: number;
   active_accounts: number;
   ready_accounts: number;
   attention_accounts: number;
-  item_successes_last_7_days: number;
-  error_events_last_7_days: number;
+  item_successes_in_range: number;
+  error_events_in_range: number;
   latest_run_account_name: string | null;
   latest_run_at: string | null;
   top_error_account_name: string | null;

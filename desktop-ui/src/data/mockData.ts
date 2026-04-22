@@ -20,10 +20,42 @@ export const navItems: NavItem[] = [
 ];
 
 export const dashboardMetrics: Metric[] = [
-  { label: 'Средняя скорость', value: '14.2/min', accent: 'teal' },
-  { label: 'Обработано за 7 дней', value: '1 842', accent: 'blue' },
-  { label: 'Активные аккаунты', value: '5 / 12', accent: 'amber' },
-  { label: 'Баны / таймауты', value: '3 / 11', accent: 'rose' },
+  {
+    kind: 'accounts',
+    label: 'Средняя скорость',
+    value: '14.2',
+    unit: '/мин',
+    badge: '+8%',
+    badgeTone: 'teal',
+    accent: 'teal',
+  },
+  {
+    kind: 'items',
+    label: 'Обработано за 7 дней',
+    value: '1 842',
+    unit: 'ед.',
+    badge: '+12%',
+    badgeTone: 'blue',
+    accent: 'blue',
+  },
+  {
+    kind: 'active',
+    label: 'Активные аккаунты',
+    value: '5',
+    unit: 'онлайн',
+    badge: 'Стабильно',
+    badgeTone: 'neutral',
+    accent: 'amber',
+  },
+  {
+    kind: 'errors',
+    label: 'Баны / таймауты',
+    value: '3',
+    unit: 'лог.',
+    badge: '-5%',
+    badgeTone: 'rose',
+    accent: 'rose',
+  },
 ];
 
 export const systemStatus: StatusItem[] = [
@@ -199,11 +231,11 @@ export const settingsGroups: SettingsGroup[] = [
 ];
 
 export const dashboardSeries: ChartPoint[] = [
-  { label: 'Пн', items: 102, errors: 6 },
-  { label: 'Вт', items: 124, errors: 4 },
-  { label: 'Ср', items: 118, errors: 3 },
-  { label: 'Чт', items: 146, errors: 5 },
-  { label: 'Пт', items: 171, errors: 7 },
-  { label: 'Сб', items: 132, errors: 4 },
-  { label: 'Вс', items: 156, errors: 3 },
+  { date: '2026-04-13', label: 'Пн', items: 102, errors: 6 },
+  { date: '2026-04-14', label: 'Вт', items: 124, errors: 4 },
+  { date: '2026-04-15', label: 'Ср', items: 118, errors: 3 },
+  { date: '2026-04-16', label: 'Чт', items: 146, errors: 5 },
+  { date: '2026-04-17', label: 'Пт', items: 171, errors: 7 },
+  { date: '2026-04-18', label: 'Сб', items: 132, errors: 4 },
+  { date: '2026-04-19', label: 'Вс', items: 156, errors: 3 },
 ];

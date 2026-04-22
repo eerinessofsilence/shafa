@@ -1,35 +1,116 @@
-import type { MetricAccent } from '../types';
+import type { MetricAccent, MetricBadgeTone, MetricKind } from '../types';
+import {
+  CircleAlert,
+  Package2,
+  Radio,
+  Users,
+  type LucideIcon,
+} from 'lucide-react';
 
 interface MetricCardProps {
+  kind: MetricKind;
   label: string;
   value: string;
+  unit?: string;
+  badge?: string;
+  badgeTone?: MetricBadgeTone;
   accent: MetricAccent;
 }
 
-const accentClasses: Record<MetricAccent, { bar: string; value: string }> = {
-  teal: { bar: 'bg-[#64d79c]', value: 'text-[#18a058]' },
-  amber: { bar: 'bg-[#f3bf68]', value: 'text-[#d48806]' },
-  blue: { bar: 'bg-[#86b2ff]', value: 'text-[#2d73ea]' },
-  rose: { bar: 'bg-[#f28b97]', value: 'text-[#e0344a]' },
+const iconByKind: Record<MetricKind, LucideIcon> = {
+  accounts: Users,
+  active: Radio,
+  items: Package2,
+  errors: CircleAlert,
 };
 
-export function MetricCard({ label, value, accent }: MetricCardProps) {
+const accentClasses: Record<
+  MetricAccent,
+  {
+    border: string;
+    iconWrap: string;
+    icon: string;
+    glow: string;
+  }
+> = {
+  teal: {
+    border: 'border-success/12',
+    iconWrap: 'bg-success/14',
+    icon: 'text-success',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(24,160,88,0.13),transparent_42%)]',
+  },
+  amber: {
+    border: 'border-warning/14',
+    iconWrap: 'bg-warning/16',
+    icon: 'text-warning',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(240,163,62,0.14),transparent_42%)]',
+  },
+  blue: {
+    border: 'border-info/12',
+    iconWrap: 'bg-info/14',
+    icon: 'text-info',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(12,86,208,0.13),transparent_42%)]',
+  },
+  rose: {
+    border: 'border-error/12',
+    iconWrap: 'bg-error/14',
+    icon: 'text-error',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(209,51,27,0.14),transparent_42%)]',
+  },
+};
+
+const badgeClasses: Record<MetricBadgeTone, string> = {
+  teal: 'bg-success/10 text-success',
+  amber: 'bg-warning/12 text-warning',
+  blue: 'bg-info/10 text-info',
+  rose: 'bg-error/10 text-error',
+  neutral: 'bg-secondary text-text-muted',
+};
+
+export function MetricCard({
+  accent,
+  badgeTone,
+  kind,
+  label,
+  unit,
+  value,
+}: MetricCardProps) {
   const accentClass = accentClasses[accent];
+  const Icon = iconByKind[kind];
+  const resolvedBadgeTone = badgeTone ?? accent;
 
   return (
-    <article className="relative flex flex-col gap-2 overflow-hidden rounded-[12px] border border-border bg-foreground px-3 py-4 shadow-[0_1px_2px_rgba(15,23,42,0.02)]">
-      <div
-        className={[
-          'absolute inset-x-0 top-0 h-1.5',
-          accentClass.bar,
-        ].join(' ')}
-      />
-      <span className="text-[14px] font-medium text-text-subtle">{label}</span>
-      <strong
-        className={`leading-none text-[32px] tracking-tight ${accentClass.value}`}
-      >
-        {value}
-      </strong>
+    <article
+      className={[
+        'group relative isolate flex flex-col overflow-hidden rounded-2xl border bg-foreground p-5 transition-transform duration-200 hover:-translate-y-0.5',
+        accentClass.border,
+      ].join(' ')}
+    >
+      <div className={`absolute inset-0 ${accentClass.glow}`} />
+
+      <div className="space-y-3">
+        <div className="relative flex items-center gap-3">
+          <span
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${accentClass.iconWrap}`}
+          >
+            <Icon className={`h-5 w-5 ${accentClass.icon}`} strokeWidth={2.2} />
+          </span>
+          <p className="text-sm font-medium text-text-muted">{label}</p>
+        </div>
+
+        <div className="relative mt-auto">
+          <div className="mt-3 flex items-end gap-2">
+            <h1 className="text-3xl font-semibold tracking-tight text-text">
+              {value}
+            </h1>
+            {unit && value !== '—' ? (
+              <span className="mb-0.5 text-[15px] font-medium text-text-faint">
+                {unit}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </div>
     </article>
   );
 }
