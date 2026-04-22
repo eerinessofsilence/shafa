@@ -1,0 +1,5 @@
+-r runtime.txt
+
+appimage-builder
+nuitka
+pyinstaller

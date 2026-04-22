@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import sys
 from pathlib import Path
 
 import uvicorn
 
 SEED_FILES = ("accounts_state.json", "telegram_channel_templates.json")
+SEED_JSON_PAYLOAD = "[]\n"
+DEFAULT_BACKEND_PORT = 8000
 
 
 def _bundle_dir() -> Path:
@@ -34,6 +37,8 @@ def _bootstrap_environment() -> Path:
         target = data_dir / filename
         if source.exists() and not target.exists():
             shutil.copyfile(source, target)
+        if not target.exists():
+            target.write_text(SEED_JSON_PAYLOAD, encoding="utf-8")
 
     os.environ.setdefault("TELEGRAM_ACCOUNTS_BASE_DIR", str(data_dir))
     os.environ.setdefault("ACCOUNTS_STATE_FILE", str(data_dir / "accounts_state.json"))
@@ -44,6 +49,25 @@ def _bootstrap_environment() -> Path:
     return data_dir
 
 
+def _reserve_port(host: str, port: int) -> int:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        probe.bind((host, port))
+        probe.listen(1)
+        return int(probe.getsockname()[1])
+
+
+def _resolve_backend_port(host: str, preferred_port: int = DEFAULT_BACKEND_PORT) -> tuple[int, bool]:
+    configured_port = os.getenv("SHAFA_BACKEND_PORT", "").strip()
+    if configured_port:
+        return int(configured_port), False
+
+    try:
+        return _reserve_port(host, preferred_port), False
+    except OSError:
+        return _reserve_port(host, 0), True
+
+
 DATA_DIR = _bootstrap_environment()
 
 from telegram_accounts_api.main import app
@@ -51,8 +75,15 @@ from telegram_accounts_api.main import app
 
 def main() -> None:
     host = os.getenv("SHAFA_BACKEND_HOST", "127.0.0.1")
-    port = int(os.getenv("SHAFA_BACKEND_PORT", "8000"))
+    port, used_fallback_port = _resolve_backend_port(host)
     log_level = os.getenv("LOG_LEVEL", "info").lower()
+    os.environ["SHAFA_BACKEND_PORT"] = str(port)
+    if used_fallback_port:
+        print(
+            f"Port {DEFAULT_BACKEND_PORT} is busy on {host}; using available port {port}. "
+            "Set SHAFA_BACKEND_PORT to override.",
+            flush=True,
+        )
     print(f"Starting desktop backend on {host}:{port} with data dir {DATA_DIR}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level=log_level, access_log=False)
 

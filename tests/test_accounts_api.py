@@ -222,6 +222,75 @@ class AccountsApiTest(unittest.TestCase):
         self.assertEqual(created_account["path"], str(self.base_dir))
         self.assertNotIn("open_browser", created_account)
 
+    def test_blank_accounts_file_is_treated_as_empty_list(self) -> None:
+        self.accounts_file.write_text("", encoding="utf-8")
+
+        response = self.client.get("/accounts")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_bom_prefixed_accounts_file_is_read(self) -> None:
+        self.accounts_file.write_text(
+            "\ufeff"
+            + json.dumps(
+                [
+                    {
+                        "id": "acc-bom",
+                        "name": "BOM account",
+                        "phone_number": "+380000000001",
+                        "path": "/tmp/project",
+                        "branch": "main",
+                        "timer_minutes": 5,
+                        "channel_links": [],
+                        "status": "stopped",
+                        "last_run": None,
+                        "errors": 0,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/accounts/acc-bom")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["name"], "BOM account")
+
+    def test_legacy_dev_path_is_migrated_to_current_base_dir(self) -> None:
+        self.accounts_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "acc-legacy",
+                        "name": "Legacy path account",
+                        "phone_number": "+380000000002",
+                        "path": "/Users/eeri/coding/python/projects/scripts/shafa",
+                        "branch": "main",
+                        "timer_minutes": 5,
+                        "channel_links": [],
+                        "status": "stopped",
+                        "last_run": None,
+                        "errors": 0,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/accounts/acc-legacy")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["path"], str(self.base_dir))
+
     def test_start_account_requires_valid_shafa_session(self) -> None:
         project_dir = self._make_project()
 

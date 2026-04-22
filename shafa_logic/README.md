@@ -25,11 +25,8 @@
 - Python 3.9+
 - Приложение Telegram API (`api_id` + `api_hash`)
 - Аккаунт Shafa
-- Установленные зависимости Python из `requirements.txt`
+- Установленные зависимости Python из `requirements.txt` (локальный файл прокидывает общий `../requirements/runtime.txt`)
 - Chromium для Playwright-сценариев (`playwright install chromium`)
-
-Опционально:
-- `Pillow` (рекомендуется для `core.no_playwright`, включает автосжатие слишком больших изображений)
 
 ## Установка
 
@@ -38,12 +35,6 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
-```
-
-Если нужно автоматическое сжатие изображений в режиме без Playwright:
-
-```bash
-pip install pillow
 ```
 
 ## Настройка
@@ -116,7 +107,7 @@ python main.py
 ## Примечания по режимам
 
 - `with_playwright`: требует запуск браузера и может попросить логин, если cookies отсутствуют.
-- `no_playwright`: требует валидные сохраненные cookies, использует прямые HTTP-запросы, может автоматически обновлять размеры и сжимать большие изображения при установленном `Pillow`.
+- `no_playwright`: требует валидные сохраненные cookies, использует прямые HTTP-запросы, может автоматически обновлять размеры и сжимать большие изображения через `Pillow`, который уже входит в runtime dependencies.
 
 ## Данные и локальные файлы
 
@@ -157,4 +148,4 @@ main.py       Точка входа интерактивного CLI
 - `Missing Telegram credentials`: укажите `SHAFA_TELEGRAM_API_ID` и `SHAFA_TELEGRAM_API_HASH` в `.env`.
 - `No saved cookies`: запустите `Настройки -> Войти в аккаунт` в `main.py`.
 - `Size not resolved`: запустите `Настройки -> Инициализация проекта` для обновления размеров и брендов.
-- `Photos skipped due to size`: максимальный размер загрузки 10 MB; установите `Pillow` для сжатия фото в no-Playwright режиме.
+- `Photos skipped due to size`: максимальный размер загрузки 10 MB; проверьте, что установлены runtime dependencies и доступен `Pillow` для сжатия фото в no-Playwright режиме.

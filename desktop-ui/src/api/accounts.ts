@@ -55,12 +55,6 @@ export async function deleteAccount(
   });
 }
 
-export async function clearLogs(): Promise<{ detail: string }> {
-  return request<{ detail: string }>('/logs/clear', {
-    method: 'POST',
-  });
-}
-
 export async function listAccountLogs(
   accountId: string,
   limit = 100,

@@ -1,4 +1,4 @@
-import type { MetricAccent, MetricBadgeTone, MetricKind } from '../types';
+import type { MetricAccent, MetricKind } from '../types';
 import {
   CircleAlert,
   Package2,
@@ -12,8 +12,6 @@ interface MetricCardProps {
   label: string;
   value: string;
   unit?: string;
-  badge?: string;
-  badgeTone?: MetricBadgeTone;
   accent: MetricAccent;
 }
 
@@ -37,39 +35,30 @@ const accentClasses: Record<
     border: 'border-success/12',
     iconWrap: 'bg-success/14',
     icon: 'text-success',
-    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(24,160,88,0.13),transparent_42%)]',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(24,160,88,0.13),transparent_25%)]',
   },
   amber: {
     border: 'border-warning/14',
     iconWrap: 'bg-warning/16',
     icon: 'text-warning',
-    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(240,163,62,0.14),transparent_42%)]',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(240,163,62,0.14),transparent_25%)]',
   },
   blue: {
     border: 'border-info/12',
     iconWrap: 'bg-info/14',
     icon: 'text-info',
-    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(12,86,208,0.13),transparent_42%)]',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(12,86,208,0.13),transparent_25%)]',
   },
   rose: {
     border: 'border-error/12',
     iconWrap: 'bg-error/14',
     icon: 'text-error',
-    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(209,51,27,0.14),transparent_42%)]',
+    glow: 'bg-[radial-gradient(circle_at_top_left,rgba(209,51,27,0.14),transparent_25%)]',
   },
-};
-
-const badgeClasses: Record<MetricBadgeTone, string> = {
-  teal: 'bg-success/10 text-success',
-  amber: 'bg-warning/12 text-warning',
-  blue: 'bg-info/10 text-info',
-  rose: 'bg-error/10 text-error',
-  neutral: 'bg-secondary text-text-muted',
 };
 
 export function MetricCard({
   accent,
-  badgeTone,
   kind,
   label,
   unit,
@@ -77,7 +66,6 @@ export function MetricCard({
 }: MetricCardProps) {
   const accentClass = accentClasses[accent];
   const Icon = iconByKind[kind];
-  const resolvedBadgeTone = badgeTone ?? accent;
 
   return (
     <article

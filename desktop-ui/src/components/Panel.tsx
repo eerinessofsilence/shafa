@@ -10,7 +10,7 @@ interface PanelProps {
 
 export function Panel({ title, subtitle, actions, children }: PanelProps) {
   return (
-    <section className="flex flex-col justify-between space-y-5 rounded-[12px] border border-border bg-foreground px-6 py-6 shadow-[0_1px_2px_rgba(15,23,42,0.02)]">
+    <section className="flex flex-col justify-between space-y-5 rounded-xl border border-border bg-foreground p-5 shadow-[0_1px_2px_rgba(15,23,42,0.02)]">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-2">
           <h3 className={sectionTitleClassName}>{title}</h3>

@@ -1,6 +1,5 @@
 import {
   buildAccountLogsWebSocketUrl,
-  clearLogs as clearLogsRequest,
   createAccount as createAccountRequest,
   deleteAccount as deleteAccountRequest,
   getAccount as getAccountRequest,
@@ -49,7 +48,6 @@ import type {
   DashboardRangePreset,
   Metric,
   PageId,
-  StatusItem,
   StatusTone,
   TelegramChannel,
 } from './types';
@@ -90,7 +88,6 @@ import {
   Save,
   Settings,
   ShieldCheck,
-  Star,
   Trash2,
   Upload,
   TriangleAlert,
@@ -98,14 +95,13 @@ import {
   Users,
   SunMedium,
   X,
-  Send,
   SlidersHorizontal,
   EllipsisVertical,
-  Wrench,
 } from 'lucide-react';
 import {
   type ChangeEvent,
   type ComponentPropsWithoutRef,
+  type FormEvent,
   type ReactNode,
   useEffect,
   useRef,
@@ -115,17 +111,12 @@ import {
 const defaultTimerMinutes = 5;
 const minimumTimerMinutes = 1;
 const maximumTimerMinutes = 1440;
-const timerPresetMinutes = [5, 10, 15, 30, 45, 60, 90, 120] as const;
 const productName = 'Shafa Control';
 const accountControlClassName =
   'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[15px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
-const accountTextareaClassName =
-  'min-h-36 w-full rounded-[8px] border border-border bg-foreground px-4 py-3 text-[15px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const telegramDraftInitialState = {
   handle: '',
 };
-const surfaceCardClassName =
-  'rounded-[12px] border border-border bg-secondary p-4';
 const navItemIcons: Record<PageId, ReactNode> = {
   dashboard: <LayoutGrid className="h-4 w-4" />,
   accounts: <Users className="h-4 w-4" />,
@@ -141,6 +132,11 @@ type AccountDraft = Pick<AccountRow, AccountEditableField>;
 type AccountSortField = 'name' | 'timer' | 'channels' | 'status' | 'errors';
 type AccountSortDirection = 'asc' | 'desc';
 type AccountBulkActionId = 'open' | 'close' | 'delete';
+type PaginationEllipsisKey = 'left' | 'right';
+type TablePageSize = (typeof accountPageSizeOptions)[number];
+type PaginationItem =
+  | { type: 'page'; value: number }
+  | { type: 'ellipsis'; key: PaginationEllipsisKey };
 
 const accountTableHeaders: Array<{
   id: AccountSortField;
@@ -152,11 +148,30 @@ const accountTableHeaders: Array<{
   { id: 'status', label: 'Статус' },
   { id: 'errors', label: 'Ошибки' },
 ];
-const defaultAccountProjectPath =
-  window.desktopShell?.cwd?.trim() ||
+const joinDisplayPath = (basePath: string, relativePath: string) => {
+  const normalizedBasePath = basePath.trim().replace(/[\\/]+$/, '');
+
+  if (!normalizedBasePath) {
+    return '';
+  }
+
+  const separator = normalizedBasePath.includes('\\') ? '\\' : '/';
+  const normalizedRelativePath = relativePath.replace(/^[\\/]+/, '');
+  return `${normalizedBasePath}${separator}${normalizedRelativePath}`;
+};
+const legacyDefaultAccountProjectPath =
   '/Users/eeri/coding/python/projects/scripts/shafa';
-const defaultAccountsDirectory = `${defaultAccountProjectPath}/accounts`;
-const defaultLogsDirectory = `${defaultAccountProjectPath}/runtime/logs`;
+const legacyDefaultAccountsDirectory = joinDisplayPath(
+  legacyDefaultAccountProjectPath,
+  'accounts',
+);
+const legacyDefaultLogsDirectory = joinDisplayPath(
+  legacyDefaultAccountProjectPath,
+  'runtime/logs',
+);
+const defaultAccountProjectPath = window.desktopShell?.cwd?.trim() ?? '';
+const defaultAccountsDirectory = joinDisplayPath(defaultAccountProjectPath, 'accounts');
+const defaultLogsDirectory = joinDisplayPath(defaultAccountProjectPath, 'runtime/logs');
 const defaultChannelTemplateName = 'default';
 const accountDraftInitialState: AccountDraft = {
   name: '',
@@ -164,6 +179,19 @@ const accountDraftInitialState: AccountDraft = {
   timer: `${defaultTimerMinutes} мин`,
 };
 const accountPageSizeOptions = [5, 10, 20, 50] as const;
+const tablePaginationSelectClassName =
+  'h-9 min-w-[4.75rem] appearance-none rounded-lg border border-border/18 bg-foreground/86 px-3 pr-8 text-[13px] font-medium text-text outline-none transition hover:border-border/34 hover:bg-foreground focus:border-info/30 focus:ring-2 focus:ring-info/12';
+const tablePaginationButtonClassName =
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/18 bg-foreground/86 text-[13px] font-medium tabular-nums text-text-muted outline-none transition hover:border-border/34 hover:bg-foreground hover:text-text focus:border-info/30 focus:ring-2 focus:ring-info/12 disabled:pointer-events-none disabled:opacity-50';
+const tablePaginationIconButtonClassName =
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/18 bg-foreground/86 text-text-muted outline-none transition hover:border-border/34 hover:bg-foreground hover:text-text focus:border-info/30 focus:ring-2 focus:ring-info/12 disabled:pointer-events-none disabled:opacity-50';
+const tablePaginationCurrentPageClassName =
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/24 bg-secondary/72 text-[13px] font-semibold tabular-nums text-text shadow-[0_1px_0_rgba(255,255,255,0.03)]';
+const tablePaginationJumpTriggerClassName = tablePaginationButtonClassName;
+const tablePaginationJumpPopoverClassName =
+  'absolute bottom-[calc(100%+8px)] left-1/2 z-20 flex w-36 -translate-x-1/2 flex-col gap-1.5 rounded-lg border border-border/18 bg-foreground p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]';
+const tablePaginationJumpInputClassName =
+  'number-input-no-spin h-8 w-full rounded-md border border-border/18 bg-secondary/75 px-2.5 text-[13px] font-medium text-text outline-none transition hover:border-border/42 focus:border-info/42 focus:ring-2 focus:ring-info/16';
 const allLogAccountsValue = '__all_accounts__';
 const allLogLevelsValue = 'ALL';
 const logLevelOptions = [
@@ -176,20 +204,14 @@ const logLevelOptions = [
 ] as const;
 const logFilterSelectClassName =
   'h-[42px] min-w-[220px] appearance-none rounded-[8px] border border-border bg-foreground px-4 pr-11 text-[15px] font-normal text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
-const logToolbarButtonClassName = getButtonClassName();
+const logTableDesktopGridClassName =
+  'xl:grid-cols-[minmax(180px,1.1fr)_minmax(128px,0.7fr)_minmax(0,2.55fr)_minmax(108px,0.6fr)]';
 const logLevelBadgeClassNames: Record<StatusTone, string> = {
-  success: 'border-success/35 bg-success/10 text-success',
-  warning: 'border-warning/40 bg-warning/10 text-warning',
-  info: 'border-info/35 bg-info/10 text-info',
-  danger: 'border-error/35 bg-error/10 text-error',
-  neutral: 'border-border/20 bg-foreground/70 text-text-muted',
-};
-const logEventIconClassNames: Record<StatusTone, string> = {
-  success: 'border-success/18 bg-success/10 text-success',
-  warning: 'border-warning/20 bg-warning/10 text-warning',
-  info: 'border-info/18 bg-info/10 text-info',
-  danger: 'border-error/18 bg-error/10 text-error',
-  neutral: 'border-border/18 bg-foreground/90 text-text-muted',
+  success: 'border-success/12.5 bg-success/10 text-success',
+  warning: 'border-warning/12.5 bg-warning/10 text-warning',
+  info: 'border-info/12.5 bg-info/10 text-info',
+  danger: 'border-error/12.5 bg-error/10 text-error',
+  neutral: 'border-border/12.5 bg-foreground/75 text-text-muted',
 };
 const accountLogTimestampFormatter = new Intl.DateTimeFormat('en-US', {
   day: '2-digit',
@@ -397,22 +419,6 @@ function formatDashboardSeriesLabel(
   return formattedValue.charAt(0).toUpperCase() + formattedValue.slice(1);
 }
 
-function formatDashboardRangeCaption(value: string) {
-  const normalizedValue = value.trim();
-
-  if (!normalizedValue) {
-    return '—';
-  }
-
-  const parsedValue = new Date(`${normalizedValue}T00:00:00`);
-
-  if (Number.isNaN(parsedValue.getTime())) {
-    return normalizedValue;
-  }
-
-  return dashboardDateLabelFormatter.format(parsedValue).replace('.', '');
-}
-
 function formatDashboardMetricWindowLabel(preset: DashboardRangePreset) {
   switch (preset) {
     case 'all':
@@ -426,45 +432,6 @@ function formatDashboardMetricWindowLabel(preset: DashboardRangePreset) {
     case 'custom':
       return 'за период';
   }
-}
-
-function formatDashboardTrendBadge(
-  summary: ApiDashboardSummary | null,
-  key: 'items' | 'errors',
-) {
-  if (!summary || summary.series.length < 2) {
-    return 'Стабильно';
-  }
-
-  const baseline = summary.series[0]?.[key] ?? 0;
-  const current = summary.series[summary.series.length - 1]?.[key] ?? 0;
-
-  if (baseline === 0) {
-    if (current === 0) {
-      return 'Стабильно';
-    }
-
-    return `+${current}`;
-  }
-
-  const percent = Math.round(((current - baseline) / Math.abs(baseline)) * 100);
-
-  if (percent === 0) {
-    return 'Стабильно';
-  }
-
-  return `${percent > 0 ? '+' : ''}${percent}%`;
-}
-
-function formatDashboardSummarySubtitle(summary: ApiDashboardSummary | null) {
-  if (!summary) {
-    return 'Период runtime-логов аккаунтов загружается.';
-  }
-
-  const startLabel = formatDashboardRangeCaption(summary.range_start);
-  const endLabel = formatDashboardRangeCaption(summary.range_end);
-
-  return `Период ${startLabel} - ${endLabel} по реальным runtime-логам аккаунтов`;
 }
 
 function formatDashboardRunTimestamp(value: string | null) {
@@ -560,6 +527,18 @@ function parseTextSetting(value: unknown, fallback: string) {
   return normalizedValue || fallback;
 }
 
+function migrateLegacyWorkingPath(
+  value: string,
+  legacyPath: string,
+  nextDefaultPath: string,
+) {
+  if (!nextDefaultPath || nextDefaultPath === legacyPath) {
+    return value;
+  }
+
+  return value === legacyPath ? nextDefaultPath : value;
+}
+
 function normalizeAppPreferences(value: unknown): AppPreferences {
   const defaults = createDefaultAppPreferences();
 
@@ -608,12 +587,14 @@ function normalizeAppPreferences(value: unknown): AppPreferences {
       typeof payload.persistRawJson === 'boolean'
         ? payload.persistRawJson
         : defaults.persistRawJson,
-    accountsDirectory: parseTextSetting(
-      payload.accountsDirectory,
+    accountsDirectory: migrateLegacyWorkingPath(
+      parseTextSetting(payload.accountsDirectory, defaults.accountsDirectory),
+      legacyDefaultAccountsDirectory,
       defaults.accountsDirectory,
     ),
-    logsDirectory: parseTextSetting(
-      payload.logsDirectory,
+    logsDirectory: migrateLegacyWorkingPath(
+      parseTextSetting(payload.logsDirectory, defaults.logsDirectory),
+      legacyDefaultLogsDirectory,
       defaults.logsDirectory,
     ),
   };
@@ -661,55 +642,268 @@ function getInitialActivePage(): PageId {
   return navItems.some((item) => item.id === hashPage) ? hashPage : 'dashboard';
 }
 
-function renderAutoRefreshLabel(seconds: number) {
-  return `${seconds} сек.`;
+function buildPaginationItems(
+  currentPage: number,
+  totalPages: number,
+): PaginationItem[] {
+  if (totalPages <= 5) {
+    return Array.from({ length: totalPages }, (_, index) => ({
+      type: 'page' as const,
+      value: index + 1,
+    }));
+  }
+
+  if (currentPage <= 3) {
+    return [
+      { type: 'page', value: 1 },
+      { type: 'page', value: 2 },
+      { type: 'page', value: 3 },
+      { type: 'ellipsis', key: 'right' },
+      { type: 'page', value: totalPages },
+    ];
+  }
+
+  if (currentPage >= totalPages - 2) {
+    return [
+      { type: 'page', value: 1 },
+      { type: 'ellipsis', key: 'left' },
+      { type: 'page', value: totalPages - 2 },
+      { type: 'page', value: totalPages - 1 },
+      { type: 'page', value: totalPages },
+    ];
+  }
+
+  return [
+    { type: 'page', value: 1 },
+    { type: 'ellipsis', key: 'left' },
+    { type: 'page', value: currentPage - 1 },
+    { type: 'page', value: currentPage },
+    { type: 'page', value: currentPage + 1 },
+    { type: 'ellipsis', key: 'right' },
+    { type: 'page', value: totalPages },
+  ];
 }
 
-function renderAutoRefreshSummaryLabel(seconds: number) {
-  return `Каждые ${seconds} сек.`;
+interface TablePaginationFooterProps {
+  currentPage: number;
+  itemsPerPage: TablePageSize;
+  itemCountLabel: string;
+  nextPageAriaLabel: string;
+  onItemsPerPageChange: (value: TablePageSize) => void;
+  onPageChange: (page: number) => void;
+  previousPageAriaLabel: string;
+  totalItems: number;
+  totalPages: number;
+  visibleRangeEnd: number;
+  visibleRangeStart: number;
 }
 
-function translateSettingsStatusMessage(message: string) {
-  const normalizedMessage = message.trim();
+function TablePaginationFooter({
+  currentPage,
+  itemsPerPage,
+  itemCountLabel,
+  nextPageAriaLabel,
+  onItemsPerPageChange,
+  onPageChange,
+  previousPageAriaLabel,
+  totalItems,
+  totalPages,
+  visibleRangeEnd,
+  visibleRangeStart,
+}: TablePaginationFooterProps) {
+  const paginationItems = buildPaginationItems(currentPage, totalPages);
+  const [activeJumpKey, setActiveJumpKey] =
+    useState<PaginationEllipsisKey | null>(null);
+  const [jumpPageValue, setJumpPageValue] = useState('');
+  const jumpInputRef = useRef<HTMLInputElement | null>(null);
 
-  if (!normalizedMessage) {
-    return '';
-  }
+  useEffect(() => {
+    if (!activeJumpKey) {
+      return;
+    }
 
-  if (
-    normalizedMessage ===
-      'Параметры панели сброшены к значениям по умолчанию.' ||
-    normalizedMessage === 'Settings were reset to defaults.'
-  ) {
-    return 'Настройки сброшены к значениям по умолчанию.';
-  }
+    jumpInputRef.current?.focus();
+    jumpInputRef.current?.select();
+  }, [activeJumpKey]);
 
-  if (normalizedMessage === 'Настройки сохранены.') {
-    return 'Настройки сохранены.';
-  }
+  useEffect(() => {
+    setActiveJumpKey(null);
+    setJumpPageValue('');
+  }, [currentPage, totalPages]);
 
-  if (
-    normalizedMessage === 'Логи уже пусты.' ||
-    normalizedMessage === 'Logs are already clear.'
-  ) {
-    return 'Логи уже пусты.';
-  }
+  const closeJumpPicker = () => {
+    setActiveJumpKey(null);
+    setJumpPageValue('');
+  };
 
-  const clearedLogsMatch =
-    normalizedMessage.match(/^Логи очищены\. Удалено файлов: (\d+)\.$/u) ??
-    normalizedMessage.match(/^Logs cleared\. Removed files: (\d+)\.$/);
-  if (clearedLogsMatch) {
-    return `Логи очищены. Удалено файлов: ${clearedLogsMatch[1]}.`;
-  }
+  const toggleJumpPicker = (key: PaginationEllipsisKey) => {
+    if (activeJumpKey === key) {
+      closeJumpPicker();
+      return;
+    }
 
-  if (
-    normalizedMessage === 'Не удалось очистить логи.' ||
-    normalizedMessage === 'Failed to clear logs.'
-  ) {
-    return 'Не удалось очистить логи.';
-  }
+    setActiveJumpKey(key);
+    setJumpPageValue('');
+  };
 
-  return normalizedMessage;
+  const handleJumpSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const parsedPage = Number.parseInt(jumpPageValue, 10);
+
+    if (!Number.isFinite(parsedPage)) {
+      jumpInputRef.current?.focus();
+      return;
+    }
+
+    onPageChange(Math.min(totalPages, Math.max(1, parsedPage)));
+    closeJumpPicker();
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-border/25 px-5 py-3.5">
+      <p className="text-[13px] text-text-muted">
+        Показано{' '}
+        {visibleRangeStart === 0 ? 0 : `${visibleRangeStart}-${visibleRangeEnd}`}{' '}
+        из {totalItems} {itemCountLabel}
+      </p>
+
+      <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[13px] text-text-muted">На странице</span>
+          <div className="relative">
+            <select
+              aria-label={`Количество ${itemCountLabel} на странице`}
+              className={tablePaginationSelectClassName}
+              value={String(itemsPerPage)}
+              onChange={(event) =>
+                onItemsPerPageChange(Number(event.target.value) as TablePageSize)
+              }
+            >
+              {accountPageSizeOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute top-1/2 right-2.5 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <button
+            aria-label={previousPageAriaLabel}
+            className={tablePaginationIconButtonClassName}
+            disabled={currentPage === 1}
+            type="button"
+            onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+
+          {paginationItems.map((item, index) =>
+            item.type === 'ellipsis' ? (
+              <div
+                key={`${item.key}-${index}`}
+                className="relative"
+                onBlurCapture={(event) => {
+                  const nextTarget = event.relatedTarget;
+
+                  if (
+                    !(nextTarget instanceof Node) ||
+                    !event.currentTarget.contains(nextTarget)
+                  ) {
+                    closeJumpPicker();
+                  }
+                }}
+              >
+                <button
+                  aria-expanded={activeJumpKey === item.key}
+                  aria-haspopup="dialog"
+                  aria-label="Перейти к странице"
+                  className={tablePaginationJumpTriggerClassName}
+                  type="button"
+                  onClick={() => toggleJumpPicker(item.key)}
+                >
+                  …
+                </button>
+
+                {activeJumpKey === item.key ? (
+                  <form
+                    className={tablePaginationJumpPopoverClassName}
+                    onSubmit={handleJumpSubmit}
+                  >
+                    <label className="text-[11px] font-medium uppercase tracking-wide text-text-muted">
+                      Номер страницы
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={jumpInputRef}
+                        className={tablePaginationJumpInputClassName}
+                        inputMode="numeric"
+                        max={totalPages}
+                        min={1}
+                        placeholder={`1-${totalPages}`}
+                        type="number"
+                        value={jumpPageValue}
+                        onChange={(event) =>
+                          setJumpPageValue(event.target.value)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            closeJumpPicker();
+                          }
+                        }}
+                      />
+                      <button
+                        className={getButtonClassName({
+                          tone: 'info',
+                          variant: 'solid',
+                          size: 'sm',
+                          className: 'h-8 rounded-md px-2.5 text-xs',
+                        })}
+                        type="submit"
+                      >
+                        OK
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
+              </div>
+            ) : item.value === currentPage ? (
+              <span
+                key={item.value}
+                aria-current="page"
+                className={tablePaginationCurrentPageClassName}
+              >
+                {item.value}
+              </span>
+            ) : (
+              <button
+                key={item.value}
+                aria-label={`Страница ${item.value}`}
+                className={tablePaginationButtonClassName}
+                type="button"
+                onClick={() => onPageChange(item.value)}
+              >
+                {item.value}
+              </button>
+            ),
+          )}
+
+          <button
+            aria-label={nextPageAriaLabel}
+            className={tablePaginationIconButtonClassName}
+            disabled={currentPage === totalPages}
+            type="button"
+            onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function getBrowseLabel(label: string) {
@@ -792,8 +986,6 @@ function createDashboardMetrics(
   preset: DashboardRangePreset,
 ): Metric[] {
   const rangeLabel = formatDashboardMetricWindowLabel(preset);
-  const hasItems = (summary?.item_successes_in_range ?? 0) > 0;
-  const hasErrors = (summary?.error_events_in_range ?? 0) > 0;
 
   return [
     {
@@ -801,14 +993,6 @@ function createDashboardMetrics(
       label: 'Всего аккаунтов',
       value: summary ? String(summary.total_accounts) : '—',
       unit: 'шт.',
-      badge: summary
-        ? summary.total_accounts > 0
-          ? summary.ready_accounts === summary.total_accounts
-            ? 'Все готовы'
-            : `${summary.ready_accounts} готовы`
-          : 'Пусто'
-        : 'Загрузка',
-      badgeTone: summary && summary.total_accounts > 0 ? 'teal' : 'neutral',
       accent: 'teal',
     },
     {
@@ -816,12 +1000,6 @@ function createDashboardMetrics(
       label: 'Активные сейчас',
       value: summary ? String(summary.active_accounts) : '—',
       unit: 'онлайн',
-      badge: summary
-        ? summary.active_accounts > 0
-          ? `${summary.active_accounts} онлайн`
-          : 'Стабильно'
-        : 'Загрузка',
-      badgeTone: 'neutral',
       accent: 'amber',
     },
     {
@@ -829,10 +1007,6 @@ function createDashboardMetrics(
       label: `Товаров ${rangeLabel}`,
       value: summary ? String(summary.item_successes_in_range) : '—',
       unit: 'ед.',
-      badge: hasItems
-        ? formatDashboardTrendBadge(summary, 'items')
-        : 'Стабильно',
-      badgeTone: hasItems ? 'blue' : 'neutral',
       accent: 'blue',
     },
     {
@@ -840,8 +1014,6 @@ function createDashboardMetrics(
       label: `Ошибок ${rangeLabel}`,
       value: summary ? String(summary.error_events_in_range) : '—',
       unit: 'лог.',
-      badge: hasErrors ? formatDashboardTrendBadge(summary, 'errors') : 'Чисто',
-      badgeTone: hasErrors ? 'rose' : 'neutral',
       accent: 'rose',
     },
   ];
@@ -862,84 +1034,6 @@ function createDashboardSeries(
     items: point.items,
     errors: point.errors,
   }));
-}
-
-function createDashboardStatus(
-  summary: ApiDashboardSummary | null,
-): StatusItem[] {
-  if (!summary) {
-    return [
-      {
-        label: 'Готовность',
-        value: 'Подключаем текущую сводку по аккаунтам и сессиям.',
-        badge: 'Sync',
-        tone: 'info',
-      },
-      {
-        label: 'Последний запуск',
-        value: 'Получаем историю запусков из API.',
-        badge: 'Wait',
-        tone: 'neutral',
-      },
-      {
-        label: 'Фокус по ошибкам',
-        value: 'Проверяем последние error-события и накопленные ошибки.',
-        badge: 'Scan',
-        tone: 'neutral',
-      },
-    ];
-  }
-
-  const readyTone: StatusTone =
-    summary.total_accounts > 0 &&
-    summary.ready_accounts === summary.total_accounts
-      ? 'success'
-      : summary.ready_accounts > 0
-        ? 'warning'
-        : 'neutral';
-  const latestRunTone: StatusTone = summary.latest_run_at ? 'info' : 'neutral';
-  const attentionTone: StatusTone =
-    summary.top_error_account_name && summary.top_error_account_errors > 0
-      ? 'danger'
-      : summary.attention_accounts > 0
-        ? 'warning'
-        : 'success';
-
-  return [
-    {
-      label: 'Готовы к запуску',
-      value:
-        summary.total_accounts > 0
-          ? `${summary.ready_accounts} из ${summary.total_accounts} аккаунтов готовы по сессиям и API.`
-          : 'Аккаунтов пока нет, поэтому готовность ещё не считается.',
-      badge: summary.total_accounts > 0 ? 'Ready' : 'Empty',
-      tone: readyTone,
-    },
-    {
-      label: 'Последний запуск',
-      value: summary.latest_run_account_name
-        ? `${summary.latest_run_account_name} · ${formatDashboardRunTimestamp(summary.latest_run_at)}`
-        : 'Запусков пока не было.',
-      badge: summary.latest_run_at ? 'Recent' : 'Idle',
-      tone: latestRunTone,
-    },
-    {
-      label: 'Фокус по ошибкам',
-      value:
-        summary.top_error_account_name && summary.top_error_account_errors > 0
-          ? `${summary.top_error_account_name}: ${summary.top_error_account_errors} накопленных ошибок.`
-          : summary.attention_accounts > 0
-            ? `${summary.attention_accounts} аккаунтов ещё требуют внимания по настройке или состоянию.`
-            : 'Критичных сигналов сейчас нет.',
-      badge:
-        summary.top_error_account_name && summary.top_error_account_errors > 0
-          ? 'Risk'
-          : summary.attention_accounts > 0
-            ? 'Watch'
-            : 'Clear',
-      tone: attentionTone,
-    },
-  ];
 }
 
 function getAccountStatusMeta(
@@ -1016,7 +1110,7 @@ function createAccountCreatePayload(draft: AccountDraft): ApiAccountCreate {
   return {
     name: draft.name.trim(),
     phone: '',
-    path: draft.path.trim() || defaultAccountProjectPath,
+    path: draft.path.trim(),
     timer_minutes: parseTimerLabel(draft.timer),
     channel_links: [],
   };
@@ -1034,6 +1128,24 @@ function formatApiError(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function joinUniqueMessages(messages: string[]) {
+  const seen = new Set<string>();
+  const uniqueMessages: string[] = [];
+
+  for (const message of messages) {
+    const normalizedMessage = message.trim();
+
+    if (!normalizedMessage || seen.has(normalizedMessage)) {
+      continue;
+    }
+
+    seen.add(normalizedMessage);
+    uniqueMessages.push(normalizedMessage);
+  }
+
+  return uniqueMessages.join(' ');
+}
+
 function getAccountLogTone(level: string): StatusTone {
   switch (level.toUpperCase()) {
     case 'SUCCESS':
@@ -1048,31 +1160,6 @@ function getAccountLogTone(level: string): StatusTone {
       return 'info';
     default:
       return 'neutral';
-  }
-}
-
-function getAccountInitials(name: string) {
-  const segments = name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
-
-  if (segments.length === 0) {
-    return '??';
-  }
-
-  return segments.map((segment) => segment.charAt(0).toUpperCase()).join('');
-}
-
-function AccountLogEventIcon({ tone }: { tone: StatusTone }) {
-  switch (tone) {
-    case 'success':
-      return <LogIn className="h-4 w-4" />;
-    case 'warning':
-      return <LockKeyhole className="h-4 w-4" />;
-    case 'danger':
-      return <TriangleAlert className="h-4 w-4" />;
-    case 'info':
-      return <ShieldCheck className="h-4 w-4" />;
-    default:
-      return <FileJson className="h-4 w-4" />;
   }
 }
 
@@ -1303,41 +1390,6 @@ function normalizeTelegramLinks(links: string[]) {
   return [...uniqueLinks];
 }
 
-function createEntityId(prefix: string) {
-  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? `${prefix}-${crypto.randomUUID()}`
-    : `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
-}
-
-function deriveAccountBranch(path: string) {
-  const pathSegments = path
-    .trim()
-    .replace(/\/+$/, '')
-    .split('/')
-    .filter(Boolean);
-  const lastPathSegment = pathSegments[pathSegments.length - 1];
-
-  return lastPathSegment || 'main';
-}
-
-function createAccountFromDraft(draft: AccountDraft): AccountRow {
-  return {
-    id: createEntityId('account'),
-    name: draft.name.trim(),
-    phone: '',
-    path: draft.path.trim() || defaultAccountProjectPath,
-    branch: deriveAccountBranch(draft.path),
-    timer: draft.timer,
-    errors: '0',
-    statusLabel: 'stopped',
-    statusTone: 'neutral',
-    shafaSessionExists: false,
-    telegramSessionExists: false,
-    telegramChannels: [],
-    channelTemplates: [],
-  };
-}
-
 function getAccountDraftFromRow(account: AccountRow): AccountDraft {
   return {
     name: account.name,
@@ -1385,10 +1437,13 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState<AppPreferences>(() =>
     loadStoredAppPreferences(),
   );
-  const [isClearingLogs, setIsClearingLogs] = useState(false);
-  const [settingsFeedback, setSettingsFeedback] = useState('');
-  const [settingsError, setSettingsError] = useState('');
   const [selectedAccountId, setSelectedAccountId] = useState('');
+  const [accountsItemsPerPage, setAccountsItemsPerPage] =
+    useState<TablePageSize>(accountPageSizeOptions[0]);
+  const [accountsCurrentPage, setAccountsCurrentPage] = useState(1);
+  const [logsItemsPerPage, setLogsItemsPerPage] =
+    useState<TablePageSize>(accountPageSizeOptions[0]);
+  const [logsCurrentPage, setLogsCurrentPage] = useState(1);
 
   useEffect(() => {
     if (
@@ -1511,51 +1566,22 @@ function App() {
           [field]: value,
         }) as AppPreferences,
     );
-    setSettingsFeedback('');
-    setSettingsError('');
   };
 
   const handleSavePreferences = () => {
     setAppPreferences(settingsDraft);
-    setSettingsFeedback('Настройки сохранены.');
-    setSettingsError('');
   };
 
   const handleResetPreferences = () => {
     const nextDefaults = createDefaultAppPreferences();
     setAppPreferences(nextDefaults);
     setSettingsDraft(nextDefaults);
-    setSettingsFeedback('Настройки сброшены к значениям по умолчанию.');
-    setSettingsError('');
   };
 
   const handleToggleTheme = () => {
     setThemeMode((currentTheme) =>
       currentTheme === 'dark' ? 'light' : 'dark',
     );
-  };
-
-  const handleClearLogs = async () => {
-    if (
-      !window.confirm(
-        'Clear all runtime logs and account log files? This action cannot be undone.',
-      )
-    ) {
-      return;
-    }
-
-    setIsClearingLogs(true);
-    setSettingsFeedback('');
-    setSettingsError('');
-
-    try {
-      const response = await clearLogsRequest();
-      setSettingsFeedback(response.detail);
-    } catch (error) {
-      setSettingsError(formatApiError(error, 'Не удалось очистить логи.'));
-    } finally {
-      setIsClearingLogs(false);
-    }
   };
 
   const handleBulkAccountAction = async (
@@ -1614,17 +1640,13 @@ function App() {
 
     return (
       <SettingsPage
-        feedback={settingsFeedback}
         hasUnsavedChanges={hasUnsavedChanges}
-        isClearingLogs={isClearingLogs}
         onChangePreference={handleUpdatePreference}
-        onClearLogs={handleClearLogs}
         onNavigateToPage={setActivePage}
         onResetPreferences={handleResetPreferences}
         onSavePreferences={handleSavePreferences}
         onToggleTheme={handleToggleTheme}
         preferences={settingsDraft}
-        settingsError={settingsError}
         themeMode={themeMode}
       />
     );
@@ -1642,16 +1664,20 @@ function App() {
 
         <main className="min-w-0 bg-background">
           <section className="min-h-screen overflow-auto">
-            <div className="mx-auto max-w-265 px-10 py-9">
+            <div className="mx-auto max-w-265 py-10 px-7.5">
               {activePage === 'dashboard' && <DashboardPage />}
               {activePage === 'accounts' && (
                 <AccountsPage
                   accounts={accounts}
+                  currentPage={accountsCurrentPage}
                   isLoading={isAccountsLoading}
                   isMutationPending={isAccountMutationPending}
+                  itemsPerPage={accountsItemsPerPage}
                   loadError={accountsError}
                   onBulkAction={handleBulkAccountAction}
                   onCreateAccount={handleCreateAccount}
+                  onCurrentPageChange={setAccountsCurrentPage}
+                  onItemsPerPageChange={setAccountsItemsPerPage}
                   onReload={loadAccounts}
                   onSelectAccount={setSelectedAccountId}
                   onSyncAccountChannels={handleSyncAccountChannels}
@@ -1662,7 +1688,11 @@ function App() {
                 <LogsPage
                   accounts={accounts}
                   accountsError={accountsError}
+                  currentPage={logsCurrentPage}
                   isAccountsLoading={isAccountsLoading}
+                  itemsPerPage={logsItemsPerPage}
+                  onCurrentPageChange={setLogsCurrentPage}
+                  onItemsPerPageChange={setLogsItemsPerPage}
                   onReloadAccounts={loadAccounts}
                 />
               )}
@@ -1897,14 +1927,6 @@ function ToggleSwitch({ checked }: ToggleSwitchProps) {
   );
 }
 
-const accountIconClassNames: Record<StatusTone, string> = {
-  success: 'bg-success/12 text-success',
-  warning: 'bg-info/12 text-info',
-  info: 'bg-info/12 text-info',
-  danger: 'bg-error/12 text-error',
-  neutral: 'bg-info/12 text-info',
-};
-
 const accountStatusBadgeClassNames: Record<StatusTone, string> = {
   success: 'bg-success/15 text-success',
   warning: 'bg-info/15 text-info',
@@ -1912,25 +1934,6 @@ const accountStatusBadgeClassNames: Record<StatusTone, string> = {
   danger: 'bg-error/15 text-error',
   neutral: 'bg-secondary text-text-muted',
 };
-
-function AccountRowIcon({ tone }: { tone: StatusTone }) {
-  const icon =
-    tone === 'danger' ? (
-      <TriangleAlert className="h-4 w-4" />
-    ) : tone === 'success' ? (
-      <Star className="h-4 w-4 fill-current" />
-    ) : (
-      <User className="h-4 w-4" />
-    );
-
-  return (
-    <span
-      className={`flex h-9 w-9 items-center justify-center rounded-xl ${accountIconClassNames[tone]}`}
-    >
-      {icon}
-    </span>
-  );
-}
 
 function AccountStatusBadge({
   tone,
@@ -2255,14 +2258,18 @@ function DashboardPage() {
 
 interface AccountsPageProps {
   accounts: AccountRow[];
+  currentPage: number;
   isLoading: boolean;
   isMutationPending: boolean;
+  itemsPerPage: TablePageSize;
   loadError: string;
   onBulkAction: (
     action: AccountBulkActionId,
     accountIds: string[],
   ) => Promise<string>;
   onCreateAccount: (draft: AccountDraft) => Promise<void>;
+  onCurrentPageChange: (page: number) => void;
+  onItemsPerPageChange: (value: TablePageSize) => void;
   onReload: () => Promise<void>;
   onSelectAccount: (accountId: string) => void;
   onSyncAccountChannels: (
@@ -2274,11 +2281,15 @@ interface AccountsPageProps {
 
 function AccountsPage({
   accounts,
+  currentPage,
   isLoading,
   isMutationPending,
+  itemsPerPage,
   loadError,
   onBulkAction,
   onCreateAccount,
+  onCurrentPageChange,
+  onItemsPerPageChange,
   onReload,
   onSelectAccount,
   onSyncAccountChannels,
@@ -2299,10 +2310,6 @@ function AccountsPage({
   >(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const [itemsPerPage, setItemsPerPage] = useState<
-    (typeof accountPageSizeOptions)[number]
-  >(accountPageSizeOptions[0]);
-  const [currentPage, setCurrentPage] = useState(1);
   const detailsAccount = detailsAccountId
     ? (accounts.find((account) => account.id === detailsAccountId) ?? null)
     : null;
@@ -2460,8 +2467,8 @@ function AccountsPage({
       return;
     }
 
-    setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
+    onCurrentPageChange(totalPages);
+  }, [currentPage, onCurrentPageChange, totalPages]);
 
   useEffect(() => {
     const accountIdSet = new Set(allAccountIds);
@@ -2549,7 +2556,7 @@ function AccountsPage({
         <Panel
           title="Каталог аккаунтов"
           actions={
-            <div className="flex items-center justify-between gap-4 rounded-[20px] border border-border/10 bg-secondary/95 p-1.5">
+            <div className="flex items-center justify-between gap-4 rounded-[20px] border border-border/25 bg-secondary/95 p-1.5">
               <div className="flex flex-wrap items-center gap-2">
                 <BulkActionButton
                   disabled={
@@ -2600,12 +2607,12 @@ function AccountsPage({
             </div>
           }
         >
-          <div className="overflow-hidden bg-secondary/50 rounded-2xl">
+          <div className="overflow-hidden bg-secondary/50 border border-border/25 rounded-2xl">
             <div className="overflow-x-auto px-5 py-3">
               <table className="w-full border-separate [border-spacing:0_10px]">
                 <thead>
                   <tr>
-                    <th className="border-b border-border/20 px-4 pb-2 text-left">
+                    <th className="border-b border-border/25 px-4 pb-3 text-left">
                       <SelectionCheckbox
                         checked={isAllVisibleSelected}
                         indeterminate={isPartiallyVisibleSelected}
@@ -2623,7 +2630,7 @@ function AccountsPage({
                               : 'descending'
                             : 'none'
                         }
-                        className="px-4 pb-2 text-left border-b border-border/20 text-xs font-medium uppercase tracking-wide text-text-muted"
+                        className="px-4 pb-3 text-left border-b border-border/25 text-xs font-medium uppercase tracking-wide text-text-muted"
                       >
                         <button
                           className={`inline-flex cursor-pointer items-center uppercase gap-1.5 transition-colors duration-200 ${
@@ -2766,81 +2773,22 @@ function AccountsPage({
               </table>
             </div>
 
-            <div className="flex items-center justify-between gap-4 border-t border-border/10 px-5 py-4">
-              <p className="text-sm text-text-muted">
-                Показано{' '}
-                {visibleRangeStart === 0
-                  ? 0
-                  : `${visibleRangeStart}-${visibleRangeEnd}`}{' '}
-                из {accounts.length} аккаунтов
-              </p>
-
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-text-muted">На странице</span>
-                  <div className="relative">
-                    <select
-                      aria-label="Количество аккаунтов на странице"
-                      className="h-10 appearance-none rounded-xl border border-border/20 bg-secondary/75 px-3.5 pr-9 text-sm font-medium text-text outline-none transition hover:border-border/50 focus:border-info/50 focus:ring-2 focus:ring-info/20"
-                      value={String(itemsPerPage)}
-                      onChange={(event) => {
-                        setItemsPerPage(
-                          Number(
-                            event.target.value,
-                          ) as (typeof accountPageSizeOptions)[number],
-                        );
-                        setCurrentPage(1);
-                      }}
-                    >
-                      {accountPageSizeOptions.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-text-muted" />
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    aria-label="Предыдущая страница"
-                    className={getButtonClassName({
-                      size: 'icon-sm',
-                      className: 'text-text-muted hover:text-text',
-                    })}
-                    disabled={currentPage === 1}
-                    type="button"
-                    onClick={() =>
-                      setCurrentPage((currentValue) =>
-                        Math.max(1, currentValue - 1),
-                      )
-                    }
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
-                  <span className="inline-flex h-10 min-w-10 items-center justify-center rounded-xl bg-info px-3.5 text-sm font-semibold text-white">
-                    {currentPage}
-                  </span>
-                  <button
-                    aria-label="Следующая страница"
-                    className={getButtonClassName({
-                      size: 'icon-sm',
-                      className: 'text-text-muted hover:text-text',
-                    })}
-                    disabled={currentPage === totalPages}
-                    type="button"
-                    onClick={() =>
-                      setCurrentPage((currentValue) =>
-                        Math.min(totalPages, currentValue + 1),
-                      )
-                    }
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
+            <TablePaginationFooter
+              currentPage={currentPage}
+              itemsPerPage={itemsPerPage}
+              itemCountLabel="аккаунтов"
+              nextPageAriaLabel="Следующая страница"
+              previousPageAriaLabel="Предыдущая страница"
+              totalItems={accounts.length}
+              totalPages={totalPages}
+              visibleRangeEnd={visibleRangeEnd}
+              visibleRangeStart={visibleRangeStart}
+              onItemsPerPageChange={(value) => {
+                onItemsPerPageChange(value);
+                onCurrentPageChange(1);
+              }}
+              onPageChange={onCurrentPageChange}
+            />
           </div>
         </Panel>
       </div>
@@ -2950,7 +2898,7 @@ function AccountDialogShell({
         className="max-h-[calc(100vh-64px)] w-full max-w-250 overflow-y-auto rounded-[30px] border border-border/20 bg-foreground p-5 shadow-[0_30px_90px_rgba(15,23,42,0.2)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex flex-col gap-4 border-b border-border/10 pb-2.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-4 border-b border-border/25 pb-2.5 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-3">
               <h3 className={pageTitleClassName}>{title}</h3>
@@ -3126,7 +3074,6 @@ function AccountInfoDialog({
   );
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!isOpen) {
@@ -3201,7 +3148,7 @@ function AccountInfoDialog({
     return () => {
       isCancelled = true;
     };
-  }, [accountId, isOpen, reloadKey]);
+  }, [accountId, isOpen]);
 
   if (!isOpen || !accountId) {
     return null;
@@ -3252,13 +3199,6 @@ function AccountInfoDialog({
     account?.channel_templates.length ??
     fallbackAccount?.channelTemplates?.length ??
     0;
-  const channelTemplateNames = account?.channel_templates.length
-    ? account.channel_templates.map((template) => template.name).join(', ')
-    : fallbackAccount?.channelTemplates?.length
-      ? fallbackAccount.channelTemplates
-          .map((template) => template.name)
-          .join(', ')
-      : 'Шаблоны ещё не добавлены';
   const timerValue = account
     ? formatTimerLabel(account.timer_minutes)
     : formatAccountTextValue(fallbackAccount?.timer);
@@ -3267,27 +3207,15 @@ function AccountInfoDialog({
   const lastRunValue = formatDashboardRunTimestamp(account?.last_run ?? null);
   const createdAtValue = formatAccountDateTime(account?.created_at);
   const updatedAtValue = formatAccountDateTime(account?.updated_at);
-  const lastSyncValue = account
-    ? formatAccountDateTime(
-        account.updated_at ?? account.created_at ?? account.last_run,
-      )
-    : isLoading
-      ? 'Загрузка...'
-      : '—';
   const shouldShowInlineLoadingState =
     isLoading && !account && !fallbackAccount;
-  const subtitle = telegramPhone
-    ? telegramPhone
-    : accountChannels.length > 0
-      ? `${accountChannels.length} каналов подключено`
-      : 'Параметры аккаунта';
   const statusBadgeClassName = isStarted
     ? 'border-success/20 bg-success/12 text-success'
     : 'border-border/20 bg-foreground/70 text-text-muted';
   const infoTileClassName =
-    'rounded-[24px] border border-border/10 bg-secondary/70 p-4';
+    'rounded-2xl border border-border/25 bg-secondary/75 p-5';
   const detailLabelClassName =
-    'text-[11px] font-semibold uppercase tracking-[0.22em] text-text-muted/85';
+    'text-[11px] font-semibold uppercase tracking-widest text-text-muted/75';
   const detailSectionIconClassName =
     'flex h-11 w-11 items-center justify-center rounded-2xl border border-info/15 bg-info/10 text-info';
   const valueToneClassNames: Record<StatusTone, string> = {
@@ -3446,7 +3374,7 @@ function AccountInfoDialog({
                           {formatAccountTextValue(telegramPhone)}
                         </strong>
                       </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-info/15 bg-info/10 text-info">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-info/10 bg-info/5">
                         <Phone className="h-5 w-5" />
                       </div>
                     </div>
@@ -3508,7 +3436,7 @@ function AccountInfoDialog({
                   </h4>
                 </div>
 
-                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5">
+                <div className="rounded-[30px] border border-border/25 bg-secondary/55 p-5">
                   <div className="space-y-1">
                     {[
                       {
@@ -3572,7 +3500,7 @@ function AccountInfoDialog({
                   </h4>
                 </div>
 
-                <div className="rounded-[30px] border border-border/10 bg-secondary/55 p-5">
+                <div className="rounded-[30px] border border-border/25 bg-secondary/55 p-5">
                   <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                       <p className={detailLabelClassName}>Количество каналов</p>
@@ -3685,41 +3613,6 @@ function AuthInputField({
   );
 }
 
-interface AuthTextareaFieldProps {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  icon?: ReactNode;
-  placeholder?: string;
-  disabled?: boolean;
-}
-
-function AuthTextareaField({
-  label,
-  value,
-  onChange,
-  icon,
-  placeholder,
-  disabled = false,
-}: AuthTextareaFieldProps) {
-  return (
-    <label className="flex flex-col gap-2.5">
-      <span className={fieldLabelClassName}>
-        {icon}
-        {label}
-      </span>
-      <textarea
-        className={`${accountTextareaClassName} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
-        disabled={disabled}
-        placeholder={placeholder}
-        spellCheck={false}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </label>
-  );
-}
-
 interface AccountAuthPanelProps {
   account: AccountRow;
   accounts: AccountRow[];
@@ -3772,7 +3665,7 @@ function AccountAuthPanel({
       );
     }
 
-    setStatusError(nextErrors.join(' '));
+    setStatusError(joinUniqueMessages(nextErrors));
     setIsStatusLoading(false);
   };
 
@@ -4342,7 +4235,7 @@ function TelegramAuthCard({
               value={phone}
               type="tel"
               placeholder="+380501112233"
-              icon={<Phone className="h-4 w-4 text-info/80" />}
+              icon={<Phone className="h-4 w-4 text-info/75" />}
               disabled={isSubmitting}
               onChange={setPhone}
             />
@@ -5216,14 +5109,22 @@ function TelegramChannelComposer({
 interface LogsPageProps {
   accounts: AccountRow[];
   accountsError: string;
+  currentPage: number;
   isAccountsLoading: boolean;
+  itemsPerPage: TablePageSize;
+  onCurrentPageChange: (page: number) => void;
+  onItemsPerPageChange: (value: TablePageSize) => void;
   onReloadAccounts: () => Promise<void>;
 }
 
 function LogsPage({
   accounts,
   accountsError,
+  currentPage,
   isAccountsLoading,
+  itemsPerPage,
+  onCurrentPageChange,
+  onItemsPerPageChange,
   onReloadAccounts,
 }: LogsPageProps) {
   const [selectedLogAccountId, setSelectedLogAccountId] =
@@ -5233,10 +5134,21 @@ function LogsPage({
   const [logEntries, setLogEntries] = useState<AccountLogEntry[]>([]);
   const [isLogsLoading, setIsLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState('');
-  const [logsReloadToken, setLogsReloadToken] = useState(0);
+  const hasInitializedLogFilters = useRef(false);
   const accountSignature = accounts
     .map((account) => `${account.id}:${account.name}`)
     .join('|');
+  const logTotalPages = Math.max(1, Math.ceil(logEntries.length / itemsPerPage));
+  const paginatedLogEntries = logEntries.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage,
+  );
+  const visibleLogRangeStart =
+    paginatedLogEntries.length === 0
+      ? 0
+      : (currentPage - 1) * itemsPerPage + 1;
+  const visibleLogRangeEnd =
+    (currentPage - 1) * itemsPerPage + paginatedLogEntries.length;
 
   useEffect(() => {
     if (
@@ -5263,7 +5175,9 @@ function LogsPage({
         ? accounts
         : accounts.filter((account) => account.id === selectedLogAccountId);
     const requestLimit =
-      selectedLogAccountId === allLogAccountsValue ? 40 : 120;
+      selectedLogAccountId === allLogAccountsValue
+        ? Math.max(80, itemsPerPage * 4)
+        : Math.max(160, itemsPerPage * 4);
 
     async function loadLogs() {
       setIsLogsLoading(true);
@@ -5321,7 +5235,7 @@ function LogsPage({
     accountSignature,
     accounts,
     isAccountsLoading,
-    logsReloadToken,
+    itemsPerPage,
     selectedLogAccountId,
     selectedLogLevel,
   ]);
@@ -5381,6 +5295,23 @@ function LogsPage({
     selectedLogAccountId,
     selectedLogLevel,
   ]);
+
+  useEffect(() => {
+    if (!hasInitializedLogFilters.current) {
+      hasInitializedLogFilters.current = true;
+      return;
+    }
+
+    onCurrentPageChange(1);
+  }, [onCurrentPageChange, selectedLogAccountId, selectedLogLevel]);
+
+  useEffect(() => {
+    if (currentPage <= logTotalPages) {
+      return;
+    }
+
+    onCurrentPageChange(logTotalPages);
+  }, [currentPage, logTotalPages, onCurrentPageChange]);
 
   return (
     <div className="space-y-4">
@@ -5487,30 +5418,38 @@ function LogsPage({
             ) : null}
 
             {logEntries.length > 0 ? (
-              <div className="overflow-hidden rounded-[26px] border border-border/25 bg-secondary/75">
-                <div className="hidden grid-cols-[minmax(168px,1fr)_minmax(220px,1fr)_minmax(0,2.1fr)_120px] gap-6 border-b border-border/25 px-6 py-4 text-xs font-semibold uppercase tracking-widest text-text-muted/75 xl:grid">
+              <div className="overflow-hidden rounded-2xl border border-border/25 bg-secondary/75">
+                <div
+                  className={cx(
+                    'hidden gap-4 border-b border-border/25 px-6 py-4 text-xs font-semibold uppercase tracking-widest text-text-muted/75 xl:grid',
+                    logTableDesktopGridClassName,
+                  )}
+                >
                   <span>Дата и время</span>
                   <span>Аккаунт</span>
                   <span>Событие</span>
                   <span>Уровень</span>
                 </div>
 
-                <div className="divide-y divide-border/10">
-                  {logEntries.map((entry) => (
+                <div className="divide-y divide-border/25">
+                  {paginatedLogEntries.map((entry) => (
                     <article
                       key={entry.id}
-                      className="grid gap-5 px-5 py-5 xl:grid-cols-[minmax(168px,1fr)_minmax(220px,1fr)_minmax(0,2.1fr)_120px] xl:items-center xl:px-6"
+                      className={cx(
+                        'grid gap-5 px-5 py-5 xl:items-center xl:gap-4 xl:px-6',
+                        logTableDesktopGridClassName,
+                      )}
                     >
                       <div className="space-y-1">
                         <span className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-text-muted/70 xl:hidden">
                           Дата и время
                         </span>
-                        <span className="font-medium tracking-tight text-text-muted/75">
+                        <span className="font-medium text-sm tracking-tight text-text-muted">
                           {formatAccountLogTimestamp(entry.timestamp)}
                         </span>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="min-w-0 space-y-2">
                         <span className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-text-muted/70 xl:hidden">
                           Аккаунт
                         </span>
@@ -5526,17 +5465,12 @@ function LogsPage({
                         </div>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="min-w-0 space-y-2">
                         <span className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-text-muted/70 xl:hidden">
                           Событие
                         </span>
-                        <div className="flex items-center gap-3">
-                          <span
-                            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${logEventIconClassNames[entry.tone]}`}
-                          >
-                            <AccountLogEventIcon tone={entry.tone} />
-                          </span>
-                          <p className="text-sm leading-6 text-text-muted">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <p className="min-w-0 text-sm leading-6 text-text-muted">
                             {entry.message}
                           </p>
                         </div>
@@ -5547,7 +5481,7 @@ function LogsPage({
                           Уровень
                         </span>
                         <span
-                          className={`inline-flex items-center justify-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] ${logLevelBadgeClassNames[entry.tone]}`}
+                          className={`inline-flex items-center justify-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-widest ${logLevelBadgeClassNames[entry.tone]}`}
                         >
                           {entry.level}
                         </span>
@@ -5555,6 +5489,23 @@ function LogsPage({
                     </article>
                   ))}
                 </div>
+
+                <TablePaginationFooter
+                  currentPage={currentPage}
+                  itemsPerPage={itemsPerPage}
+                  itemCountLabel="логов"
+                  nextPageAriaLabel="Следующая страница логов"
+                  previousPageAriaLabel="Предыдущая страница логов"
+                  totalItems={logEntries.length}
+                  totalPages={logTotalPages}
+                  visibleRangeEnd={visibleLogRangeEnd}
+                  visibleRangeStart={visibleLogRangeStart}
+                  onItemsPerPageChange={(value) => {
+                    onItemsPerPageChange(value);
+                    onCurrentPageChange(1);
+                  }}
+                  onPageChange={onCurrentPageChange}
+                />
               </div>
             ) : null}
           </div>
@@ -5565,35 +5516,27 @@ function LogsPage({
 }
 
 interface SettingsPageProps {
-  feedback: string;
   hasUnsavedChanges: boolean;
-  isClearingLogs: boolean;
   onChangePreference: (
     field: keyof AppPreferences,
     value: string | number | boolean,
   ) => void;
-  onClearLogs: () => Promise<void>;
   onNavigateToPage: (page: PageId) => void;
   onResetPreferences: () => void;
   onSavePreferences: () => void;
   onToggleTheme: () => void;
   preferences: AppPreferences;
-  settingsError: string;
   themeMode: ThemeMode;
 }
 
 function SettingsPage({
-  feedback,
   hasUnsavedChanges,
-  isClearingLogs,
   onChangePreference,
-  onClearLogs,
   onNavigateToPage,
   onResetPreferences,
   onSavePreferences,
   onToggleTheme,
   preferences,
-  settingsError,
   themeMode,
 }: SettingsPageProps) {
   const [activeSection, setActiveSection] = useState<
@@ -5603,9 +5546,6 @@ function SettingsPage({
     dateTimeFormatOptions.find(
       (option) => option.value === preferences.dateTimeFormat,
     ) ?? dateTimeFormatOptions[0];
-  const statusMessage = translateSettingsStatusMessage(
-    settingsError || feedback,
-  );
 
   useEffect(() => {
     const sections = settingsSectionItems
@@ -5951,34 +5891,6 @@ function SettingsSummaryCard({ icon, label, value }: SettingsSummaryCardProps) {
   );
 }
 
-interface SettingsStatusBarProps {
-  error?: string;
-  message: string;
-}
-
-function SettingsStatusBar({ error, message }: SettingsStatusBarProps) {
-  const isError = Boolean(error);
-  const isSuccess =
-    message.startsWith('Настройки сохранены') ||
-    message.startsWith('Логи очищены') ||
-    message.startsWith('Настройки сброшены');
-
-  return (
-    <div
-      className={`mt-4 flex items-center gap-2 rounded-lg px-4 py-3 text-[14px] ${
-        isError
-          ? 'bg-error/12 text-error'
-          : isSuccess
-            ? 'bg-success/12 text-success'
-            : 'bg-secondary text-text-muted'
-      }`}
-    >
-      <Info className="h-4 w-4 shrink-0" />
-      <span>{message}</span>
-    </div>
-  );
-}
-
 interface SettingsSelectFieldProps {
   description?: string;
   label: string;
@@ -6176,11 +6088,6 @@ function SettingsToggleCard({
   );
 }
 
-interface FieldProps {
-  label: string;
-  value: ReactNode;
-}
-
 interface EditableFieldProps {
   icon?: ReactNode;
   onChange: (value: string) => void;
@@ -6191,17 +6098,6 @@ interface EditableFieldProps {
 interface AccountFormFieldsProps {
   values: AccountDraft;
   onFieldChange: (field: AccountEditableField, value: string) => void;
-}
-
-function Field({ label, value }: FieldProps) {
-  return (
-    <div className={`${surfaceCardClassName} min-h-24`}>
-      <span className="text-text-muted">{label}</span>
-      <strong className="mt-2.5 block text-[18px] leading-7 text-text">
-        {value}
-      </strong>
-    </div>
-  );
 }
 
 function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
@@ -6306,9 +6202,6 @@ function MinutesTimePickerField({
     ? `Введите значение от ${minimumTimerMinutes} до ${maximumTimerMinutes}`
     : null;
   const timerUnitOffset = `${Math.max(inputValue.length, 1)}ch`;
-  const isCustomValue =
-    parsedMinutes !== null &&
-    !timerPresetMinutes.some((presetValue) => presetValue === parsedMinutes);
 
   const setMinutes = (minutes: number) => {
     const nextMinutes = clampTimerMinutes(minutes);

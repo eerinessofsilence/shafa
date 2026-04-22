@@ -1,9 +1,1 @@
-appimage-builder
-fastapi
-nuitka
-PySide6
-pydantic
-pyinstaller
-python-dotenv
-telethon
-uvicorn[standard]
+-r requirements/runtime.txt

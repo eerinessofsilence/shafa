@@ -1,0 +1,10 @@
+fastapi
+inquirer
+Pillow
+playwright
+pydantic
+python-dotenv
+python-Levenshtein
+python-multipart
+telethon
+uvicorn[standard]

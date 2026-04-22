@@ -1,4 +1,1 @@
-playwright
-telethon
-python-dotenv
-inquirer
+-r ../requirements/runtime.txt

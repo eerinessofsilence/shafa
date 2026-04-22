@@ -15,7 +15,6 @@ export type DashboardRangePreset =
   | 'custom';
 export type MetricAccent = 'teal' | 'amber' | 'blue' | 'rose';
 export type MetricKind = 'accounts' | 'active' | 'items' | 'errors';
-export type MetricBadgeTone = MetricAccent | 'neutral';
 
 export interface DesktopShellInfo {
   apiBaseUrl: string;
@@ -28,7 +27,6 @@ export interface DesktopShellInfo {
 export interface NavItem {
   id: PageId;
   label: string;
-  caption: string;
 }
 
 export interface Metric {
@@ -36,8 +34,6 @@ export interface Metric {
   label: string;
   value: string;
   unit?: string;
-  badge?: string;
-  badgeTone?: MetricBadgeTone;
   accent: MetricAccent;
 }
 
@@ -215,61 +211,4 @@ export interface AccountRow {
   telegramSessionExists?: boolean;
   telegramChannels: TelegramChannel[];
   channelTemplates?: ApiChannelTemplateSummary[];
-}
-
-export interface StatusItem {
-  label: string;
-  value: string;
-  badge: string;
-  tone: StatusTone;
-}
-
-export interface AlertItem {
-  title: string;
-  copy: string;
-  tone: StatusTone;
-}
-
-export interface NoteItem {
-  title: string;
-  copy: string;
-}
-
-export interface SettingToggle {
-  label: string;
-  copy: string;
-  enabled: boolean;
-}
-
-export interface ParserQueueItem {
-  title: string;
-  copy: string;
-  badge: string;
-  tone: StatusTone;
-}
-
-export interface ParserResult {
-  id: string;
-  title: string;
-  price: string;
-  meta: string;
-}
-
-export interface LogRecordItem {
-  time: string;
-  account: string;
-  level: string;
-  tone: StatusTone;
-  message: string;
-}
-
-export interface SettingsField {
-  label: string;
-  value: string;
-}
-
-export interface SettingsGroup {
-  title: string;
-  subtitle: string;
-  fields: SettingsField[];
 }

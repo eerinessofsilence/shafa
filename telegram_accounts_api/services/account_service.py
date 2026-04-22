@@ -26,9 +26,10 @@ from shafa_control import (
 from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
 from telegram_accounts_api.utils.account_logging import get_account_log_store, log
 from telegram_accounts_api.utils.exceptions import BadRequestError, NotFoundError, StorageError
-from telegram_accounts_api.utils.storage import JsonListStorage
+from telegram_accounts_api.utils.storage import JsonListStorage, read_json_list_file
 
 LOGGER = logging.getLogger(__name__)
+LEGACY_DEFAULT_PROJECT_PATH = "/Users/eeri/coding/python/projects/scripts/shafa"
 
 ACCOUNT_KNOWN_FIELDS = {
     "id",
@@ -293,15 +294,7 @@ class AccountService:
 
     def _read_payload_sync(self) -> list[dict]:
         with self._records_lock:
-            if not self.storage.path.exists():
-                return []
-            try:
-                raw = json.loads(self.storage.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise StorageError(f"Failed to read JSON file: {self.storage.path}") from exc
-            if not isinstance(raw, list):
-                raise StorageError(f"Expected a JSON list in {self.storage.path}")
-            return [self._normalize_record(item) for item in raw if isinstance(item, dict)]
+            return [self._normalize_record(item) for item in read_json_list_file(self.storage.path)]
 
     def _write_payload_sync(self, payload: list[dict]) -> None:
         with self._records_lock:
@@ -341,10 +334,13 @@ class AccountService:
         item["phone_number"] = phone
         item["updated_at"] = datetime.now(UTC).isoformat()
 
-    @staticmethod
-    def _normalize_record(item: dict) -> dict:
+    def _normalize_record(self, item: dict) -> dict:
         normalized = dict(item)
         normalized.pop("open_browser", None)
+        path = str(normalized.get("path") or "").strip()
+        default_project_path = str(self.session_store.base_dir).strip()
+        if path == LEGACY_DEFAULT_PROJECT_PATH and default_project_path and default_project_path != path:
+            normalized["path"] = default_project_path
         return normalized
 
     def _record_to_account(self, item: dict) -> Account:

@@ -4,10 +4,8 @@ export function cx(...parts: Array<string | false | null | undefined>) {
 
 export const pageTitleClassName =
   'text-[28px] font-semibold tracking-tight text-text';
-export const sectionTitleClassName =
-  'text-[17px] font-medium text-text';
-export const cardTitleClassName =
-  'text-[15px] font-semibold text-text';
+export const sectionTitleClassName = 'text-xl font-medium text-text';
+export const cardTitleClassName = 'text-[15px] font-semibold text-text';
 export const fieldLabelClassName =
   'flex items-center gap-2 text-[13px] font-medium text-text-subtle';
 
@@ -33,8 +31,7 @@ const buttonVariantClassNames: Record<
   soft: {
     neutral:
       'border-border bg-foreground text-text hover:border-border-strong hover:bg-secondary',
-    info:
-      'border-info/25 bg-info/10 text-info hover:border-info/40 hover:bg-info/14',
+    info: 'border-info/25 bg-info/10 text-info hover:border-info/40 hover:bg-info/14',
     success:
       'border-success/25 bg-success/10 text-success hover:border-success/40 hover:bg-success/14',
     warning:
@@ -56,8 +53,7 @@ const buttonVariantClassNames: Record<
   ghost: {
     neutral:
       'border-transparent bg-transparent text-text hover:border-border/70 hover:bg-foreground',
-    info:
-      'border-transparent bg-transparent text-info hover:border-info/25 hover:bg-info/10',
+    info: 'border-transparent bg-transparent text-info hover:border-info/25 hover:bg-info/10',
     success:
       'border-transparent bg-transparent text-success hover:border-success/25 hover:bg-success/10',
     warning:

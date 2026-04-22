@@ -45,6 +45,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Additional dependency sets:
+
+- `requirements.txt` - runtime dependencies for the API backend and integrated `shafa_logic` flows
+- `requirements/test.txt` - runtime dependencies plus API test/manual Qt smoke dependencies
+- `requirements/build.txt` - runtime dependencies plus packaging/build tools
+
+If you plan to run browser-based Shafa flows, also install Playwright Chromium:
+
+```bash
+playwright install chromium
+```
+
 ## Run
 
 ```bash
