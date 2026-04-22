@@ -80,6 +80,7 @@ import {
   LogIn,
   LogOut,
   Mail,
+  Moon,
   PencilLine,
   Phone,
   Plus,
@@ -94,6 +95,7 @@ import {
   TriangleAlert,
   User,
   Users,
+  SunMedium,
   X,
   Send,
   SlidersHorizontal,
@@ -114,14 +116,14 @@ const minimumTimerMinutes = 1;
 const maximumTimerMinutes = 1440;
 const timerPresetMinutes = [5, 10, 15, 30, 45, 60, 90, 120] as const;
 const accountControlClassName =
-  'h-[42px] w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 text-[15px] text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
+  'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[15px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const accountTextareaClassName =
-  'min-h-36 w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 py-3 text-[15px] text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
+  'min-h-36 w-full rounded-[8px] border border-border bg-foreground px-4 py-3 text-[15px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const telegramDraftInitialState = {
   handle: '',
 };
 const surfaceCardClassName =
-  'rounded-[12px] border border-[#d7dce6] bg-[#f3f5f8] p-4';
+  'rounded-[12px] border border-border bg-secondary p-4';
 const navItemIcons: Record<PageId, ReactNode> = {
   dashboard: <LayoutGrid className="h-5 w-5" />,
   accounts: <Users className="h-5 w-5" />,
@@ -171,7 +173,7 @@ const logLevelOptions = [
   { label: 'Debug', value: 'DEBUG' },
 ] as const;
 const logFilterSelectClassName =
-  'h-[42px] min-w-[220px] appearance-none rounded-[8px] border border-[#cfd5e1] bg-white px-4 pr-11 text-[15px] font-normal text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
+  'h-[42px] min-w-[220px] appearance-none rounded-[8px] border border-border bg-foreground px-4 pr-11 text-[15px] font-normal text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const logToolbarButtonClassName = getButtonClassName();
 const logLevelBadgeClassNames: Record<StatusTone, string> = {
   success: 'border-success/35 bg-success/10 text-success',
@@ -207,20 +209,23 @@ const accountPanelTimestampFormatter = new Intl.DateTimeFormat('ru-RU', {
   year: 'numeric',
 });
 const settingsStorageKey = 'shafa.desktop.settings.v1';
+const themeStorageKey = 'shafa.desktop.theme.v1';
 const settingsFieldClassName =
-  'h-[42px] w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 text-[15px] font-normal text-[#191c1e] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
+  'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[15px] font-normal text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const settingsTextAreaClassName =
-  'h-[42px] w-full rounded-[8px] border border-[#cfd5e1] bg-white px-4 text-[13px] font-normal text-[#5b6475] outline-none transition hover:border-[#b9c3d3] focus:border-[#0c56d0] focus:ring-2 focus:ring-[#0c56d0]/10';
+  'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[13px] font-normal text-text-soft outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const settingsPageClassName =
-  "min-h-screen bg-[#f8f9fb] text-[#191c1e] antialiased [color-scheme:light] [font-family:'Inter','Avenir_Next','Segoe_UI','Helvetica_Neue',sans-serif]";
+  "min-h-screen bg-background text-text antialiased transition-colors duration-200 [font-family:'Inter','Avenir_Next','Segoe_UI','Helvetica_Neue',sans-serif]";
 const settingsPanelClassName =
-  'rounded-[12px] border border-[#cfd5e1] bg-white px-6 py-6 shadow-[0_1px_2px_rgba(15,23,42,0.02)]';
-const settingsSubtleCardClassName = 'rounded-[8px] bg-[#f2f4f7] p-4';
+  'rounded-[12px] border border-border bg-foreground px-6 py-6 shadow-[0_1px_2px_rgba(15,23,42,0.02)]';
+const settingsSubtleCardClassName = 'rounded-[8px] bg-secondary p-4';
 const settingsToggleCardClassName =
-  'rounded-[8px] border border-[#d7dce6] bg-white p-4 transition-colors duration-200 hover:bg-[#fafbfc]';
+  'rounded-[8px] border border-border bg-foreground p-4 transition-colors duration-200 hover:bg-secondary';
 const settingsLabelClassName =
-  'text-[12px] font-semibold uppercase tracking-[0.05em] text-[#434654]';
-const settingsDescriptionClassName = 'text-xs leading-[1.25] text-[#737685]';
+  'text-[12px] font-semibold uppercase tracking-[0.05em] text-text-subtle';
+const settingsDescriptionClassName = 'text-xs leading-[1.25] text-text-muted';
+
+type ThemeMode = 'dark' | 'light';
 
 type InterfaceLanguage = 'ru' | 'uk' | 'en';
 type DateTimeFormatId = 'ru-24' | 'uk-24' | 'en-12' | 'iso';
@@ -495,6 +500,10 @@ function normalizeAppPreferences(value: unknown): AppPreferences {
   };
 }
 
+function normalizeThemeMode(value: unknown): ThemeMode {
+  return value === 'light' ? 'light' : 'dark';
+}
+
 function loadStoredAppPreferences() {
   if (typeof window === 'undefined') {
     return createDefaultAppPreferences();
@@ -509,6 +518,18 @@ function loadStoredAppPreferences() {
     return normalizeAppPreferences(JSON.parse(rawValue));
   } catch {
     return createDefaultAppPreferences();
+  }
+}
+
+function loadStoredThemeMode() {
+  if (typeof window === 'undefined') {
+    return normalizeThemeMode(null);
+  }
+
+  try {
+    return normalizeThemeMode(window.localStorage.getItem(themeStorageKey));
+  } catch {
+    return normalizeThemeMode(null);
   }
 }
 
@@ -1156,6 +1177,9 @@ function formatAccountCount(count: number) {
 
 function App() {
   const [activePage, setActivePage] = useState<PageId>(getInitialActivePage);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
+    loadStoredThemeMode(),
+  );
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [isAccountsLoading, setIsAccountsLoading] = useState(false);
   const [accountsError, setAccountsError] = useState('');
@@ -1188,6 +1212,17 @@ function App() {
       return;
     }
   }, [appPreferences]);
+
+  useEffect(() => {
+    const rootElement = document.documentElement;
+    rootElement.dataset.theme = themeMode;
+
+    try {
+      window.localStorage.setItem(themeStorageKey, themeMode);
+    } catch {
+      return;
+    }
+  }, [themeMode]);
 
   const loadAccounts = async () => {
     setAccountsError('');
@@ -1285,6 +1320,12 @@ function App() {
     setSettingsError('');
   };
 
+  const handleToggleTheme = () => {
+    setThemeMode((currentTheme) =>
+      currentTheme === 'dark' ? 'light' : 'dark',
+    );
+  };
+
   const handleClearLogs = async () => {
     if (
       !window.confirm(
@@ -1367,8 +1408,10 @@ function App() {
         onClearLogs={handleClearLogs}
         onNavigateToPage={setActivePage}
         onResetPreferences={handleResetPreferences}
+        onToggleTheme={handleToggleTheme}
         preferences={appPreferences}
         settingsError={settingsError}
+        themeMode={themeMode}
       />
     );
   }
@@ -1376,9 +1419,14 @@ function App() {
   return (
     <div className={settingsPageClassName}>
       <div className="grid min-h-screen xl:grid-cols-[280px_minmax(0,1fr)]">
-        <AppSidebar activePage={activePage} onNavigate={setActivePage} />
+        <AppSidebar
+          activePage={activePage}
+          onNavigate={setActivePage}
+          onToggleTheme={handleToggleTheme}
+          themeMode={themeMode}
+        />
 
-        <main className="min-w-0 bg-[#f8f9fb]">
+        <main className="min-w-0 bg-background">
           <section className="min-h-screen overflow-auto">
             <div className="mx-auto max-w-265 px-10 py-9">
               {activePage === 'dashboard' && <DashboardPage />}
@@ -1456,41 +1504,77 @@ function ActionButton({
 interface AppSidebarProps {
   activePage: PageId;
   onNavigate: (page: PageId) => void;
+  onToggleTheme: () => void;
+  themeMode: ThemeMode;
 }
 
-function AppSidebar({ activePage, onNavigate }: AppSidebarProps) {
-  return (
-    <aside className="min-h-screen w-full border-r border-[#e2e5ec] bg-[#f8f9fb] p-5">
-      <div className="sticky top-7.5 space-y-4">
-        <h1 className="text-[32px] font-semibold tracking-tight text-info">
-          Shafa Control
-        </h1>
+function AppSidebar({
+  activePage,
+  onNavigate,
+  onToggleTheme,
+  themeMode,
+}: AppSidebarProps) {
+  const isDarkTheme = themeMode === 'dark';
 
-        <nav className="flex flex-col gap-2.5">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition-all duration-200 ${
-                activePage === item.id
-                  ? 'border border-[#8fb5ff] bg-white text-[#191c1e] shadow-[0_1px_2px_rgba(15,23,42,0.02)]'
-                  : 'border border-transparent bg-white/70 text-[#5b616e] hover:border-[#d9dfeb] hover:bg-white'
-              }`}
-              onClick={() => onNavigate(item.id)}
-            >
-              <span
-                className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-200 ${
+  return (
+    <aside className="min-h-screen w-full border-r border-border-soft bg-sidebar p-5">
+      <div className="sticky top-7.5 flex min-h-[calc(100vh-60px)] flex-col justify-between gap-6">
+        <div className="space-y-4">
+          <h1 className="text-[32px] font-semibold tracking-tight text-info">
+            Shafa Control
+          </h1>
+
+          <nav className="flex flex-col gap-2.5">
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition-all duration-200 ${
                   activePage === item.id
-                    ? 'bg-[#dbe8ff] text-[#377cf6]'
-                    : 'bg-white text-[#6d7280]'
+                    ? 'border border-info/45 bg-sidebar-card-active text-text shadow-[0_1px_2px_rgba(15,23,42,0.02)]'
+                    : 'border border-transparent bg-sidebar-card text-text-soft hover:border-border hover:bg-sidebar-card-hover'
                 }`}
+                onClick={() => onNavigate(item.id)}
               >
-                {navItemIcons[item.id]}
-              </span>
-              <span className="text-lg font-medium">{item.label}</span>
-            </button>
-          ))}
-        </nav>
+                <span
+                  className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-200 ${
+                    activePage === item.id
+                      ? 'bg-info/12 text-info'
+                      : 'bg-sidebar-icon text-text-faint'
+                  }`}
+                >
+                  {navItemIcons[item.id]}
+                </span>
+                <span className="text-lg font-medium">{item.label}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <button
+          aria-checked={isDarkTheme}
+          className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-2xl border border-border bg-sidebar-card px-4 py-3 text-left transition-all duration-200 hover:border-border-strong hover:bg-sidebar-card-hover focus:ring-2 focus:ring-info/15"
+          role="switch"
+          type="button"
+          onClick={onToggleTheme}
+        >
+          <div className="flex items-center gap-3">
+            <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sidebar-icon text-info">
+              {isDarkTheme ? (
+                <Moon className="h-5 w-5" />
+              ) : (
+                <SunMedium className="h-5 w-5" />
+              )}
+            </span>
+            <div>
+              <p className="text-[15px] font-semibold text-text">Dark mode</p>
+              <p className="text-sm text-text-muted">
+                {isDarkTheme ? 'Enabled' : 'Disabled'}
+              </p>
+            </div>
+          </div>
+          <ToggleSwitch checked={isDarkTheme} />
+        </button>
       </div>
     </aside>
   );
@@ -1505,11 +1589,11 @@ function ToggleSwitch({ checked }: ToggleSwitchProps) {
     <span
       aria-hidden="true"
       className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-all duration-200 ${
-        checked ? 'bg-[#0c56d0]' : 'bg-[#dde1e7]'
+        checked ? 'bg-info' : 'bg-switch-off'
       }`}
     >
       <span
-        className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-[0_2px_5px_rgba(15,23,42,0.22)] transition-transform duration-200 ${
+        className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-foreground shadow-[0_2px_5px_rgba(15,23,42,0.22)] transition-transform duration-200 ${
           checked ? 'translate-x-5' : ''
         }`}
       />
@@ -5080,8 +5164,10 @@ interface SettingsPageProps {
   onClearLogs: () => Promise<void>;
   onNavigateToPage: (page: PageId) => void;
   onResetPreferences: () => void;
+  onToggleTheme: () => void;
   preferences: AppPreferences;
   settingsError: string;
+  themeMode: ThemeMode;
 }
 
 function SettingsPage({
@@ -5091,8 +5177,10 @@ function SettingsPage({
   onClearLogs,
   onNavigateToPage,
   onResetPreferences,
+  onToggleTheme,
   preferences,
   settingsError,
+  themeMode,
 }: SettingsPageProps) {
   const [activeSection, setActiveSection] = useState<
     (typeof settingsSectionItems)[number]['id']
@@ -5152,10 +5240,15 @@ function SettingsPage({
   return (
     <div className={settingsPageClassName}>
       <div className="grid min-h-screen xl:grid-cols-[280px_minmax(0,1fr)]">
-        <AppSidebar activePage="settings" onNavigate={onNavigateToPage} />
+        <AppSidebar
+          activePage="settings"
+          onNavigate={onNavigateToPage}
+          onToggleTheme={onToggleTheme}
+          themeMode={themeMode}
+        />
 
         <main className="min-w-0">
-          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-[#e2e5ec] bg-white px-6">
+          <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border-soft bg-foreground px-6">
             <nav className="flex min-w-0 items-center gap-1 overflow-x-auto">
               {settingsSectionItems.map(({ id, icon: Icon, label }) => {
                 const isActive = activeSection === id;
@@ -5165,8 +5258,8 @@ function SettingsPage({
                     key={id}
                     className={`inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-[14px] font-medium transition-colors duration-150 ${
                       isActive
-                        ? 'border-[#0c56d0] text-[#0c56d0]'
-                        : 'border-transparent text-[#6f7786] hover:text-[#1f2430]'
+                        ? 'border-info text-info'
+                        : 'border-transparent text-text-faint hover:text-text'
                     }`}
                     href={`#settings-${id}`}
                     onClick={() => setActiveSection(id)}
@@ -5179,8 +5272,8 @@ function SettingsPage({
             </nav>
 
             <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 text-[#18a058]">
-                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#18a058] text-white">
+              <div className="flex items-center gap-2 text-success">
+                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-success text-white">
                   <Check className="h-3 w-3 stroke-3" />
                 </span>
                 <span className="text-[13px] font-medium">
@@ -5188,7 +5281,7 @@ function SettingsPage({
                 </span>
               </div>
               <button
-                className="cursor-pointer rounded-lg px-3 py-1.5 text-[14px] font-semibold text-[#0c56d0] transition-colors duration-200 hover:bg-[#f4f7ff]"
+                className="cursor-pointer rounded-lg px-3 py-1.5 text-[14px] font-semibold text-info transition-colors duration-200 hover:bg-info/10"
                 type="button"
                 onClick={onResetPreferences}
               >
@@ -5201,14 +5294,14 @@ function SettingsPage({
             <div className="space-y-6">
               <nav className="flex items-center gap-2 text-[15px]">
                 <button
-                  className="cursor-pointer text-[#8f96a5] transition-colors duration-150 hover:text-[#191c1e]"
+                  className="cursor-pointer text-text-faint transition-colors duration-150 hover:text-text"
                   type="button"
                   onClick={() => onNavigateToPage('dashboard')}
                 >
                   Application
                 </button>
-                <ChevronRight className="h-4 w-4 text-[#a5abb7]" />
-                <span className="font-medium text-[#191c1e]">Settings</span>
+                <ChevronRight className="h-4 w-4 text-text-faint/70" />
+                <span className="font-medium text-text">Settings</span>
               </nav>
 
               <div className="grid gap-6">
@@ -5265,7 +5358,7 @@ function SettingsPage({
                     />
                   </div>
 
-                  <div className="mt-6 grid gap-4 border-t border-[#eceff4] pt-6 md:grid-cols-2">
+                  <div className="mt-6 grid gap-4 border-t border-border-subtle pt-6 md:grid-cols-2">
                     <SettingsSummaryCard
                       icon={<Clock3 className="h-4.5 w-4.5" />}
                       label="ACTIVE TIME FORMAT"
@@ -5320,9 +5413,7 @@ function SettingsPage({
                     <SettingsToggleCard
                       checked={preferences.httpRetryJitterEnabled}
                       description="Add randomness to delay to prevent sync spikes."
-                      icon={
-                        <RefreshCw className="h-4.5 w-4.5 text-[#7b8293]" />
-                      }
+                      icon={<RefreshCw className="h-4.5 w-4.5 text-text-faint" />}
                       label="Optional jitter"
                       onToggle={() =>
                         onChangePreference(
@@ -5334,7 +5425,7 @@ function SettingsPage({
                     <SettingsToggleCard
                       checked={preferences.persistRawJson}
                       description="Log the full payload for debugging purposes."
-                      icon={<FileJson className="h-4.5 w-4.5 text-[#7b8293]" />}
+                      icon={<FileJson className="h-4.5 w-4.5 text-text-faint" />}
                       label="Save raw JSON"
                       onToggle={() =>
                         onChangePreference(
@@ -5384,16 +5475,14 @@ function SettingsPage({
                     title="Maintenance"
                   />
 
-                  <div className="rounded-[10px] border border-[#d7dce5] bg-[#f3f5f8] p-4">
+                  <div className="rounded-[10px] border border-border bg-secondary p-4">
                     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                       <div className="flex items-center gap-4">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#ffdcd6] text-[#cb381f]">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-error/12 text-error">
                           <Trash2 className="h-5 w-5" />
                         </div>
                         <div className="max-w-155 space-y-1 flex flex-col justify-center">
-                          <h3 className="font-semibold text-[#191c1e]">
-                            Clear logs
-                          </h3>
+                          <h3 className="font-semibold text-text">Clear logs</h3>
                           <p className={`${settingsDescriptionClassName}`}>
                             Removes runtime and account logs, and clears the
                             live log feed. This action cannot be undone.
@@ -5402,7 +5491,7 @@ function SettingsPage({
                       </div>
 
                       <button
-                        className="inline-flex h-10.5 min-w-35.5 cursor-pointer items-center justify-center rounded-md bg-[#d1331b] px-6 text-[15px] font-semibold text-white transition-colors duration-200 hover:bg-[#b02c17] disabled:cursor-not-allowed disabled:opacity-70"
+                        className="inline-flex h-10.5 min-w-35.5 cursor-pointer items-center justify-center rounded-md bg-error px-6 text-[15px] font-semibold text-white transition-colors duration-200 hover:bg-error/90 disabled:cursor-not-allowed disabled:opacity-70"
                         disabled={isClearingLogs}
                         type="button"
                         onClick={() => void onClearLogs()}
@@ -5462,9 +5551,9 @@ interface SettingsSectionHeaderProps {
 
 function SettingsSectionHeader({ icon, title }: SettingsSectionHeaderProps) {
   return (
-    <div className="mb-5 flex items-center gap-3 text-[#0c56d0]">
+    <div className="mb-5 flex items-center gap-3 text-info">
       <span className="flex h-5 w-5 items-center justify-center">{icon}</span>
-      <h2 className="text-[17px] font-medium text-[#191c1e]">{title}</h2>
+      <h2 className="text-[17px] font-medium text-text">{title}</h2>
     </div>
   );
 }
@@ -5478,12 +5567,12 @@ interface SettingsSummaryCardProps {
 function SettingsSummaryCard({ icon, label, value }: SettingsSummaryCardProps) {
   return (
     <div className={`${settingsSubtleCardClassName} flex items-start gap-4`}>
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white text-[#0c56d0] shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-foreground text-info shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
         {icon}
       </span>
       <div>
         <p className={settingsLabelClassName}>{label}</p>
-        <p className="mt-1 text-[15px] font-semibold text-[#191c1e]">{value}</p>
+        <p className="mt-1 text-[15px] font-semibold text-text">{value}</p>
       </div>
     </div>
   );
@@ -5504,10 +5593,10 @@ function SettingsStatusBar({ error, message }: SettingsStatusBarProps) {
     <div
       className={`mt-4 flex items-center gap-2 rounded-lg px-4 py-3 text-[14px] ${
         isError
-          ? 'bg-[#fff0ee] text-[#b42318]'
+          ? 'bg-error/12 text-error'
           : isSuccess
-            ? 'bg-[#edf8f1] text-[#1f7a42]'
-            : 'bg-[#f1f3f6] text-[#9ca2ad]'
+            ? 'bg-success/12 text-success'
+            : 'bg-secondary text-text-muted'
       }`}
     >
       <Info className="h-4 w-4 shrink-0" />
@@ -5548,7 +5637,7 @@ function SettingsSelectField({
             </option>
           ))}
         </select>
-        <ChevronDown className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-[#7f8796]" />
+        <ChevronDown className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-text-faint" />
       </div>
     </SettingsFieldShell>
   );
@@ -5609,7 +5698,7 @@ function SettingsNumberField({
           }}
         />
         {suffix ? (
-          <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-[15px] font-normal text-[#7f8796]">
+          <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-[15px] font-normal text-text-faint">
             {suffix}
           </span>
         ) : null}
@@ -5642,7 +5731,7 @@ function SettingsTextAreaField({
         />
         <button
           aria-label={`Browse ${label.toLowerCase()}`}
-          className="absolute top-1/2 right-2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-[#7f8796] transition-colors duration-150 hover:bg-[#eef2f8] hover:text-[#0c56d0]"
+          className="absolute top-1/2 right-2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-text-faint transition-colors duration-150 hover:bg-secondary hover:text-info"
           type="button"
         >
           <FolderOpen className="h-4 w-4" />
@@ -5670,19 +5759,19 @@ function SettingsToggleCard({
   return (
     <button
       aria-checked={checked}
-      className={`${settingsToggleCardClassName} flex w-full cursor-pointer items-center justify-between gap-3.5 text-left focus:ring-2 focus:ring-[#0c56d0]/10`}
+      className={`${settingsToggleCardClassName} flex w-full cursor-pointer items-center justify-between gap-3.5 text-left focus:ring-2 focus:ring-info/10`}
       role="switch"
       type="button"
       onClick={onToggle}
     >
       <div className="flex items-center gap-3">
         {icon ? (
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#f5f6f8]">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-secondary">
             {icon}
           </span>
         ) : null}
         <div>
-          <h3 className="text-[15px] font-semibold text-[#191c1e]">{label}</h3>
+          <h3 className="text-[15px] font-semibold text-text">{label}</h3>
           <span className={settingsDescriptionClassName}>{description}</span>
         </div>
       </div>
