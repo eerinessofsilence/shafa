@@ -2683,6 +2683,51 @@ def _parse_additional_sizes(
     return sizes
 
 
+def _preview_list(values: list[str], limit: int = 5) -> str:
+    normalized = [str(value).strip() for value in values if str(value).strip()]
+    if not normalized:
+        return ""
+
+    preview = ", ".join(normalized[:limit])
+    if len(normalized) > limit:
+        return f"{preview}…"
+    return preview
+
+
+def _format_size_resolution_summary(
+    *,
+    catalog_slug: str,
+    raw_size: str | None,
+    raw_additional_sizes: list[str],
+    preferred_size_system: str | None,
+    resolved_size: int | None,
+    resolved_additional_sizes: list[int],
+) -> str:
+    parts: list[str] = []
+    normalized_raw_size = str(raw_size or "").strip()
+    additional_sizes_preview = _preview_list(raw_additional_sizes)
+
+    if normalized_raw_size:
+        parts.append(f"Размер: {normalized_raw_size}.")
+    if additional_sizes_preview:
+        parts.append(f"Доп. размеры: {additional_sizes_preview}.")
+    if catalog_slug:
+        parts.append(f"Каталог: {catalog_slug}.")
+    if preferred_size_system:
+        parts.append(f"Система: {preferred_size_system.upper()}.")
+    if resolved_size is not None:
+        if resolved_additional_sizes:
+            parts.append(
+                f"Размер сопоставлен, доп. размеров: {len(resolved_additional_sizes)}."
+            )
+        else:
+            parts.append("Размер сопоставлен.")
+    else:
+        parts.append("Размер не сопоставлен автоматически.")
+
+    return " ".join(parts)
+
+
 def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
     additional_size_values = parsed.get("additional_sizes", [])
     if not isinstance(additional_size_values, list):
@@ -2793,18 +2838,13 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
     if size_value or additional_size_values:
         log(
             "INFO",
-            "Размеры товара: "
-            + json.dumps(
-                {
-                    "catalog": catalog_slug,
-                    "raw_size": size_value,
-                    "raw_additional_sizes": additional_size_values,
-                    "expanded_sizes": expanded_size_values,
-                    "preferred_size_system": preferred_size_system,
-                    "resolved_size": product_raw_data.get("size"),
-                    "resolved_additional_sizes": additional_sizes,
-                },
-                ensure_ascii=False,
+            _format_size_resolution_summary(
+                catalog_slug=catalog_slug,
+                raw_size=size_value,
+                raw_additional_sizes=additional_size_values,
+                preferred_size_system=preferred_size_system,
+                resolved_size=product_raw_data.get("size"),
+                resolved_additional_sizes=additional_sizes,
             ),
         )
     if _size_mapping_debug_enabled():

@@ -128,7 +128,7 @@ class AccountLogsApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(
             [item["message"] for item in payload],
-            ["[RUN] started pid=3544", "Товар создан успешно. ID: 42."],
+            ["Процесс запущен (PID 3544).", "Товар создан успешно. ID: 42."],
         )
         self.assertEqual([item["level"] for item in payload], ["INFO", "SUCCESS"])
 
@@ -152,7 +152,7 @@ class AccountLogsApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(
             [item["message"] for item in payload],
-            ["[RUN] started pid=3544", "Не удалось обработать товар."],
+            ["Процесс запущен (PID 3544).", "Не удалось обработать товар."],
         )
 
     def test_get_account_logs_dedupes_identical_file_and_runtime_entries(self) -> None:
@@ -173,7 +173,114 @@ class AccountLogsApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual([item["message"] for item in payload], ["[RUN] started pid=3544"])
+        self.assertEqual(
+            [item["message"] for item in payload],
+            ["Процесс запущен (PID 3544)."],
+        )
+
+    def test_account_log_store_normalizes_inline_levels(self) -> None:
+        entry = self.log_store.append(
+            "acc-1",
+            "WARN",
+            "[WARN] API отклонил размер. Обновляю размеры и повторяю создание товара...",
+        )
+
+        self.assertEqual(entry.level, "WARNING")
+        self.assertEqual(
+            entry.message,
+            "Размер отклонён API, обновляю размеры и повторяю создание.",
+        )
+
+    def test_account_log_store_translates_system_messages(self) -> None:
+        store = AccountLogStore(max_entries_per_account=10)
+
+        store.append("acc-1", "INFO", "[RUN] started pid=3544")
+        store.append("acc-1", "INFO", "Account settings updated.")
+        store.append(
+            "acc-1",
+            "INFO",
+            "Telegram verification code requested.",
+        )
+        store.append("acc-1", "INFO", "Shafa session saved.")
+
+        entries = store.list_entries("acc-1", limit=10)
+
+        self.assertEqual(
+            [entry.message for entry in entries],
+            [
+                "Процесс запущен (PID 3544).",
+                "Настройки аккаунта обновлены.",
+                "Код Telegram запрошен.",
+                "Сессия Shafa сохранена.",
+            ],
+        )
+
+    def test_account_log_store_translates_business_messages(self) -> None:
+        store = AccountLogStore(max_entries_per_account=10)
+
+        store.append("acc-1", "INFO", "Товар для создания: Nike Air Force 1.")
+        store.append("acc-1", "INFO", "Цена товара (с наценкой 400): 2400.")
+        store.append("acc-1", "INFO", "Скачано фото: 10.")
+        store.append(
+            "acc-1",
+            "INFO",
+            "Загружены бренды для zhenskaya-obuv/krossovki: 500.",
+        )
+        store.append(
+            "acc-1",
+            "SUCCESS",
+            "Товар создан успешно. Имя товара: Nike Air Force 1. ID: 42. Фото: 10.",
+        )
+
+        entries = store.list_entries("acc-1", limit=10)
+
+        self.assertEqual(
+            [entry.message for entry in entries],
+            [
+                "Готовлю товар: «Nike Air Force 1».",
+                "Цена рассчитана: 2400 (наценка 400).",
+                "Фото скачаны: 10.",
+                "Бренды обновлены для zhenskaya-obuv/krossovki: 500.",
+                "Товар создан успешно: «Nike Air Force 1», ID 42, фото 10.",
+            ],
+        )
+
+    def test_get_account_logs_normalizes_noise_and_structured_errors(self) -> None:
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        account_log.write_text(
+            "\n".join(
+                [
+                    "[2026-04-18 13:54:09] [WARN] [Alpha] [WARN] API отклонил размер. Обновляю размеры и повторяю создание товара...",
+                    "[2026-04-18 13:54:10] [INFO] [Alpha] __________________________________",
+                    "[2026-04-18 13:54:11] [INFO] [Alpha] Размеры товара: {\"catalog\": \"zhenskaya-obuv/krossovki\", \"raw_size\": \"36\", \"raw_additional_sizes\": [\"37\", \"38\"], \"expanded_sizes\": [\"36\", \"37\", \"38\"], \"preferred_size_system\": \"eu\", \"resolved_size\": 1196, \"resolved_additional_sizes\": [1198, 1200]}",
+                    "[2026-04-18 13:54:12] [ERROR] [Alpha] [{'field': 'size', 'messages': [{'code': 'invalid', 'message': 'Потрібно вибрати розмір речі', '__typename': 'GraphErrorMessage'}], '__typename': 'GraphResponseError'}]",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/accounts/acc-1/logs")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            [item["level"] for item in payload],
+            ["WARNING", "INFO", "ERROR"],
+        )
+        self.assertEqual(
+            payload[0]["message"],
+            "Размер отклонён API, обновляю размеры и повторяю создание.",
+        )
+        self.assertEqual(
+            payload[1]["message"],
+            "Размер: 36. Доп. размеры: 37, 38. Каталог: zhenskaya-obuv/krossovki. Система: EU. Размер сопоставлен, доп. размеров: 2.",
+        )
+        self.assertEqual(
+            payload[2]["message"],
+            "Shafa API: размер: Потрібно вибрати розмір речі",
+        )
 
     def test_websocket_streams_new_account_logs(self) -> None:
         with self.client.websocket_connect("/ws/logs/acc-1") as websocket:

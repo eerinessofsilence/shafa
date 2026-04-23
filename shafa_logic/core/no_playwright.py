@@ -925,9 +925,6 @@ def main() -> None:
         )
         errors = result.get("errors") or []
         if errors and _has_invalid_size_error(errors) and parsed_data:
-            print(product_raw_data)
-            print("________________________________")
-            print(errors)
             catalog_slug = str(product_raw_data.get("category") or "").strip()
             if not catalog_slug:
                 catalog_slug = DEFAULT_CATALOG_SLUG

@@ -99,6 +99,7 @@ import {
   EllipsisVertical,
 } from 'lucide-react';
 import {
+  useCallback,
   type ChangeEvent,
   type ComponentPropsWithoutRef,
   type FormEvent,
@@ -180,18 +181,18 @@ const accountDraftInitialState: AccountDraft = {
 };
 const accountPageSizeOptions = [5, 10, 20, 50] as const;
 const tablePaginationSelectClassName =
-  'h-9 min-w-[4.75rem] appearance-none rounded-lg border border-border/18 bg-foreground/86 px-3 pr-8 text-[13px] font-medium text-text outline-none transition hover:border-border/34 hover:bg-foreground focus:border-info/30 focus:ring-2 focus:ring-info/12';
+  'h-9 min-w-[4.75rem] appearance-none rounded-[8px] border border-border bg-foreground px-3 pr-8 text-[13px] font-medium text-text outline-none transition hover:border-border-strong hover:bg-secondary focus:border-info/30 focus:ring-2 focus:ring-info/12';
 const tablePaginationButtonClassName =
-  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/18 bg-foreground/86 text-[13px] font-medium tabular-nums text-text-muted outline-none transition hover:border-border/34 hover:bg-foreground hover:text-text focus:border-info/30 focus:ring-2 focus:ring-info/12 disabled:pointer-events-none disabled:opacity-50';
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border border-border bg-foreground text-[13px] font-medium tabular-nums text-text-muted outline-none transition hover:border-border-strong hover:bg-secondary hover:text-text focus:border-info/30 focus:ring-2 focus:ring-info/12 disabled:pointer-events-none disabled:opacity-50';
 const tablePaginationIconButtonClassName =
-  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/18 bg-foreground/86 text-text-muted outline-none transition hover:border-border/34 hover:bg-foreground hover:text-text focus:border-info/30 focus:ring-2 focus:ring-info/12 disabled:pointer-events-none disabled:opacity-50';
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border border-border bg-foreground text-text-muted outline-none transition hover:border-border-strong hover:bg-secondary hover:text-text focus:border-info/30 focus:ring-2 focus:ring-info/12 disabled:pointer-events-none disabled:opacity-50';
 const tablePaginationCurrentPageClassName =
-  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/24 bg-secondary/72 text-[13px] font-semibold tabular-nums text-text shadow-[0_1px_0_rgba(255,255,255,0.03)]';
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border border-info/25 bg-info/10 text-[13px] font-semibold tabular-nums text-info shadow-[0_1px_0_rgba(255,255,255,0.03)]';
 const tablePaginationJumpTriggerClassName = tablePaginationButtonClassName;
 const tablePaginationJumpPopoverClassName =
-  'absolute bottom-[calc(100%+8px)] left-1/2 z-20 flex w-36 -translate-x-1/2 flex-col gap-1.5 rounded-lg border border-border/18 bg-foreground p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]';
+  'absolute bottom-[calc(100%+8px)] left-1/2 z-20 flex w-36 -translate-x-1/2 flex-col gap-1.5 rounded-[8px] border border-border bg-foreground p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]';
 const tablePaginationJumpInputClassName =
-  'number-input-no-spin h-8 w-full rounded-md border border-border/18 bg-secondary/75 px-2.5 text-[13px] font-medium text-text outline-none transition hover:border-border/42 focus:border-info/42 focus:ring-2 focus:ring-info/16';
+  'number-input-no-spin h-8 w-full rounded-[8px] border border-border bg-foreground px-2.5 text-[13px] font-medium text-text outline-none transition hover:border-border-strong focus:border-info/42 focus:ring-2 focus:ring-info/16';
 const allLogAccountsValue = '__all_accounts__';
 const allLogLevelsValue = 'ALL';
 const logLevelOptions = [
@@ -205,7 +206,7 @@ const logLevelOptions = [
 const logFilterSelectClassName =
   'h-[42px] min-w-[220px] appearance-none rounded-[8px] border border-border bg-foreground px-4 pr-11 text-[15px] font-normal text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const logTableDesktopGridClassName =
-  'xl:grid-cols-[minmax(180px,1.1fr)_minmax(128px,0.7fr)_minmax(0,2.55fr)_minmax(108px,0.6fr)]';
+  'xl:grid-cols-[minmax(180px,1.05fr)_minmax(128px,0.68fr)_minmax(108px,0.55fr)_minmax(0,2.65fr)]';
 const logLevelBadgeClassNames: Record<StatusTone, string> = {
   success: 'border-success/12.5 bg-success/10 text-success',
   warning: 'border-warning/12.5 bg-warning/10 text-warning',
@@ -238,6 +239,8 @@ const accountPanelTimestampFormatter = new Intl.DateTimeFormat('ru-RU', {
 });
 const settingsStorageKey = 'shafa.desktop.settings.v1';
 const themeStorageKey = 'shafa.desktop.theme.v1';
+const accountsPaginationStorageKey = 'shafa.desktop.accounts-pagination.v1';
+const logsPaginationStorageKey = 'shafa.desktop.logs-pagination.v1';
 const settingsFieldClassName =
   'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[15px] font-normal text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
 const settingsTextAreaClassName =
@@ -267,6 +270,11 @@ type ThemeMode = 'dark' | 'light';
 
 type InterfaceLanguage = 'ru' | 'uk' | 'en';
 type DateTimeFormatId = 'ru-24' | 'uk-24' | 'en-12' | 'iso';
+type AccountLogVisualPriority = 'muted' | 'default' | 'strong';
+interface TablePaginationState {
+  currentPage: number;
+  itemsPerPage: TablePageSize;
+}
 
 interface AppPreferences {
   interfaceLanguage: InterfaceLanguage;
@@ -321,6 +329,7 @@ interface AccountLogEntry {
   level: string;
   tone: StatusTone;
   message: string;
+  visualPriority: AccountLogVisualPriority;
 }
 
 function formatTimerLabel(minutes: number) {
@@ -527,6 +536,10 @@ function parseTextSetting(value: unknown, fallback: string) {
   return normalizedValue || fallback;
 }
 
+function isTablePageSize(value: unknown): value is TablePageSize {
+  return accountPageSizeOptions.some((option) => option === value);
+}
+
 function migrateLegacyWorkingPath(
   value: string,
   legacyPath: string,
@@ -630,6 +643,36 @@ function loadStoredThemeMode() {
     return normalizeThemeMode(window.localStorage.getItem(themeStorageKey));
   } catch {
     return normalizeThemeMode(null);
+  }
+}
+
+function loadStoredTablePagination(storageKey: string): TablePaginationState {
+  const defaultState: TablePaginationState = {
+    currentPage: 1,
+    itemsPerPage: accountPageSizeOptions[0],
+  };
+
+  if (typeof window === 'undefined') {
+    return defaultState;
+  }
+
+  try {
+    const rawValue = window.sessionStorage.getItem(storageKey);
+
+    if (!rawValue) {
+      return defaultState;
+    }
+
+    const parsedValue = JSON.parse(rawValue) as Record<string, unknown>;
+
+    return {
+      currentPage: parseIntegerSetting(parsedValue.currentPage, 1, 1, 9999),
+      itemsPerPage: isTablePageSize(parsedValue.itemsPerPage)
+        ? parsedValue.itemsPerPage
+        : defaultState.itemsPerPage,
+    };
+  } catch {
+    return defaultState;
   }
 }
 
@@ -1163,6 +1206,115 @@ function getAccountLogTone(level: string): StatusTone {
   }
 }
 
+const mutedAccountLogMessagePrefixes = [
+  'бренды обновлены',
+  'размеры обновлены',
+  'размер:',
+  'каталог:',
+  'цена рассчитана',
+  'фото скачаны',
+  'временные фото удалены',
+  'ссылки telegram-каналов экспортированы',
+  'telegram api-данные сохранены',
+  'код telegram запрошен',
+  'отправляю код telegram',
+  'отправляю пароль 2fa telegram',
+  'сессия telegram удалена',
+  'сохраняю сессию shafa',
+  'сессия shafa сохранена',
+  'окно входа shafa открыто',
+  'номер телефона получен из telegram-сессии',
+] as const;
+
+const strongAccountLogMessagePrefixes = [
+  'товар создан успешно',
+  'размер отклонён api',
+  'процесс запущен',
+  'процесс остановлен',
+  'процесс завершился с ошибкой',
+  'статус аккаунта:',
+  'остановка запрошена',
+  'аккаунт создан',
+  'настройки аккаунта обновлены',
+  'аккаунт удалён',
+  'не удалось',
+  'сбой',
+] as const;
+
+function getAccountLogVisualPriority(
+  level: string,
+  message: string,
+): AccountLogVisualPriority {
+  const normalizedLevel = level.toUpperCase();
+  const normalizedMessage = message.trim().toLowerCase();
+
+  if (
+    normalizedLevel === 'ERROR' ||
+    normalizedLevel === 'CRITICAL' ||
+    normalizedLevel === 'WARNING' ||
+    normalizedLevel === 'SUCCESS' ||
+    normalizedLevel === 'OK'
+  ) {
+    return 'strong';
+  }
+
+  if (
+    strongAccountLogMessagePrefixes.some((prefix) =>
+      normalizedMessage.startsWith(prefix),
+    )
+  ) {
+    return 'strong';
+  }
+
+  if (
+    mutedAccountLogMessagePrefixes.some((prefix) =>
+      normalizedMessage.startsWith(prefix),
+    )
+  ) {
+    return 'muted';
+  }
+
+  return 'default';
+}
+
+function getAccountLogLevelBadgeClassName(entry: AccountLogEntry) {
+  return logLevelBadgeClassNames[entry.tone];
+}
+
+function getAccountLogEventSurfaceClassName(entry: AccountLogEntry) {
+  if (entry.visualPriority === 'muted') {
+    return 'rounded-[14px] border border-border/10 bg-secondary/55 px-4 py-3';
+  }
+
+  if (entry.visualPriority === 'default') {
+    return 'rounded-[14px] border border-border/12 bg-secondary/70 px-4 py-3';
+  }
+
+  switch (entry.tone) {
+    case 'success':
+      return 'rounded-[14px] border border-success/10 bg-success/5 px-4 py-3';
+    case 'warning':
+      return 'rounded-[14px] border border-warning/10 bg-warning/5 px-4 py-3';
+    case 'danger':
+      return 'rounded-[14px] border border-error/10 bg-error/5 px-4 py-3';
+    case 'info':
+      return 'rounded-[14px] border border-border/12 bg-secondary/78 px-4 py-3';
+    default:
+      return 'rounded-[14px] border border-border/14 bg-secondary/78 px-4 py-3';
+  }
+}
+
+function getAccountLogMessageClassName(entry: AccountLogEntry) {
+  switch (entry.visualPriority) {
+    case 'muted':
+      return 'text-sm leading-6 text-text-muted/78';
+    case 'strong':
+      return 'text-sm font-medium leading-6 text-text';
+    default:
+      return 'text-sm leading-6 text-text-muted';
+  }
+}
+
 function mapApiAccountLogEntryToEntry(
   entry: ApiAccountLogEntryRead,
   accountName = entry.account_id,
@@ -1178,6 +1330,10 @@ function mapApiAccountLogEntryToEntry(
     level: normalizedLevel,
     message: entry.message,
     tone: getAccountLogTone(normalizedLevel),
+    visualPriority: getAccountLogVisualPriority(
+      normalizedLevel,
+      entry.message,
+    ),
   };
 }
 
@@ -1438,12 +1594,13 @@ function App() {
     loadStoredAppPreferences(),
   );
   const [selectedAccountId, setSelectedAccountId] = useState('');
-  const [accountsItemsPerPage, setAccountsItemsPerPage] =
-    useState<TablePageSize>(accountPageSizeOptions[0]);
-  const [accountsCurrentPage, setAccountsCurrentPage] = useState(1);
-  const [logsItemsPerPage, setLogsItemsPerPage] =
-    useState<TablePageSize>(accountPageSizeOptions[0]);
-  const [logsCurrentPage, setLogsCurrentPage] = useState(1);
+  const [accountsPagination, setAccountsPagination] =
+    useState<TablePaginationState>(() =>
+      loadStoredTablePagination(accountsPaginationStorageKey),
+    );
+  const [logsPagination, setLogsPagination] = useState<TablePaginationState>(
+    () => loadStoredTablePagination(logsPaginationStorageKey),
+  );
 
   useEffect(() => {
     if (
@@ -1468,6 +1625,75 @@ function App() {
   useEffect(() => {
     setSettingsDraft(appPreferences);
   }, [appPreferences]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        accountsPaginationStorageKey,
+        JSON.stringify(accountsPagination),
+      );
+    } catch {
+      return;
+    }
+  }, [accountsPagination]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        logsPaginationStorageKey,
+        JSON.stringify(logsPagination),
+      );
+    } catch {
+      return;
+    }
+  }, [logsPagination]);
+
+  const handleAccountsCurrentPageChange = useCallback((page: number) => {
+    setAccountsPagination((currentPagination) =>
+      currentPagination.currentPage === page
+        ? currentPagination
+        : {
+            ...currentPagination,
+            currentPage: page,
+          },
+    );
+  }, []);
+
+  const handleAccountsItemsPerPageChange = useCallback(
+    (value: TablePageSize) => {
+      setAccountsPagination((currentPagination) =>
+        currentPagination.itemsPerPage === value
+          ? currentPagination
+          : {
+              ...currentPagination,
+              itemsPerPage: value,
+            },
+      );
+    },
+    [],
+  );
+
+  const handleLogsCurrentPageChange = useCallback((page: number) => {
+    setLogsPagination((currentPagination) =>
+      currentPagination.currentPage === page
+        ? currentPagination
+        : {
+            ...currentPagination,
+            currentPage: page,
+          },
+    );
+  }, []);
+
+  const handleLogsItemsPerPageChange = useCallback((value: TablePageSize) => {
+    setLogsPagination((currentPagination) =>
+      currentPagination.itemsPerPage === value
+        ? currentPagination
+        : {
+            ...currentPagination,
+            itemsPerPage: value,
+          },
+    );
+  }, []);
 
   useEffect(() => {
     const rootElement = document.documentElement;
@@ -1669,15 +1895,15 @@ function App() {
               {activePage === 'accounts' && (
                 <AccountsPage
                   accounts={accounts}
-                  currentPage={accountsCurrentPage}
+                  currentPage={accountsPagination.currentPage}
                   isLoading={isAccountsLoading}
                   isMutationPending={isAccountMutationPending}
-                  itemsPerPage={accountsItemsPerPage}
+                  itemsPerPage={accountsPagination.itemsPerPage}
                   loadError={accountsError}
                   onBulkAction={handleBulkAccountAction}
                   onCreateAccount={handleCreateAccount}
-                  onCurrentPageChange={setAccountsCurrentPage}
-                  onItemsPerPageChange={setAccountsItemsPerPage}
+                  onCurrentPageChange={handleAccountsCurrentPageChange}
+                  onItemsPerPageChange={handleAccountsItemsPerPageChange}
                   onReload={loadAccounts}
                   onSelectAccount={setSelectedAccountId}
                   onSyncAccountChannels={handleSyncAccountChannels}
@@ -1688,11 +1914,11 @@ function App() {
                 <LogsPage
                   accounts={accounts}
                   accountsError={accountsError}
-                  currentPage={logsCurrentPage}
+                  currentPage={logsPagination.currentPage}
                   isAccountsLoading={isAccountsLoading}
-                  itemsPerPage={logsItemsPerPage}
-                  onCurrentPageChange={setLogsCurrentPage}
-                  onItemsPerPageChange={setLogsItemsPerPage}
+                  itemsPerPage={logsPagination.itemsPerPage}
+                  onCurrentPageChange={handleLogsCurrentPageChange}
+                  onItemsPerPageChange={handleLogsItemsPerPageChange}
                   onReloadAccounts={loadAccounts}
                 />
               )}
@@ -5162,10 +5388,14 @@ function LogsPage({
   }, [accounts, selectedLogAccountId]);
 
   useEffect(() => {
-    if (isAccountsLoading || accounts.length === 0) {
+    if (accounts.length === 0) {
       setIsLogsLoading(false);
       setLogEntries([]);
       setLogsError('');
+      return;
+    }
+
+    if (isAccountsLoading) {
       return;
     }
 
@@ -5383,7 +5613,7 @@ function LogsPage({
               </div>
             ) : null}
 
-            {isAccountsLoading ? (
+            {isAccountsLoading && accounts.length === 0 ? (
               <div className="rounded-[22px] border border-dashed border-border/30 bg-secondary/40 p-6 text-center">
                 <strong className="block text-text">Загружаем аккаунты</strong>
                 <p className="mt-2 leading-6 text-text-muted">
@@ -5427,8 +5657,8 @@ function LogsPage({
                 >
                   <span>Дата и время</span>
                   <span>Аккаунт</span>
-                  <span>Событие</span>
                   <span>Уровень</span>
+                  <span>Событие</span>
                 </div>
 
                 <div className="divide-y divide-border/25">
@@ -5465,26 +5695,36 @@ function LogsPage({
                         </div>
                       </div>
 
-                      <div className="min-w-0 space-y-2">
-                        <span className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-text-muted/70 xl:hidden">
-                          Событие
-                        </span>
-                        <div className="flex min-w-0 items-center gap-3">
-                          <p className="min-w-0 text-sm leading-6 text-text-muted">
-                            {entry.message}
-                          </p>
-                        </div>
-                      </div>
-
                       <div className="space-y-2 xl:justify-self-start">
                         <span className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-text-muted/70 xl:hidden">
                           Уровень
                         </span>
                         <span
-                          className={`inline-flex items-center justify-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-widest ${logLevelBadgeClassNames[entry.tone]}`}
+                          className={`inline-flex items-center justify-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-widest ${getAccountLogLevelBadgeClassName(entry)}`}
                         >
                           {entry.level}
                         </span>
+                      </div>
+
+                      <div className="min-w-0 space-y-2">
+                        <span className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-text-muted/70 xl:hidden">
+                          Событие
+                        </span>
+                        <div
+                          className={cx(
+                            'min-w-0',
+                            getAccountLogEventSurfaceClassName(entry),
+                          )}
+                        >
+                          <p
+                            className={cx(
+                              'min-w-0',
+                              getAccountLogMessageClassName(entry),
+                            )}
+                          >
+                            {entry.message}
+                          </p>
+                        </div>
                       </div>
                     </article>
                   ))}

@@ -56,8 +56,26 @@ class LogStore:
     @staticmethod
     def detect_level(message: str) -> str:
         lower = message.lower()
-        if any(token in lower for token in ("[error]", " error", "ошибка", "не удалось", "failed")):
+        if any(
+            token in lower
+            for token in (
+                "[error]",
+                "[warn]",
+                "[warning]",
+                " warning",
+                " warn",
+                " error",
+                "ошибка",
+                "не удалось",
+                "failed",
+            )
+        ):
+            if "[warn]" in lower or "[warning]" in lower or " warning" in lower or " warn" in lower:
+                return "WARNING"
             return "ERROR"
-        if any(token in lower for token in ("[ok]", "success", "успеш", "saved")):
+        if any(
+            token in lower
+            for token in ("[ok]", "[success]", "success", "успеш", "saved")
+        ):
             return "SUCCESS"
         return "INFO"
