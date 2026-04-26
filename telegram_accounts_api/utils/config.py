@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,8 +18,23 @@ class AppSettings:
     app_version: str = "1.0.0"
 
 
+def _default_base_dir() -> Path:
+    configured = os.getenv("TELEGRAM_ACCOUNTS_BASE_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    desktop_data_dir = os.getenv("SHAFA_DESKTOP_DATA_DIR", "").strip()
+    if desktop_data_dir:
+        return Path(desktop_data_dir).expanduser().resolve()
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+
+    return Path(__file__).resolve().parents[2]
+
+
 def get_settings() -> AppSettings:
-    base_dir = Path(os.getenv("TELEGRAM_ACCOUNTS_BASE_DIR", Path.cwd())).resolve()
+    base_dir = _default_base_dir()
     accounts_file = Path(os.getenv("ACCOUNTS_STATE_FILE", base_dir / "accounts_state.json")).resolve()
     templates_file = Path(os.getenv("MESSAGE_TEMPLATES_FILE", base_dir / "message_templates.json")).resolve()
     channel_templates_file = Path(
