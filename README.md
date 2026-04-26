@@ -301,18 +301,36 @@ This produces a PyInstaller build under:
 
 ### Desktop packaging
 
-From `desktop-ui/`:
+From the project root:
 
 ```bash
-npm run dist:win
+python build_desktop.py
+```
+
+This produces a single portable Windows executable that starts the desktop app and launches the bundled backend automatically.
+
+You can also build directly from `desktop-ui/`:
+
+```bash
+npm run dist:portable
+```
+
+If you also want an installer build:
+
+```bash
+cd desktop-ui
+npm run dist:installer
 ```
 
 Useful scripts:
 
 - `npm run build:backend` - triggers backend build helper for desktop packaging
 - `npm run build` - renderer + Electron production build
+- `python build_desktop.py` - root-level helper to build one portable Windows `.exe`
+- `npm run dist:portable` - single portable Windows `.exe` for end users
+- `npm run dist:installer` - Windows installer build only
 - `npm run pack:win` - unpacked Windows app
-- `npm run dist:win` - Windows installer/portable targets
+- `npm run dist:win` - alias for the portable one-file Windows build
 
 ## Notes for contributors
 
