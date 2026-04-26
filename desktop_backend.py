@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import socket
 import sys
 from pathlib import Path
 
-import uvicorn
-
 SEED_FILES = ("accounts_state.json", "telegram_channel_templates.json")
 SEED_JSON_PAYLOAD = "[]\n"
 DEFAULT_BACKEND_PORT = 8000
+ADDRESS_IN_USE_WINERROR = 10048
 
 
 def _bundle_dir() -> Path:
@@ -67,25 +67,50 @@ def _resolve_backend_port(host: str, preferred_port: int = DEFAULT_BACKEND_PORT)
     except OSError:
         return _reserve_port(host, 0), True
 
-
 DATA_DIR = _bootstrap_environment()
 
-from telegram_accounts_api.main import app
+
+def _is_address_in_use_error(error: OSError) -> bool:
+    if error.errno == errno.EADDRINUSE:
+        return True
+    if getattr(error, "winerror", None) == ADDRESS_IN_USE_WINERROR:
+        return True
+    return False
 
 
 def main() -> None:
+    import uvicorn
+    from telegram_accounts_api.main import app
+
     host = os.getenv("SHAFA_BACKEND_HOST", "127.0.0.1")
+    configured_port = os.getenv("SHAFA_BACKEND_PORT", "").strip()
     port, used_fallback_port = _resolve_backend_port(host)
     log_level = os.getenv("LOG_LEVEL", "info").lower()
-    os.environ["SHAFA_BACKEND_PORT"] = str(port)
-    if used_fallback_port:
-        print(
-            f"Port {DEFAULT_BACKEND_PORT} is busy on {host}; using available port {port}. "
-            "Set SHAFA_BACKEND_PORT to override.",
-            flush=True,
-        )
-    print(f"Starting desktop backend on {host}:{port} with data dir {DATA_DIR}", flush=True)
-    uvicorn.run(app, host=host, port=port, log_level=log_level, access_log=False)
+
+    while True:
+        os.environ["SHAFA_BACKEND_PORT"] = str(port)
+        if used_fallback_port:
+            print(
+                f"Port {DEFAULT_BACKEND_PORT} is busy on {host}; using available port {port}. "
+                "Set SHAFA_BACKEND_PORT to override.",
+                flush=True,
+            )
+        print(f"Starting desktop backend on {host}:{port} with data dir {DATA_DIR}", flush=True)
+
+        try:
+            uvicorn.run(app, host=host, port=port, log_level=log_level, access_log=False)
+            return
+        except OSError as error:
+            if configured_port or not _is_address_in_use_error(error):
+                raise
+
+            next_port = _reserve_port(host, 0)
+            print(
+                f"Port {port} became busy before startup completed; retrying on {host}:{next_port}.",
+                flush=True,
+            )
+            port = next_port
+            used_fallback_port = False
 
 
 if __name__ == "__main__":

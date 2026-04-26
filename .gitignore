@@ -4,7 +4,9 @@ venv/
 .env
 .env.*
 !.env.example
-
+.codex
+../.codex
+../.gitignore
 # Python caches and tooling
 __pycache__/
 .pytest_cache/
