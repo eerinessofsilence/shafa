@@ -332,6 +332,17 @@ Useful scripts:
 - `npm run pack:win` - unpacked Windows app
 - `npm run dist:win` - alias for the portable one-file Windows build
 
+### Desktop development
+
+From the project root:
+
+```bash
+python run_desktop.py
+```
+
+This starts the full desktop app in development mode by running `npm run dev` inside `desktop-ui/`.
+You do not need to start `dist/backend/ShafaControlBackend.exe` separately for local desktop development.
+
 ## Notes for contributors
 
 - prefer `rg`/`rg --files` for codebase search
