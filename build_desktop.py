@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
+def _resolve_npm_command() -> str:
+    candidates = ["npm.cmd", "npm.exe", "npm"] if os.name == "nt" else ["npm"]
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    raise FileNotFoundError("npm")
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent
     desktop_ui = root / "desktop-ui"
-    command = ["npm", "run", "dist:portable"]
+    command = [_resolve_npm_command(), "run", "dist:portable"]
 
     print(f"Building desktop portable app from {desktop_ui}", flush=True)
     subprocess.run(
@@ -30,5 +40,5 @@ if __name__ == "__main__":
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode) from error
     except FileNotFoundError:
-        print("npm was not found. Install Node.js and npm, then try again.", file=sys.stderr)
+        print("npm was not found in PATH. Install Node.js or reopen the terminal after installation.", file=sys.stderr)
         raise SystemExit(1)
