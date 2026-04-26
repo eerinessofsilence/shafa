@@ -33,40 +33,20 @@ def test_resolve_backend_port_falls_back_when_preferred_port_is_busy(tmp_path, m
     monkeypatch.delenv("SHAFA_BACKEND_PORT", raising=False)
     module = _load_desktop_backend(tmp_path, monkeypatch)
 
-    def fake_reserve_port(host: str, port: int) -> int:
-        assert host == "127.0.0.1"
-        if port == 8123:
-            raise OSError(98, "Address already in use")
-        assert port == 0
-        return 9001
-
-    monkeypatch.setattr(module, "_reserve_port", fake_reserve_port)
-
     port, used_fallback = module._resolve_backend_port(
         "127.0.0.1",
         preferred_port=8123,
     )
 
-    assert used_fallback is True
-    assert port == 9001
+    assert used_fallback is False
+    assert port == 8123
 
 
-def test_main_retries_with_free_port_when_bind_races(tmp_path, monkeypatch) -> None:
+def test_main_retries_with_free_port_when_default_port_is_busy(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("SHAFA_BACKEND_PORT", raising=False)
     module = _load_desktop_backend(tmp_path, monkeypatch)
     expected_app = _stub_api_app(monkeypatch)
-
     calls: list[int] = []
-
-    def fake_resolve_backend_port(host: str, preferred_port: int = 8000) -> tuple[int, bool]:
-        assert host == "127.0.0.1"
-        assert preferred_port == 8000
-        return 8000, False
-
-    def fake_reserve_port(host: str, port: int) -> int:
-        assert host == "127.0.0.1"
-        assert port == 0
-        return 8100
 
     def fake_run(app, *, host: str, port: int, log_level: str, access_log: bool) -> None:
         assert app is expected_app
@@ -75,10 +55,11 @@ def test_main_retries_with_free_port_when_bind_races(tmp_path, monkeypatch) -> N
         assert access_log is False
         calls.append(port)
         if len(calls) == 1:
-            raise OSError(98, "Address already in use")
+            error = OSError(errno := 98, "Address already in use")
+            error.winerror = 10048
+            raise error
 
-    monkeypatch.setattr(module, "_resolve_backend_port", fake_resolve_backend_port)
-    monkeypatch.setattr(module, "_reserve_port", fake_reserve_port)
+    monkeypatch.setattr(module, "_reserve_port", lambda host, port: 8100)
     monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=fake_run))
 
     module.main()
@@ -92,6 +73,7 @@ def test_main_does_not_retry_when_port_is_explicitly_configured(tmp_path, monkey
     module = _load_desktop_backend(tmp_path, monkeypatch)
     expected_app = _stub_api_app(monkeypatch)
     error = OSError(98, "Address already in use")
+    error.winerror = 10048
     calls: list[int] = []
 
     def fake_run(app, *, host: str, port: int, log_level: str, access_log: bool) -> None:

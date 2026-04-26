@@ -62,10 +62,8 @@ def _resolve_backend_port(host: str, preferred_port: int = DEFAULT_BACKEND_PORT)
     if configured_port:
         return int(configured_port), False
 
-    try:
-        return _reserve_port(host, preferred_port), False
-    except OSError:
-        return _reserve_port(host, 0), True
+    return preferred_port, False
+
 
 DATA_DIR = _bootstrap_environment()
 
@@ -104,13 +102,8 @@ def main() -> None:
             if configured_port or not _is_address_in_use_error(error):
                 raise
 
-            next_port = _reserve_port(host, 0)
-            print(
-                f"Port {port} became busy before startup completed; retrying on {host}:{next_port}.",
-                flush=True,
-            )
-            port = next_port
-            used_fallback_port = False
+            port = _reserve_port(host, 0)
+            used_fallback_port = True
 
 
 if __name__ == "__main__":
