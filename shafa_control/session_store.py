@@ -233,7 +233,7 @@ class AccountSessionStore:
         clean_api_id = str(api_id or "").strip()
         clean_api_hash = str(api_hash or "").strip()
         if not clean_api_id or not clean_api_hash:
-            raise RuntimeError("Telegram API ID and API hash are required.")
+            raise RuntimeError("Нужны Telegram API ID и API hash.")
         path = self.telegram_credentials_file(account)
         path.parent.mkdir(parents=True, exist_ok=True)
         rendered = (
@@ -273,7 +273,7 @@ class AccountSessionStore:
     def copy_telegram_session(self, source: Account, target: Account) -> None:
         source_file = self.telegram_session_file(source)
         if not self.is_valid_telegram_session(source):
-            raise RuntimeError("Source Telegram session is invalid.")
+            raise RuntimeError("Сессия Telegram исходного аккаунта недействительна.")
         target_file = self.telegram_session_file(target)
         target_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_file, target_file)
@@ -286,7 +286,7 @@ class AccountSessionStore:
 
     def copy_shafa_session(self, source: Account, target: Account) -> None:
         if not self.is_valid_shafa_session(source):
-            raise RuntimeError("Source Shafa session is invalid.")
+            raise RuntimeError("Сессия Shafa исходного аккаунта недействительна.")
         target_file = self.auth_file(target)
         target_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self.auth_file(source), target_file)
@@ -294,18 +294,18 @@ class AccountSessionStore:
 
     def import_telegram_session(self, account: Account, source_path: Path) -> None:
         if not self.is_valid_telegram_session_path(source_path):
-            raise RuntimeError("Imported Telegram session file is invalid.")
+            raise RuntimeError("Импортированный файл сессии Telegram недействителен.")
         target_file = self.telegram_session_file(account)
         target_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, target_file)
         if not self.is_valid_telegram_session(account):
             target_file.unlink(missing_ok=True)
-            raise RuntimeError("Imported Telegram session failed validation.")
+            raise RuntimeError("Импортированная сессия Telegram не прошла проверку.")
         self.write_account_manifest(account)
 
     def export_telegram_session(self, account: Account, target_path: Path) -> None:
         if not self.is_valid_telegram_session(account):
-            raise RuntimeError("Telegram session is missing or invalid.")
+            raise RuntimeError("Сессия Telegram отсутствует или недействительна.")
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self.telegram_session_file(account), target_path)
 

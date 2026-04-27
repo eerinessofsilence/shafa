@@ -311,11 +311,18 @@ class AccountsApiTest(unittest.TestCase):
         response = self.client.post(f"/accounts/{account_id}/start")
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Shafa session", response.json()["detail"])
+        self.assertIn("Сессия Shafa", response.json()["detail"])
 
         refreshed = self.client.get(f"/accounts/{account_id}")
         self.assertEqual(refreshed.status_code, 200)
         self.assertEqual(refreshed.json()["status"], "stopped")
+        self.assertEqual(refreshed.json()["errors"], 1)
+
+        logs = self.client.get(f"/accounts/{account_id}/logs")
+        self.assertEqual(logs.status_code, 200)
+        self.assertTrue(
+            any("Сессия Shafa" in item["message"] for item in logs.json()),
+        )
 
     def test_start_and_stop_account_manage_runtime_process(self) -> None:
         project_dir = self._make_project()

@@ -1562,7 +1562,11 @@ function getAccountDraftFromRow(account: AccountRow): AccountDraft {
 }
 
 function isAccountDraftValid(draft: AccountDraft) {
-  return Boolean(draft.name.trim()) && isTimerValueValid(draft.timer);
+  return (
+    Boolean(draft.name.trim()) &&
+    Boolean(draft.path.trim()) &&
+    isTimerValueValid(draft.timer)
+  );
 }
 
 function formatAccountCount(count: number) {
@@ -1666,7 +1670,7 @@ function TelegramChannelCard({
               ? 'h-9 w-9'
               : 'h-10 w-10 shadow-[0_6px_18px_rgba(19,120,198,0.2)]',
           )}
-          src="/tg_logo.png"
+          src="./tg_logo.png"
         />
         <div className="min-w-0">
           <h5

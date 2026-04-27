@@ -124,10 +124,10 @@ class AccountAuthService:
         api_hash = str(payload.api_hash or "").strip()
         if not api_id.isdigit():
             log(account_id, "WARNING", "Rejected Telegram credentials: invalid API ID.")
-            raise BadRequestError("Telegram API ID must be an integer.")
+            raise BadRequestError("Telegram API ID должен быть числом.")
         if not api_hash:
             log(account_id, "WARNING", "Rejected Telegram credentials: API hash missing.")
-            raise BadRequestError("Telegram API hash is required.")
+            raise BadRequestError("Нужен Telegram API hash.")
         self.store.save_telegram_credentials(account, api_id, api_hash)
         log(account_id, "INFO", "Telegram API credentials saved.")
         return await self.get_telegram_status(account_id)
@@ -143,8 +143,8 @@ class AccountAuthService:
             if not self._has_telegram_credentials(account):
                 log(account_id, "WARNING", "Telegram code request blocked: credentials are missing.")
                 raise BadRequestError(
-                    "Telegram API credentials are missing on backend. "
-                    "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH in .env or environment.",
+                    "На backend не настроены Telegram API-данные. "
+                    "Укажи SHAFA_TELEGRAM_API_ID и SHAFA_TELEGRAM_API_HASH в .env или переменных окружения.",
                 )
             reuse_status = self.telegram_auth.reuse_status(account)
             if reuse_status is not None:
@@ -236,7 +236,7 @@ class AccountAuthService:
         )
         status = await self.get_telegram_status(account_id)
         log(account_id, "INFO", "Telegram session removed.")
-        return status.model_copy(update={"message": "Telegram session removed."})
+        return status.model_copy(update={"message": "Сессия Telegram удалена."})
 
     async def copy_telegram_session(
         self,
@@ -246,9 +246,9 @@ class AccountAuthService:
         target = await self._get_account(account_id)
         source_account_id = str(payload.source_account_id or "").strip()
         if not source_account_id:
-            raise BadRequestError("Source account ID is required.")
+            raise BadRequestError("Нужен ID исходного аккаунта.")
         if source_account_id == account_id:
-            raise BadRequestError("Source and target accounts must be different.")
+            raise BadRequestError("Исходный и целевой аккаунты должны отличаться.")
         source = await self._get_account(source_account_id)
         try:
             self.telegram_auth.copy_session(source, target)
@@ -283,7 +283,7 @@ class AccountAuthService:
             f"Telegram session copied from account '{source_account_id}'.",
         )
         return (await self.get_telegram_status(account_id)).model_copy(
-            update={"message": f"Telegram session copied from account '{source_account_id}'."}
+            update={"message": f"Сессия Telegram скопирована из аккаунта '{source_account_id}'."}
         )
 
     async def import_telegram_session(
@@ -306,7 +306,7 @@ class AccountAuthService:
 
             if temp_path.stat().st_size <= 0:
                 log(account_id, "WARNING", "Telegram session import rejected: file is empty.")
-                raise BadRequestError("Telegram session file is empty.")
+                raise BadRequestError("Файл сессии Telegram пустой.")
 
             self.telegram_auth.import_session(account, temp_path)
         except RuntimeError as exc:
@@ -336,7 +336,7 @@ class AccountAuthService:
         self.store.write_account_manifest(account)
         log(account_id, "INFO", f"Telegram session imported from file '{filename}'.")
         return (await self.get_telegram_status(account_id)).model_copy(
-            update={"message": f"Telegram session imported from file '{filename}'."}
+            update={"message": f"Сессия Telegram импортирована из файла '{filename}'."}
         )
 
     async def get_shafa_status(self, account_id: str) -> ShafaAuthStatusResponse:
@@ -376,7 +376,7 @@ class AccountAuthService:
             cookies_count=cookies_count,
             email=email,
             phone=phone,
-            message="Shafa cookies are ready." if connected else "Shafa cookies are missing or invalid.",
+            message="Cookies Shafa готовы." if connected else "Cookies Shafa отсутствуют или недействительны.",
         )
 
     async def save_shafa_storage_state(
@@ -394,7 +394,7 @@ class AccountAuthService:
             if not self.store.is_valid_shafa_session(account):
                 auth_path.unlink(missing_ok=True)
                 log(account_id, "WARNING", "Rejected Shafa cookies: valid session cookie was not found.")
-                raise BadRequestError("Shafa cookies must include a non-empty csrftoken for shafa.ua.")
+                raise BadRequestError("Cookies Shafa должны содержать непустой csrftoken для shafa.ua.")
             self.store.write_account_manifest(account)
             log(account_id, "INFO", "Shafa session saved.")
             return await self.get_shafa_status(account_id)
@@ -413,7 +413,7 @@ class AccountAuthService:
             log(account_id, "INFO", "Shafa browser login flow started.")
             return status.model_copy(
                 update={
-                    "message": "Shafa login flow started. Complete login in the opened browser window.",
+                    "message": "Вход в Shafa запущен. Заверши вход в открытом окне браузера.",
                 }
             )
         except BadRequestError as exc:
@@ -428,7 +428,7 @@ class AccountAuthService:
         self.store.delete_shafa_session(account)
         status = await self.get_shafa_status(account_id)
         log(account_id, "INFO", "Shafa session removed.")
-        return status.model_copy(update={"message": "Shafa cookies removed."})
+        return status.model_copy(update={"message": "Cookies Shafa удалены."})
 
     async def _get_account(self, account_id: str) -> Account:
         account = await self.account_service.get_account(account_id)
@@ -498,7 +498,7 @@ class AccountAuthService:
                 [self._account_python(account), *args],
                 1,
                 stdout="",
-                stderr=f"main.py not found at {project_path}",
+                stderr=f"main.py не найден по пути {project_path}",
             )
         return subprocess.run(
             [self._account_python(account), *args],
@@ -617,7 +617,7 @@ class AccountAuthService:
     def _fetch_shafa_profile(self, cookies: list[dict[str, Any]]) -> dict[str, Any]:
         csrftoken = self._get_csrftoken_from_cookies(cookies)
         if not csrftoken:
-            raise BadRequestError("Shafa cookies must include csrftoken.")
+            raise BadRequestError("Cookies Shafa должны содержать csrftoken.")
 
         payload = json.dumps(
             [
@@ -657,15 +657,15 @@ class AccountAuthService:
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(
-                f"Shafa profile request failed with HTTP {exc.code}: {detail[:300]}"
+                f"Запрос профиля Shafa завершился HTTP {exc.code}: {detail[:300]}"
             ) from exc
         except error.URLError as exc:
-            raise RuntimeError(f"Shafa profile request failed: {exc.reason}") from exc
+            raise RuntimeError(f"Не удалось запросить профиль Shafa: {exc.reason}") from exc
 
         try:
             parsed_response = json.loads(response_body)
         except json.JSONDecodeError as exc:
-            raise RuntimeError("Shafa profile response is not valid JSON.") from exc
+            raise RuntimeError("Ответ профиля Shafa не является корректным JSON.") from exc
 
         if isinstance(parsed_response, list):
             for item in parsed_response:
@@ -679,7 +679,7 @@ class AccountAuthService:
             if isinstance(viewer, dict):
                 return viewer
 
-        raise RuntimeError("Shafa profile response does not contain viewer data.")
+        raise RuntimeError("Ответ профиля Shafa не содержит данные viewer.")
 
     @staticmethod
     def _get_csrftoken_from_cookies(cookies: list[dict[str, Any]]) -> str:
@@ -717,7 +717,7 @@ class AccountAuthService:
             return self._run_packaged_telegram_step(
                 args,
                 lambda: self._direct_request_telegram_code(account, args[2]),
-                "Telegram code requested.",
+                "Код Telegram запрошен.",
             )
 
         if (
@@ -729,14 +729,14 @@ class AccountAuthService:
             return self._run_packaged_telegram_step(
                 args,
                 lambda: self._direct_submit_telegram_code(account, args[2], args[4]),
-                "Telegram code submitted.",
+                "Код Telegram отправлен.",
             )
 
         if len(args) >= 3 and args[:2] == ["main.py", "--telegram-login-password"]:
             return self._run_packaged_telegram_step(
                 args,
                 lambda: self._direct_submit_telegram_password(account, args[2]),
-                "Telegram password submitted.",
+                "Пароль Telegram отправлен.",
             )
 
         if args == ["main.py", "--telegram-session-status"]:
@@ -749,7 +749,7 @@ class AccountAuthService:
             return subprocess.CompletedProcess(
                 args,
                 0 if authorized else 1,
-                stdout="authorized" if authorized else "",
+                stdout="Сессия Telegram авторизована." if authorized else "",
                 stderr="",
             )
 
@@ -794,11 +794,11 @@ class AccountAuthService:
         try:
             from telethon import TelegramClient
         except ImportError as exc:
-            raise RuntimeError("Telethon is not installed.") from exc
+            raise RuntimeError("Telethon не установлен.") from exc
 
         api_id, api_hash = self._resolve_telegram_credentials(account)
         if not api_id.isdigit() or not api_hash:
-            raise RuntimeError("Telegram API credentials are missing on backend.")
+            raise RuntimeError("На backend не настроены Telegram API-данные.")
         return TelegramClient, int(api_id), api_hash, self.store.telegram_session_file(account)
 
     async def _connect_direct_telegram_client(self, account: Account):
@@ -860,7 +860,7 @@ class AccountAuthService:
         session_file = self.store.telegram_session_file(account)
         phone_code_hash = str(state.get("phone_code_hash") or "").strip()
         if not phone_code_hash:
-            raise RuntimeError("Telegram login was not initialized for this account.")
+            raise RuntimeError("Вход в Telegram не был начат для этого аккаунта.")
 
         client = await self._connect_direct_telegram_client(account)
         try:
@@ -957,7 +957,7 @@ class AccountAuthService:
     def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
         project_path = preferred_project_dir(Path(account.path).expanduser())
         if not project_main_path(project_path).is_file():
-            raise BadRequestError(f"main.py not found at {project_path}")
+            raise BadRequestError(f"main.py не найден по пути {project_path}")
 
         account_dir = self.store.account_dir(account)
         account_dir.mkdir(parents=True, exist_ok=True)
@@ -976,7 +976,7 @@ class AccountAuthService:
                     start_new_session=True,
                 )
         except OSError as exc:
-            raise BadRequestError(f"Failed to start Shafa login flow: {exc}") from exc
+            raise BadRequestError(f"Не удалось запустить вход в Shafa: {exc}") from exc
 
         time.sleep(1)
         exit_code = process.poll()
@@ -991,10 +991,10 @@ class AccountAuthService:
         except OSError:
             log_tail = ""
 
-        detail = f" Shafa login exited immediately with code {exit_code}."
+        detail = f" Вход в Shafa сразу завершился с кодом {exit_code}."
         if log_tail:
             detail += f" {log_tail}"
-        raise BadRequestError(f"Failed to start Shafa login flow.{detail}")
+        raise BadRequestError(f"Не удалось запустить вход в Shafa.{detail}")
 
     @staticmethod
     def _normalize_storage_state(payload: ShafaStorageStateRequest) -> dict[str, Any]:
@@ -1002,7 +1002,7 @@ class AccountAuthService:
             storage_state = dict(payload.storage_state)
             cookies = storage_state.get("cookies")
             if not isinstance(cookies, list):
-                raise BadRequestError("storage_state.cookies must be a list.")
+                raise BadRequestError("storage_state.cookies должен быть списком.")
             storage_state["cookies"] = [AccountAuthService._normalize_cookie(cookie) for cookie in cookies]
             origins = storage_state.get("origins")
             storage_state["origins"] = origins if isinstance(origins, list) else []
@@ -1043,13 +1043,13 @@ class AccountAuthService:
     @staticmethod
     def _telegram_status_message(current_step: str, connected: bool) -> str:
         if connected:
-            return "Telegram session is ready."
+            return "Сессия Telegram готова."
         messages = {
-            "INIT": "Telegram login has not started.",
-            "WAIT_PHONE": "Phone number accepted. Verification code is being requested.",
-            "WAIT_CODE": "Enter the Telegram verification code.",
-            "WAIT_PASSWORD": "Enter the Telegram 2FA password.",
-            "FAILED": "Telegram login failed. Request a new code and try again.",
-            "SUCCESS": "Telegram session is ready.",
+            "INIT": "Вход в Telegram не начат.",
+            "WAIT_PHONE": "Номер телефона принят. Запрашиваю код подтверждения.",
+            "WAIT_CODE": "Введи код подтверждения Telegram.",
+            "WAIT_PASSWORD": "Введи пароль двухфакторной защиты Telegram.",
+            "FAILED": "Вход в Telegram не удался. Запроси новый код и попробуй снова.",
+            "SUCCESS": "Сессия Telegram готова.",
         }
-        return messages.get(current_step, "Telegram login status is unknown.")
+        return messages.get(current_step, "Статус входа в Telegram неизвестен.")

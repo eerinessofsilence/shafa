@@ -126,7 +126,7 @@ def test_submit_code_reports_password_requirement_from_state(tmp_path: Path) -> 
 
     assert result.ok is True
     assert result.pending_code is True
-    assert result.message == "Telegram password required."
+    assert result.message == "Нужен пароль двухфакторной защиты Telegram."
 
 
 def test_submit_password_runs_password_command(tmp_path: Path) -> None:
@@ -154,7 +154,7 @@ def test_request_code_fails_without_phone(tmp_path: Path) -> None:
     result = service.request_code(account)
 
     assert result.ok is False
-    assert result.message == "Phone number is required for Telegram login"
+    assert result.message == "Для входа в Telegram нужен номер телефона."
 
 
 def test_request_code_does_not_resend_when_waiting_for_code(tmp_path: Path) -> None:
@@ -203,7 +203,7 @@ def test_request_code_does_not_resend_when_waiting_for_password(tmp_path: Path) 
 
     assert result.ok is True
     assert result.pending_code is True
-    assert "waiting for the 2FA password" in result.message
+    assert "ожидает пароль двухфакторной защиты" in result.message
     assert calls == []
 
 
@@ -223,7 +223,7 @@ def test_reuse_status_detects_existing_session(tmp_path: Path) -> None:
 
     assert status is not None
     assert status.ok is True
-    assert "Reusing existing Telegram session" in status.message
+    assert "Использую существующую сессию Telegram" in status.message
     assert captured == [["main.py", "--telegram-session-status"]]
 
 
@@ -285,7 +285,7 @@ def test_reuse_status_rejects_unauthorized_existing_session(tmp_path: Path) -> N
     store.telegram_session_file(account).write_bytes(b"SQLite format 3\x00payload")
     service = TelegramAuthService(
         store,
-        lambda *_args, **_kwargs: _completed(1, stderr="Telegram session is missing or unauthorized."),
+        lambda *_args, **_kwargs: _completed(1, stderr="Сессия Telegram отсутствует или не авторизована."),
     )
 
     status = service.reuse_status(account)
@@ -328,15 +328,15 @@ def test_runtime_timeout_reports_current_step() -> None:
 
     assert status is not None
     assert status.ok is False
-    assert "code prompt" in status.message
+    assert "запросил код вне ожидаемого шага" in status.message
 
 
 def test_validate_phone_rejects_empty_and_placeholder(tmp_path: Path) -> None:
     store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
     service = TelegramAuthService(store, lambda *_args, **_kwargs: _completed(0))
 
-    assert service.validate_phone("").message == "Phone number is required for Telegram login"
-    assert service.validate_phone("+380...").message == "Phone number is required for Telegram login"
+    assert service.validate_phone("").message == "Для входа в Telegram нужен номер телефона."
+    assert service.validate_phone("+380...").message == "Для входа в Telegram нужен номер телефона."
     assert service.validate_phone("  +380 (50) 111-22-33  ").message == "+380501112233"
 
 

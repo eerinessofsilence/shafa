@@ -167,8 +167,13 @@ class AccountService:
         if running_process is not None:
             return await self._to_model(record)
 
-        launch_context = self._build_launch_context(account)
-        process = self._spawn_process(account, launch_context)
+        try:
+            launch_context = self._build_launch_context(account)
+            process = self._spawn_process(account, launch_context)
+        except BadRequestError as exc:
+            self._append_log(account, f"[ERROR] {exc.message}")
+            self._update_record_sync(account_id, self._mark_process_failed)
+            raise
         await asyncio.sleep(0.2)
 
         exit_code = process.poll()
@@ -365,17 +370,17 @@ class AccountService:
 
     def _build_launch_context(self, account: Account) -> dict[str, str]:
         if not account.path.strip():
-            raise BadRequestError("Account project path is required before starting.")
+            raise BadRequestError("Перед запуском нужно указать путь проекта аккаунта.")
         normalized_path = preferred_project_dir(Path(account.path).expanduser())
         if not project_main_path(normalized_path).is_file():
-            raise BadRequestError(f"main.py not found at {normalized_path}")
+            raise BadRequestError(f"main.py не найден по пути {normalized_path}")
         if not self.session_store.is_valid_shafa_session(account):
             raise BadRequestError(
-                "Shafa session is missing or invalid. Complete Shafa login before starting the account.",
+                "Сессия Shafa отсутствует или недействительна. Перед запуском аккаунта выполни вход в Shafa.",
             )
         if account.channel_links and not self.session_store.is_valid_telegram_session(account):
             raise BadRequestError(
-                "Telegram session is missing or invalid. Complete Telegram login before starting channel sync.",
+                "Сессия Telegram отсутствует или недействительна. Перед синхронизацией каналов выполни вход в Telegram.",
             )
 
         env = self.runtime.account_env(account)
@@ -407,7 +412,7 @@ class AccountService:
                 **popen_kwargs,
             )
         except OSError as exc:
-            raise BadRequestError(f"Failed to start account process: {exc}") from exc
+            raise BadRequestError(f"Не удалось запустить процесс аккаунта: {exc}") from exc
 
     def _watch_process(self, account: Account, process: subprocess.Popen[str]) -> None:
         try:
@@ -529,7 +534,7 @@ class AccountService:
 
     def _format_start_failure(self, account: Account, exit_code: int, output: str) -> str:
         tail = output.splitlines()[-1].strip() if output else ""
-        detail = f"Account '{account.name}' exited immediately with code {exit_code}."
+        detail = f"Аккаунт '{account.name}' сразу завершился с кодом {exit_code}."
         if tail:
             detail = f"{detail} {tail}"
         return detail

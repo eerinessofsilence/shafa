@@ -280,7 +280,7 @@ def test_telegram_copy_session_rejects_same_account(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Source and target accounts must be different."
+    assert response.json()["detail"] == "Исходный и целевой аккаунты должны отличаться."
 
 
 def test_telegram_import_session_saves_uploaded_file(tmp_path: Path) -> None:

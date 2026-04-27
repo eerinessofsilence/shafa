@@ -20,6 +20,7 @@ import {
   formatAccountCount,
   formatApiError,
   getInitialActivePage,
+  joinUniqueMessages,
   loadStoredAppPreferences,
   loadStoredTablePagination,
   loadStoredThemeMode,
@@ -291,7 +292,19 @@ function App() {
       const successCount = results.filter(
         (result) => result.status === 'fulfilled',
       ).length;
+      const failedResults = results.filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
       const failureCount = results.length - successCount;
+      const failureMessage = joinUniqueMessages(
+        failedResults.map((result) =>
+          formatApiError(
+            result.reason,
+            'Не удалось выполнить действие над аккаунтом.',
+          ),
+        ),
+      );
 
       await loadAccounts();
 
@@ -300,7 +313,10 @@ function App() {
       }
 
       if (successCount === 0) {
-        return `Не удалось выполнить действие для ${formatAccountCount(failureCount)}.`;
+        return (
+          failureMessage ||
+          `Не удалось выполнить действие для ${formatAccountCount(failureCount)}.`
+        );
       }
 
       const actionVerb =
@@ -312,7 +328,10 @@ function App() {
       const successMessage = `${actionVerb} ${formatAccountCount(successCount)}.`;
 
       return failureCount > 0
-        ? `${successMessage} Ошибок: ${failureCount}.`
+        ? joinUniqueMessages([
+            `${successMessage} Ошибок: ${failureCount}.`,
+            failureMessage,
+          ])
         : successMessage;
     } finally {
       setIsAccountMutationPending(false);

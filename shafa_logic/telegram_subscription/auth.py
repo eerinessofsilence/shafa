@@ -119,11 +119,11 @@ async def _complete_login(phone: str, code: str) -> None:
     phone_code_hash = str(payload.get("phone_code_hash") or "").strip()
 
     if current_step != WAIT_CODE:
-        raise RuntimeError("Telegram login is not waiting for a verification code.")
+        raise RuntimeError("Вход в Telegram сейчас не ожидает код подтверждения.")
     if not expected_phone or not phone_code_hash:
-        raise RuntimeError("Telegram login was not initialized for this account.")
+        raise RuntimeError("Вход в Telegram не был начат для этого аккаунта.")
     if expected_phone != phone:
-        raise RuntimeError("Phone number does not match the pending Telegram login.")
+        raise RuntimeError("Номер телефона не совпадает с ожидающим входом в Telegram.")
 
     _persist_login_state(
         phone_number=phone,
@@ -206,9 +206,9 @@ async def _submit_password(password: str) -> None:
     password = _validate_password(password)
 
     if current_step != WAIT_PASSWORD:
-        raise RuntimeError("Telegram login is not waiting for a password.")
+        raise RuntimeError("Вход в Telegram сейчас не ожидает пароль.")
     if not phone_code_hash:
-        raise RuntimeError("Telegram login is missing the phone_code_hash.")
+        raise RuntimeError("Во входе Telegram отсутствует phone_code_hash.")
 
     _persist_login_state(
         phone_number=phone,
@@ -329,8 +329,8 @@ def _persist_failed_state(
 def _require_telegram_credentials() -> tuple[int, str]:
     if TELEGRAM_API_ID is None or not TELEGRAM_API_HASH:
         raise RuntimeError(
-            "Missing Telegram credentials. "
-            "Set SHAFA_TELEGRAM_API_ID and SHAFA_TELEGRAM_API_HASH."
+            "Не настроены Telegram API-данные. "
+            "Укажи SHAFA_TELEGRAM_API_ID и SHAFA_TELEGRAM_API_HASH."
         )
     return int(TELEGRAM_API_ID), TELEGRAM_API_HASH
 
@@ -401,24 +401,24 @@ def _persist_login_state(
 def _validate_phone(phone: str) -> str:
     clean_phone = str(phone or "").strip()
     if not clean_phone or clean_phone.casefold() in {"+380...", "phone", "none", "null"}:
-        raise RuntimeError("Phone number is required for Telegram login")
+        raise RuntimeError("Для входа в Telegram нужен номер телефона.")
     clean_phone = re.sub(r"[\s()-]+", "", clean_phone)
     if not PHONE_PATTERN.fullmatch(clean_phone):
-        raise RuntimeError("Phone number is required for Telegram login")
+        raise RuntimeError("Для входа в Telegram нужен корректный номер телефона.")
     return clean_phone
 
 
 def _validate_code(code: str) -> str:
     clean_code = re.sub(r"[\s-]+", "", str(code or "").strip())
     if not CODE_PATTERN.fullmatch(clean_code):
-        raise RuntimeError("Verification code must be 5 or 6 digits.")
+        raise RuntimeError("Код Telegram должен состоять из 5 или 6 цифр.")
     return clean_code
 
 
 def _validate_password(password: str) -> str:
     clean_password = str(password or "")
     if clean_password == "":
-        raise RuntimeError("Telegram password is required.")
+        raise RuntimeError("Нужен пароль Telegram.")
     return clean_password
 
 
@@ -479,7 +479,7 @@ def _classify_auth_error(exc: Exception) -> str:
     if "PhoneNumberInvalid" in name:
         return f"INVALID_PHONE:{message}"
     if "SessionPasswordNeeded" in name:
-        return "PASSWORD_REQUIRED:Telegram password is required."
+        return "PASSWORD_REQUIRED:Нужен пароль Telegram."
     if "PasswordHashInvalid" in name:
         return f"INVALID_PASSWORD:{message}"
     if "ApiIdInvalid" in name:

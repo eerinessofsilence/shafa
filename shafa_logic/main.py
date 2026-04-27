@@ -644,20 +644,20 @@ def main(
         return
     if telegram_send_code_phone:
         send_code(telegram_send_code_phone)
-        print("Telegram code requested.")
+        print("Код Telegram запрошен.")
         return
     if telegram_login_password:
         submit_password(telegram_login_password)
-        print("Telegram password accepted.")
+        print("Пароль Telegram подтверждён.")
         return
     if telegram_session_status:
         if session_status():
-            print("Telegram session is authorized.")
+            print("Сессия Telegram авторизована.")
             return
-        raise RuntimeError("Telegram session is missing or unauthorized.")
+        raise RuntimeError("Сессия Telegram отсутствует или не авторизована.")
     if telegram_login_phone and telegram_login_code:
         complete_login(telegram_login_phone, telegram_login_code)
-        print("Telegram login completed.")
+        print("Вход в Telegram завершён.")
         return
     if shafa:
         sync_channels_from_runtime_config()

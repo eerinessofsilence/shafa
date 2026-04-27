@@ -68,33 +68,33 @@ class TelegramAuthRuntime:
     def transition(self, event: str) -> TelegramAuthStatus | None:
         if event == "PHONE_PROMPT":
             if self.state != "WAIT_PHONE":
-                return TelegramAuthStatus(False, "Phone prompt repeated unexpectedly.")
+                return TelegramAuthStatus(False, "Telegram повторно запросил телефон вне ожидаемого шага.")
             self.start_step("WAIT_CODE")
-            return TelegramAuthStatus(True, "Phone prompt detected.", pending_code=False)
+            return TelegramAuthStatus(True, "Telegram запросил телефон.", pending_code=False)
         if event == "CODE_PROMPT":
             if self.state != "WAIT_CODE":
-                return TelegramAuthStatus(False, "Code prompt arrived out of sequence.")
+                return TelegramAuthStatus(False, "Telegram запросил код вне ожидаемого шага.")
             self.state = "AWAITING_CODE_INPUT"
             self.deadline = None
             self.history.append("AWAITING_CODE_INPUT")
-            return TelegramAuthStatus(True, "Code prompt detected.", pending_code=True)
+            return TelegramAuthStatus(True, "Telegram запросил код.", pending_code=True)
         if event == "CODE_SENT":
             if self.state != "AWAITING_CODE_INPUT":
-                return TelegramAuthStatus(False, "Verification code was sent before code prompt.")
+                return TelegramAuthStatus(False, "Код Telegram был отправлен до запроса кода.")
             self.start_step("VERIFYING")
-            return TelegramAuthStatus(True, "Verification code sent.", pending_code=False)
+            return TelegramAuthStatus(True, "Код Telegram отправлен.", pending_code=False)
         if event == "SUCCESS":
             if self.state != "VERIFYING":
-                return TelegramAuthStatus(False, "Authentication completed out of sequence.")
+                return TelegramAuthStatus(False, "Вход в Telegram завершился вне ожидаемого шага.")
             self.state = "SUCCESS"
             self.deadline = None
             self.history.append("SUCCESS")
-            return TelegramAuthStatus(True, "Telegram authentication completed.", pending_code=False)
+            return TelegramAuthStatus(True, "Вход в Telegram завершён.", pending_code=False)
         if event == "ERROR":
             self.state = "FAILED"
             self.deadline = None
             self.history.append("FAILED")
-            return TelegramAuthStatus(False, "Telegram authentication failed.")
+            return TelegramAuthStatus(False, "Вход в Telegram не удался.")
         return None
 
     def timeout_status(self) -> TelegramAuthStatus | None:
@@ -102,14 +102,14 @@ class TelegramAuthRuntime:
             return None
         current_state = self.state
         mapping = {
-            "WAIT_PHONE": "Timed out waiting for phone prompt.",
-            "WAIT_CODE": "Timed out waiting for code prompt.",
-            "VERIFYING": "Timed out waiting for authentication success.",
+            "WAIT_PHONE": "Истекло время ожидания запроса телефона Telegram.",
+            "WAIT_CODE": "Истекло время ожидания запроса кода Telegram.",
+            "VERIFYING": "Истекло время ожидания завершения входа в Telegram.",
         }
         self.state = "FAILED"
         self.history.append("FAILED")
         self.deadline = None
-        return TelegramAuthStatus(False, mapping.get(current_state, "Timed out during Telegram authentication."))
+        return TelegramAuthStatus(False, mapping.get(current_state, "Истекло время входа в Telegram."))
 
     def can_retry(self) -> bool:
         return self.attempt < self.max_attempts
@@ -140,13 +140,13 @@ class TelegramAuthService:
         if current_step == "WAIT_CODE" and pending_phone == phone_status.message:
             return TelegramAuthStatus(
                 True,
-                "Telegram code was already requested. Enter the latest verification code.",
+                "Код Telegram уже запрошен. Введи последний полученный код.",
                 pending_code=True,
             )
         if current_step == "WAIT_PASSWORD" and pending_phone == phone_status.message:
             return TelegramAuthStatus(
                 True,
-                "Telegram is already waiting for the 2FA password.",
+                "Telegram уже ожидает пароль двухфакторной защиты.",
                 pending_code=True,
             )
 
@@ -155,10 +155,10 @@ class TelegramAuthService:
             return TelegramAuthStatus(False, self._command_error(result))
         refreshed_state = self.load_auth_state(account)
         if self._state_waits_for_code(refreshed_state, phone_status.message):
-            return TelegramAuthStatus(True, "Telegram code requested.", pending_code=True)
+            return TelegramAuthStatus(True, "Код Telegram запрошен.", pending_code=True)
         return TelegramAuthStatus(
             False,
-            "Telegram did not confirm the verification-code request. Check API credentials and app logs.",
+            "Telegram не подтвердил запрос кода. Проверь API-данные и логи приложения.",
         )
 
     def submit_code(self, account: Account, code: str) -> TelegramAuthStatus:
@@ -183,8 +183,8 @@ class TelegramAuthService:
             return TelegramAuthStatus(False, self._command_error(result))
         state = self.load_auth_state(account)
         if state.get("current_auth_step") == "WAIT_PASSWORD":
-            return TelegramAuthStatus(True, "Telegram password required.", pending_code=True)
-        return TelegramAuthStatus(True, "Telegram session saved.", pending_code=False)
+            return TelegramAuthStatus(True, "Нужен пароль двухфакторной защиты Telegram.", pending_code=True)
+        return TelegramAuthStatus(True, "Сессия Telegram сохранена.", pending_code=False)
 
     def submit_password(self, account: Account, password: str) -> TelegramAuthStatus:
         password_status = self.validate_password(password)
@@ -201,7 +201,7 @@ class TelegramAuthService:
         )
         if result.returncode != 0:
             return TelegramAuthStatus(False, self._command_error(result))
-        return TelegramAuthStatus(True, "Telegram session saved.", pending_code=False)
+        return TelegramAuthStatus(True, "Сессия Telegram сохранена.", pending_code=False)
 
     @classmethod
     def _state_waits_for_code(cls, state: dict, phone_number: str) -> bool:
@@ -242,7 +242,7 @@ class TelegramAuthService:
             code_confirmed=False,
         )
         self.store.write_account_manifest(account)
-        return TelegramAuthStatus(True, "Reusing existing Telegram session.", pending_code=False)
+        return TelegramAuthStatus(True, "Использую существующую сессию Telegram.", pending_code=False)
 
     def create_runtime(self, account: Account, attempt: int = 1) -> TelegramAuthRuntime:
         runtime = TelegramAuthRuntime(account_id=account.id, attempt=attempt)
@@ -310,25 +310,25 @@ class TelegramAuthService:
     def validate_phone(phone: str) -> TelegramAuthStatus:
         clean_phone = TelegramAuthService.normalize_phone(phone)
         if not clean_phone:
-            return TelegramAuthStatus(False, "Phone number is required for Telegram login")
+            return TelegramAuthStatus(False, "Для входа в Telegram нужен номер телефона.")
         if not PHONE_PATTERN.fullmatch(clean_phone):
-            return TelegramAuthStatus(False, "Phone number is required for Telegram login")
+            return TelegramAuthStatus(False, "Для входа в Telegram нужен корректный номер телефона.")
         return TelegramAuthStatus(True, clean_phone)
 
     @staticmethod
     def validate_code(code: str) -> TelegramAuthStatus:
         clean_code = re.sub(r"[\s-]+", "", str(code or "").strip())
         if not clean_code:
-            return TelegramAuthStatus(False, "Verification code must be 5 or 6 digits.")
+            return TelegramAuthStatus(False, "Код Telegram должен состоять из 5 или 6 цифр.")
         if not CODE_PATTERN.fullmatch(clean_code):
-            return TelegramAuthStatus(False, "Verification code must be 5 or 6 digits.")
+            return TelegramAuthStatus(False, "Код Telegram должен состоять из 5 или 6 цифр.")
         return TelegramAuthStatus(True, clean_code)
 
     @staticmethod
     def validate_password(password: str) -> TelegramAuthStatus:
         clean_password = str(password or "")
         if clean_password == "":
-            return TelegramAuthStatus(False, "Telegram password is required.")
+            return TelegramAuthStatus(False, "Нужен пароль Telegram.")
         return TelegramAuthStatus(True, clean_password)
 
     @staticmethod

@@ -74,7 +74,7 @@ class TelegramService:
     async def resolve_channel_links(self, account_id: str, links: list[str]) -> list[ResolvedTelegramChannel]:
         clean_links = sanitize_channel_links(links)
         if not clean_links:
-            raise TelegramOperationError("At least one Telegram channel link is required.")
+            raise TelegramOperationError("Нужна хотя бы одна ссылка на Telegram-канал.")
         async with self._client(account_id) as client:
             resolved: list[ResolvedTelegramChannel] = []
             for link in clean_links:
@@ -86,7 +86,7 @@ class TelegramService:
         session_file = self.account_service.session_file(account.id)
         if not session_file.exists():
             raise TelegramOperationError(
-                f"Telegram session not found for account '{account_id}'. Login/session creation is not handled by this API.",
+                f"Сессия Telegram не найдена для аккаунта '{account_id}'. Сначала подключи Telegram в блоке авторизации.",
                 status_code=400,
             )
 
@@ -100,14 +100,14 @@ class TelegramService:
             api_id = int(credentials["SHAFA_TELEGRAM_API_ID"])
         except (TypeError, ValueError) as exc:
             raise TelegramOperationError(
-                f"Telegram API credentials are missing for account '{account_id}'.",
+                f"Telegram API-данные не настроены для аккаунта '{account_id}'.",
                 status_code=400,
             ) from exc
 
         api_hash = str(credentials["SHAFA_TELEGRAM_API_HASH"] or "").strip()
         if not api_hash:
             raise TelegramOperationError(
-                f"Telegram API credentials are missing for account '{account_id}'.",
+                f"Telegram API-данные не настроены для аккаунта '{account_id}'.",
                 status_code=400,
             )
 
@@ -117,7 +117,7 @@ class TelegramService:
         try:
             from telethon import TelegramClient
         except ImportError as exc:
-            raise TelegramOperationError("Telethon is not installed.") from exc
+            raise TelegramOperationError("Telethon не установлен.") from exc
 
         api_id, api_hash, session_file = await self._resolve_credentials(account_id)
         client = TelegramClient(str(session_file), api_id, api_hash)
@@ -125,7 +125,7 @@ class TelegramService:
         if not await client.is_user_authorized():
             await client.disconnect()
             raise TelegramOperationError(
-                f"Telegram session for account '{account_id}' is not authorized.",
+                f"Сессия Telegram для аккаунта '{account_id}' не авторизована.",
                 status_code=400,
             )
         return client
@@ -171,7 +171,7 @@ class TelegramService:
                 channel_id = int(getattr(entity, "id"))
             title = str(getattr(entity, "title", None) or getattr(entity, "username", None) or "").strip()
             if not title:
-                raise TelegramOperationError(f"Could not resolve Telegram channel for link '{link}'.")
+                raise TelegramOperationError(f"Не удалось определить Telegram-канал по ссылке '{link}'.")
             return ResolvedTelegramChannel(
                 channel_id=channel_id,
                 title=title,

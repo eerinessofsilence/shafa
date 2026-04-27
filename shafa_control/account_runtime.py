@@ -139,7 +139,7 @@ class AccountRuntimeService:
                 [self.account_python(account), *args],
                 1,
                 stdout="",
-                stderr=f"main.py not found at {project_path}",
+                stderr=f"main.py не найден по пути {project_path}",
             )
         return subprocess.run(
             [self.account_python(account), *args],

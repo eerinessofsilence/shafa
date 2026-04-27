@@ -2820,20 +2820,20 @@ function formatTelegramChannelSyncError(error: unknown, fallback: string) {
   const message = formatApiError(error, fallback);
 
   if (
-    message.includes('Telegram session not found for account') &&
-    message.includes('Login/session creation is not handled by this API')
+    message.includes('Сессия Telegram не найдена для аккаунта') &&
+    message.includes('Сначала подключи Telegram')
   ) {
     return 'Сначала подключите Telegram для этого аккаунта в блоке «Telegram авторизация», а потом повторите сохранение или импорт каналов.';
   }
 
   if (
-    message.includes('Telegram session for account') &&
-    message.includes('is not authorized')
+    message.includes('Сессия Telegram для аккаунта') &&
+    message.includes('не авторизована')
   ) {
     return 'Telegram для этого аккаунта уже сохранён, но сессия больше не авторизована. Переподключите Telegram и повторите попытку.';
   }
 
-  if (message.includes('Telegram API credentials are missing for account')) {
+  if (message.includes('Telegram API-данные не настроены для аккаунта')) {
     return 'На сервере не настроены Telegram API ID и API hash, поэтому проверить каналы сейчас нельзя.';
   }
 
@@ -3318,6 +3318,18 @@ function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
         }
         onChange={(value) => onFieldChange('timer', value)}
       />
+      <div className="md:col-span-2">
+        <TextInputField
+          label="Путь проекта"
+          value={values.path}
+          icon={
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+              <FolderOpen className="h-3.5 w-3.5 text-info/75" />
+            </div>
+          }
+          onChange={(value) => onFieldChange('path', value)}
+        />
+      </div>
     </div>
   );
 }

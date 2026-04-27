@@ -143,7 +143,7 @@ class TelegramSubscriptionTests(unittest.TestCase):
             patch("telegram_subscription.sync._require_telegram_credentials", return_value=(1, "hash")),
             patch("telegram_subscription.sync._get_telegram_client_cls", return_value=lambda *_args, **_kwargs: client),
         ):
-            with self.assertRaisesRegex(RuntimeError, "unauthorized"):
+            with self.assertRaisesRegex(RuntimeError, "не авторизована"):
                 asyncio.run(_resolve_channel_tuples(["https://t.me/generation_drop"]))
 
         client.connect.assert_awaited_once()
@@ -166,7 +166,7 @@ class TelegramSubscriptionTests(unittest.TestCase):
                     patch.dict("os.environ", {"SHAFA_TELEGRAM_CHANNEL_LINKS_FILE": str(config_path)}, clear=False),
                     patch(
                         "telegram_subscription.sync._resolve_channel_tuples",
-                        side_effect=RuntimeError("Telegram session is missing or unauthorized."),
+                        side_effect=RuntimeError("Сессия Telegram отсутствует или не авторизована."),
                     ),
                 ):
                     result = sync_channels_from_runtime_config()

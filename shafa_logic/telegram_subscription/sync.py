@@ -122,7 +122,7 @@ async def _resolve_channel_tuples(links: list[str]) -> list[tuple[int, str, str]
     async with _connected_client(telegram_client_cls(str(_telegram_session_path()), api_id, api_hash)) as client:
         if not await client.is_user_authorized():
             raise RuntimeError(
-                "Telegram session is missing or unauthorized. Re-authenticate the account in the UI."
+                "Сессия Telegram отсутствует или не авторизована. Переподключи аккаунт в интерфейсе."
             )
         channels: list[tuple[int, str, str]] = []
         for link in links:
