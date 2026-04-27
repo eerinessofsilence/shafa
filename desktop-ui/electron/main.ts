@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
@@ -6,6 +7,8 @@ import { app, BrowserWindow, dialog } from "electron";
 
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const BACKEND_START_TIMEOUT_MS = 30_000;
+const BACKEND_START_MAX_ATTEMPTS = 3;
+const BACKEND_START_RETRY_DELAY_MS = 1_500;
 const API_BASE_URL_ARGUMENT = "--shafa-api-base-url";
 const DEFAULT_BACKEND_PORT = 8000;
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -20,6 +23,10 @@ interface BackendBuildInfo {
 let backendProcess: BackendProcess | null = null;
 let backendLogPath: string | null = null;
 let quitting = false;
+
+interface RetryableBackendStartupError extends Error {
+  retryable?: boolean;
+}
 
 function repoRoot(): string {
   return path.resolve(__dirname, "..", "..");
@@ -50,6 +57,24 @@ function appendBackendLog(message: string): void {
   }
 }
 
+function createBackendStartupError(
+  message: string,
+  retryable: boolean,
+): RetryableBackendStartupError {
+  const error = new Error(message) as RetryableBackendStartupError;
+  error.retryable = retryable;
+  return error;
+}
+
+function isRetryableBackendStartupError(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "retryable" in error &&
+      (error as RetryableBackendStartupError).retryable,
+  );
+}
+
 function resolveBackendPort(): number {
   const configuredPort = process.env.SHAFA_BACKEND_PORT?.trim();
   if (!configuredPort) {
@@ -62,6 +87,50 @@ function resolveBackendPort(): number {
   }
 
   return port;
+}
+
+async function fetchBackendHealth(
+  apiBaseUrl: string,
+): Promise<"healthy" | "unreachable" | "unexpected-response"> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2_000);
+
+  try {
+    const response = await fetch(`${apiBaseUrl}/health`, {
+      signal: controller.signal,
+    });
+    if (response.ok) {
+      return "healthy";
+    }
+    return "unexpected-response";
+  } catch {
+    return "unreachable";
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function isLocalPortInUse(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+
+    const finish = (result: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(result);
+    };
+
+    socket.setTimeout(1_500);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(true));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ECONNREFUSED") {
+        finish(false);
+        return;
+      }
+      finish(true);
+    });
+  });
 }
 
 function streamBackendLogs(
@@ -181,45 +250,52 @@ async function waitForBackendReady(
 
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      throw new Error(`Backend exited before startup completed (code ${child.exitCode}).`);
+      throw createBackendStartupError(
+        `Backend exited before startup completed (code ${child.exitCode}).`,
+        true,
+      );
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2_000);
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/health`, {
-        signal: controller.signal,
-      });
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // Backend is still starting up.
-    } finally {
-      clearTimeout(timeoutId);
+    const health = await fetchBackendHealth(apiBaseUrl);
+    if (health === "healthy") {
+      return;
     }
 
     await createDelay(250);
   }
 
-  throw new Error(`Backend did not become healthy within ${BACKEND_START_TIMEOUT_MS / 1000} seconds.`);
+  throw createBackendStartupError(
+    `Backend did not become healthy within ${BACKEND_START_TIMEOUT_MS / 1000} seconds.`,
+    true,
+  );
 }
 
-async function startBackend(): Promise<string> {
-  const port = resolveBackendPort();
-  const apiBaseUrl = `http://127.0.0.1:${port}`;
-  const userDataDir = path.join(app.getPath("userData"), "backend-data");
-  const launch = app.isPackaged ? resolvePackagedBackendCommand() : resolveDevBackendCommand();
+async function launchBackendProcess(
+  command: string,
+  args: string[],
+  {
+    apiBaseUrl,
+    cwd,
+    host,
+    port,
+    userDataDir,
+  }: {
+    apiBaseUrl: string;
+    cwd: string;
+    host: string;
+    port: number;
+    userDataDir: string;
+  },
+): Promise<BackendProcess> {
   appendBackendLog(
-    `Launching backend from ${launch.command} on http://127.0.0.1:${port} with data dir ${userDataDir}`,
+    `Launching backend from ${command} on ${apiBaseUrl} with data dir ${userDataDir}`,
   );
-  const child = spawn(launch.command, launch.args, {
-    cwd: launch.cwd,
+  const child = spawn(command, args, {
+    cwd,
     env: {
       ...process.env,
       PYTHONUNBUFFERED: "1",
-      SHAFA_BACKEND_HOST: "127.0.0.1",
+      SHAFA_BACKEND_HOST: host,
       SHAFA_BACKEND_PORT: String(port),
       SHAFA_DESKTOP_DATA_DIR: userDataDir,
     },
@@ -230,11 +306,15 @@ async function startBackend(): Promise<string> {
   streamBackendLogs(child.stdout, "stdout");
   streamBackendLogs(child.stderr, "stderr");
 
+  let reportUnexpectedExit = false;
+
   child.on("exit", (code, signal) => {
-    backendProcess = null;
-    if (!quitting) {
-      const exitLabel = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
-      appendBackendLog(`Backend stopped unexpectedly (${exitLabel}).`);
+    if (backendProcess === child) {
+      backendProcess = null;
+    }
+    const exitLabel = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+    appendBackendLog(`Backend process exited (${exitLabel}).`);
+    if (!quitting && reportUnexpectedExit) {
       dialog.showErrorBox(
         "Shafa Control",
         `Local backend stopped unexpectedly (${exitLabel}).\n\nLog: ${resolveBackendLogPath()}`,
@@ -245,7 +325,7 @@ async function startBackend(): Promise<string> {
   await new Promise<void>((resolve, reject) => {
     const handleError = (error: Error) => {
       child.off("spawn", handleSpawn);
-      reject(error);
+      reject(createBackendStartupError(String(error), true));
     };
     const handleSpawn = () => {
       child.off("error", handleError);
@@ -256,10 +336,76 @@ async function startBackend(): Promise<string> {
     child.once("spawn", handleSpawn);
   });
 
-  await waitForBackendReady(apiBaseUrl, child);
-  backendProcess = child;
-  process.env.SHAFA_API_BASE_URL = apiBaseUrl;
-  return apiBaseUrl;
+  try {
+    await waitForBackendReady(apiBaseUrl, child);
+  } catch (error) {
+    if (child.exitCode === null && !child.killed) {
+      child.kill();
+    }
+    throw error;
+  }
+
+  reportUnexpectedExit = true;
+  return child;
+}
+
+async function startBackend(): Promise<string> {
+  const host = "127.0.0.1";
+  const port = resolveBackendPort();
+  const apiBaseUrl = `http://${host}:${port}`;
+  const userDataDir = path.join(app.getPath("userData"), "backend-data");
+  const launch = app.isPackaged ? resolvePackagedBackendCommand() : resolveDevBackendCommand();
+
+  for (let attempt = 1; attempt <= BACKEND_START_MAX_ATTEMPTS; attempt += 1) {
+    const existingHealth = await fetchBackendHealth(apiBaseUrl);
+
+    if (existingHealth === "healthy") {
+      appendBackendLog(`Reusing already running backend at ${apiBaseUrl}.`);
+      process.env.SHAFA_API_BASE_URL = apiBaseUrl;
+      return apiBaseUrl;
+    }
+
+    if (await isLocalPortInUse(host, port)) {
+      throw new Error(
+        `Port ${port} on ${host} is already in use, but no Shafa backend answered on ${apiBaseUrl}/health. ` +
+          "Stop the conflicting process or set SHAFA_BACKEND_PORT to another port.",
+      );
+    }
+
+    appendBackendLog(
+      `Starting backend attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS}.`,
+    );
+
+    try {
+      const child = await launchBackendProcess(launch.command, launch.args, {
+        apiBaseUrl,
+        cwd: launch.cwd,
+        host,
+        port,
+        userDataDir,
+      });
+      backendProcess = child;
+      process.env.SHAFA_API_BASE_URL = apiBaseUrl;
+      appendBackendLog(
+        `Backend became healthy on attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS}.`,
+      );
+      return apiBaseUrl;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendBackendLog(
+        `Backend start attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS} failed: ${message}`,
+      );
+      if (
+        !isRetryableBackendStartupError(error) ||
+        attempt === BACKEND_START_MAX_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await createDelay(BACKEND_START_RETRY_DELAY_MS);
+    }
+  }
+
+  throw new Error("Backend start attempts were exhausted.");
 }
 
 function stopBackend(): void {
