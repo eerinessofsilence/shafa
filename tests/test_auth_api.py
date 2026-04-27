@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -503,3 +504,47 @@ def test_shafa_logout_clears_cookies_and_returns_disconnected_status(tmp_path: P
 
     account_payload = client.get(f"/accounts/{account_id}").json()
     assert account_payload["shafa_session_exists"] is False
+
+
+def test_packaged_telegram_runner_does_not_require_project_main(tmp_path: Path) -> None:
+    accounts_file = tmp_path / "accounts_state.json"
+    accounts_dir = tmp_path / "accounts"
+    storage = JsonListStorage(accounts_file)
+    account_service = AccountService(storage=storage, accounts_dir=accounts_dir)
+    store = AccountSessionStore(tmp_path, accounts_dir, accounts_file)
+    service = AccountAuthService(account_service=account_service, store=store)
+    account = Account(
+        id="acc-1",
+        name="Packaged",
+        path=str(tmp_path / "backend-data"),
+        phone_number="+380501112233",
+    )
+
+    class FakeTelegramClient:
+        def __init__(self, *_args):
+            self.disconnect_calls = 0
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            self.disconnect_calls += 1
+
+        async def send_code_request(self, phone: str):
+            assert phone == "+380501112233"
+            return SimpleNamespace(phone_code_hash="hash-123")
+
+    with patch.object(
+        service,
+        "_telegram_client_config",
+        return_value=(FakeTelegramClient, 777000, "hash", store.telegram_session_file(account)),
+    ):
+        result = service._run_account_command(
+            account,
+            ["main.py", "--telegram-send-code", "+380501112233"],
+        )
+
+    assert result.returncode == 0
+    state = json.loads(store.telegram_login_state_file(account).read_text(encoding="utf-8"))
+    assert state["current_auth_step"] == "WAIT_CODE"
+    assert state["phone_code_hash"] == "hash-123"

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -698,12 +700,259 @@ class AccountAuthService:
             parts.append(f"{name}={value}")
         return "; ".join(parts)
 
-    def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
-        project_path = _preferred_project_dir(Path(account.path).expanduser())
-        if not _project_main_path(project_path).is_file():
-            raise BadRequestError(f"main.py not found at {project_path}")
     def _run_account_command(self, account: Account, args: list[str]):
+        project_path = preferred_project_dir(Path(account.path).expanduser())
+        if not project_main_path(project_path).is_file():
+            telegram_result = self._run_packaged_telegram_command(account, args)
+            if telegram_result is not None:
+                return telegram_result
         return self.runtime.run_account_command(account, args)
+
+    def _run_packaged_telegram_command(
+        self,
+        account: Account,
+        args: list[str],
+    ) -> subprocess.CompletedProcess | None:
+        if len(args) >= 3 and args[:2] == ["main.py", "--telegram-send-code"]:
+            return self._run_packaged_telegram_step(
+                args,
+                lambda: self._direct_request_telegram_code(account, args[2]),
+                "Telegram code requested.",
+            )
+
+        if (
+            len(args) >= 5
+            and args[0] == "main.py"
+            and args[1] == "--telegram-login-phone"
+            and args[3] == "--telegram-login-code"
+        ):
+            return self._run_packaged_telegram_step(
+                args,
+                lambda: self._direct_submit_telegram_code(account, args[2], args[4]),
+                "Telegram code submitted.",
+            )
+
+        if len(args) >= 3 and args[:2] == ["main.py", "--telegram-login-password"]:
+            return self._run_packaged_telegram_step(
+                args,
+                lambda: self._direct_submit_telegram_password(account, args[2]),
+                "Telegram password submitted.",
+            )
+
+        if args == ["main.py", "--telegram-session-status"]:
+            try:
+                authorized = self._run_async_blocking(
+                    lambda: self._direct_telegram_session_status(account),
+                )
+            except Exception:
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args,
+                0 if authorized else 1,
+                stdout="authorized" if authorized else "",
+                stderr="",
+            )
+
+        return None
+
+    def _run_packaged_telegram_step(
+        self,
+        args: list[str],
+        action,
+        success_message: str,
+    ) -> subprocess.CompletedProcess:
+        try:
+            self._run_async_blocking(action)
+        except Exception as exc:
+            return subprocess.CompletedProcess(
+                args,
+                1,
+                stdout="",
+                stderr=str(exc) or exc.__class__.__name__,
+            )
+        return subprocess.CompletedProcess(args, 0, stdout=success_message, stderr="")
+
+    @staticmethod
+    def _run_async_blocking(action):
+        result: dict[str, Any] = {}
+
+        def target() -> None:
+            try:
+                result["value"] = asyncio.run(action())
+            except BaseException as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=target)
+        thread.start()
+        thread.join()
+
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
+
+    def _telegram_client_config(self, account: Account) -> tuple[Any, int, str, Path]:
+        try:
+            from telethon import TelegramClient
+        except ImportError as exc:
+            raise RuntimeError("Telethon is not installed.") from exc
+
+        api_id, api_hash = self._resolve_telegram_credentials(account)
+        if not api_id.isdigit() or not api_hash:
+            raise RuntimeError("Telegram API credentials are missing on backend.")
+        return TelegramClient, int(api_id), api_hash, self.store.telegram_session_file(account)
+
+    async def _connect_direct_telegram_client(self, account: Account):
+        telegram_client_cls, api_id, api_hash, session_file = self._telegram_client_config(account)
+        client = telegram_client_cls(str(session_file), api_id, api_hash)
+        await client.connect()
+        return client
+
+    async def _direct_request_telegram_code(self, account: Account, phone: str) -> None:
+        phone = TelegramAuthService.normalize_phone(phone)
+        session_file = self.store.telegram_session_file(account)
+        self.telegram_auth.persist_auth_state(
+            account,
+            phone_number=phone,
+            verification_code="",
+            telegram_password="",
+            current_auth_step="WAIT_PHONE",
+            session_path=str(session_file),
+            code_confirmed=False,
+            extra={"phone_code_hash": ""},
+        )
+
+        client = await self._connect_direct_telegram_client(account)
+        try:
+            sent = await client.send_code_request(phone)
+        except Exception:
+            self.telegram_auth.persist_auth_state(
+                account,
+                phone_number=phone,
+                verification_code="",
+                telegram_password="",
+                current_auth_step="FAILED",
+                session_path=str(session_file),
+                code_confirmed=False,
+                extra={"phone_code_hash": ""},
+            )
+            raise
+        finally:
+            await client.disconnect()
+
+        self.telegram_auth.persist_auth_state(
+            account,
+            phone_number=phone,
+            verification_code="",
+            telegram_password="",
+            current_auth_step="WAIT_CODE",
+            session_path=str(session_file),
+            code_confirmed=False,
+            extra={"phone_code_hash": str(sent.phone_code_hash).strip()},
+        )
+
+    async def _direct_submit_telegram_code(
+        self,
+        account: Account,
+        phone: str,
+        code: str,
+    ) -> None:
+        state = self.telegram_auth.load_auth_state(account)
+        session_file = self.store.telegram_session_file(account)
+        phone_code_hash = str(state.get("phone_code_hash") or "").strip()
+        if not phone_code_hash:
+            raise RuntimeError("Telegram login was not initialized for this account.")
+
+        client = await self._connect_direct_telegram_client(account)
+        try:
+            await client.sign_in(
+                phone=TelegramAuthService.normalize_phone(phone),
+                code=str(code).strip(),
+                phone_code_hash=phone_code_hash,
+            )
+        except Exception as exc:
+            if exc.__class__.__name__ == "SessionPasswordNeededError":
+                self.telegram_auth.persist_auth_state(
+                    account,
+                    phone_number=TelegramAuthService.normalize_phone(phone),
+                    verification_code=str(code).strip(),
+                    telegram_password=str(state.get("telegram_password") or ""),
+                    current_auth_step="WAIT_PASSWORD",
+                    session_path=str(session_file),
+                    code_confirmed=True,
+                    extra={"phone_code_hash": phone_code_hash},
+                )
+                return
+            self.telegram_auth.persist_auth_state(
+                account,
+                phone_number=TelegramAuthService.normalize_phone(phone),
+                verification_code="",
+                telegram_password=str(state.get("telegram_password") or ""),
+                current_auth_step="WAIT_CODE",
+                session_path=str(session_file),
+                code_confirmed=False,
+                extra={"phone_code_hash": phone_code_hash},
+            )
+            raise
+        finally:
+            await client.disconnect()
+
+        self.telegram_auth.persist_auth_state(
+            account,
+            phone_number=TelegramAuthService.normalize_phone(phone),
+            verification_code=str(code).strip(),
+            telegram_password=str(state.get("telegram_password") or ""),
+            current_auth_step="SUCCESS",
+            session_path=str(session_file),
+            code_confirmed=True,
+            extra={"phone_code_hash": ""},
+        )
+        self.store.write_account_manifest(account)
+
+    async def _direct_submit_telegram_password(
+        self,
+        account: Account,
+        password: str,
+    ) -> None:
+        state = self.telegram_auth.load_auth_state(account)
+        session_file = self.store.telegram_session_file(account)
+        client = await self._connect_direct_telegram_client(account)
+        try:
+            await client.sign_in(password=password)
+        finally:
+            await client.disconnect()
+
+        self.telegram_auth.persist_auth_state(
+            account,
+            phone_number=str(state.get("phone_number") or account.phone_number or "").strip(),
+            verification_code=str(state.get("verification_code") or ""),
+            telegram_password=password,
+            current_auth_step="SUCCESS",
+            session_path=str(session_file),
+            code_confirmed=True,
+            extra={"phone_code_hash": ""},
+        )
+        self.store.write_account_manifest(account)
+
+    async def _direct_telegram_session_status(self, account: Account) -> bool:
+        if not self.store.is_valid_telegram_session(account):
+            return False
+
+        client = await self._connect_direct_telegram_client(account)
+        try:
+            authorized = bool(await client.is_user_authorized())
+        finally:
+            await client.disconnect()
+
+        if authorized:
+            self.telegram_auth.persist_auth_state(
+                account,
+                current_auth_step="SUCCESS",
+                session_path=str(self.store.telegram_session_file(account)),
+                code_confirmed=False,
+                extra={"phone_code_hash": ""},
+            )
+            self.store.write_account_manifest(account)
+        return authorized
 
     def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
         project_path = preferred_project_dir(Path(account.path).expanduser())
