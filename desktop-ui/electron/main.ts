@@ -7,6 +7,7 @@ import { app, BrowserWindow, dialog } from "electron";
 
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const BACKEND_START_TIMEOUT_MS = 30_000;
+const API_BASE_URL_ARGUMENT = "--shafa-api-base-url";
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 let backendProcess: BackendProcess | null = null;
@@ -199,7 +200,7 @@ function stopBackend(): void {
   backendProcess = null;
 }
 
-function createWindow(): void {
+function createWindow(apiBaseUrl: string): void {
   const window = new BrowserWindow({
     width: 1500,
     height: 960,
@@ -210,6 +211,9 @@ function createWindow(): void {
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
+      additionalArguments: [
+        `${API_BASE_URL_ARGUMENT}=${encodeURIComponent(apiBaseUrl)}`,
+      ],
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -224,8 +228,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  let apiBaseUrl: string;
+
   try {
-    await startBackend();
+    apiBaseUrl = await startBackend();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox("Shafa Control", `Failed to start local backend.\n\n${message}`);
@@ -233,11 +239,11 @@ app.whenReady().then(async () => {
     return;
   }
 
-  createWindow();
+  createWindow(apiBaseUrl);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      createWindow(apiBaseUrl);
     }
   });
 });
