@@ -52,6 +52,10 @@ function runCandidate(candidate) {
   return new Promise((resolve, reject) => {
     const child = spawn(candidate.command, candidate.args, {
       cwd: repoRoot,
+      env: {
+        ...process.env,
+        SHAFA_BACKEND_TARGET: process.env.SHAFA_BACKEND_TARGET ?? "win32",
+      },
       stdio: "inherit",
     });
 

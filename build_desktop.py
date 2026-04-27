@@ -28,6 +28,15 @@ def _resolve_npm_command() -> str:
 
 
 def main() -> None:
+    if os.name != "nt":
+        print(
+            "build_desktop.py creates a Windows portable .exe and must be run on Windows. "
+            "Running it on Linux/macOS would bundle a non-Windows backend, so the packaged app "
+            "would fail to start uvicorn.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     root = Path(__file__).resolve().parent
     desktop_ui = root / "desktop-ui"
     command = [_resolve_npm_command(), "run", "dist:portable"]

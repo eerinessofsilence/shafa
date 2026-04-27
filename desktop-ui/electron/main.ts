@@ -10,7 +10,15 @@ const API_BASE_URL_ARGUMENT = "--shafa-api-base-url";
 const DEFAULT_BACKEND_PORT = 8000;
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>;
 
+interface BackendBuildInfo {
+  executableName: string;
+  hostPlatform: string;
+  pythonVersion: string;
+  targetPlatform: string;
+}
+
 let backendProcess: BackendProcess | null = null;
+let backendLogPath: string | null = null;
 let quitting = false;
 
 function repoRoot(): string {
@@ -21,6 +29,25 @@ function createDelay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function resolveBackendLogPath(): string {
+  if (!backendLogPath) {
+    const logDir = path.join(app.getPath("userData"), "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    backendLogPath = path.join(logDir, "backend-launch.log");
+  }
+  return backendLogPath;
+}
+
+function appendBackendLog(message: string): void {
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+
+  try {
+    fs.appendFileSync(resolveBackendLogPath(), line, "utf8");
+  } catch (error) {
+    console.warn("Failed to write backend log.", error);
+  }
 }
 
 function resolveBackendPort(): number {
@@ -55,6 +82,7 @@ function streamBackendLogs(
       const trimmed = line.trim();
       if (trimmed) {
         console.log(`[backend:${label}] ${trimmed}`);
+        appendBackendLog(`[${label}] ${trimmed}`);
       }
     }
   });
@@ -62,6 +90,7 @@ function streamBackendLogs(
     const trimmed = buffered.trim();
     if (trimmed) {
       console.log(`[backend:${label}] ${trimmed}`);
+      appendBackendLog(`[${label}] ${trimmed}`);
     }
   });
 }
@@ -88,9 +117,55 @@ function resolveDevBackendCommand(): { command: string; args: string[]; cwd: str
   return { command: "python3", args: [scriptPath], cwd: root };
 }
 
+function readPackagedBackendBuildInfo(): BackendBuildInfo | null {
+  const infoPath = path.join(process.resourcesPath, "backend", "backend-build-info.json");
+  if (!fs.existsSync(infoPath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(infoPath, "utf8")) as BackendBuildInfo;
+  } catch (error) {
+    appendBackendLog(`Failed to read backend build info: ${String(error)}`);
+    return null;
+  }
+}
+
 function resolvePackagedBackendCommand(): { command: string; args: string[]; cwd: string } {
-  const filename = process.platform === "win32" ? "ShafaControlBackend.exe" : "ShafaControlBackend";
-  const command = path.join(process.resourcesPath, "backend", filename);
+  const backendDir = path.join(process.resourcesPath, "backend");
+  const buildInfo = readPackagedBackendBuildInfo();
+
+  if (buildInfo) {
+    if (buildInfo.targetPlatform !== process.platform) {
+      throw new Error(
+        `Bundled backend targets ${buildInfo.targetPlatform}, but this desktop app is running on ${process.platform}. ` +
+          "Rebuild the Windows desktop app on Windows so it can include a Windows backend binary.",
+      );
+    }
+
+    const command = path.join(backendDir, buildInfo.executableName);
+    if (!fs.existsSync(command)) {
+      throw new Error(
+        `Bundled backend executable was not found: ${command}. Rebuild the desktop package.`,
+      );
+    }
+
+    return {
+      command,
+      args: [],
+      cwd: path.dirname(command),
+    };
+  }
+
+  const expectedFilename =
+    process.platform === "win32" ? "ShafaControlBackend.exe" : "ShafaControlBackend";
+  const command = path.join(backendDir, expectedFilename);
+  if (!fs.existsSync(command)) {
+    throw new Error(
+      `Bundled backend executable was not found: ${command}. Rebuild the desktop package.`,
+    );
+  }
+
   return {
     command,
     args: [],
@@ -136,6 +211,9 @@ async function startBackend(): Promise<string> {
   const apiBaseUrl = `http://127.0.0.1:${port}`;
   const userDataDir = path.join(app.getPath("userData"), "backend-data");
   const launch = app.isPackaged ? resolvePackagedBackendCommand() : resolveDevBackendCommand();
+  appendBackendLog(
+    `Launching backend from ${launch.command} on http://127.0.0.1:${port} with data dir ${userDataDir}`,
+  );
   const child = spawn(launch.command, launch.args, {
     cwd: launch.cwd,
     env: {
@@ -156,9 +234,10 @@ async function startBackend(): Promise<string> {
     backendProcess = null;
     if (!quitting) {
       const exitLabel = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+      appendBackendLog(`Backend stopped unexpectedly (${exitLabel}).`);
       dialog.showErrorBox(
         "Shafa Control",
-        `Local backend stopped unexpectedly (${exitLabel}).`,
+        `Local backend stopped unexpectedly (${exitLabel}).\n\nLog: ${resolveBackendLogPath()}`,
       );
     }
   });
@@ -225,7 +304,11 @@ app.whenReady().then(async () => {
     apiBaseUrl = await startBackend();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    dialog.showErrorBox("Shafa Control", `Failed to start local backend.\n\n${message}`);
+    appendBackendLog(`Failed to start local backend: ${message}`);
+    dialog.showErrorBox(
+      "Shafa Control",
+      `Failed to start local backend.\n\n${message}\n\nLog: ${resolveBackendLogPath()}`,
+    );
     app.quit();
     return;
   }

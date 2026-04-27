@@ -1,10 +1,83 @@
 from __future__ import annotations
 
+import json
 import os
+import sys
 from pathlib import Path
 
 import PyInstaller.__main__
 from PyInstaller.utils.hooks import collect_all
+
+SUPPORTED_TARGET_PLATFORMS = {"darwin", "linux", "win32"}
+
+
+def _host_platform() -> str:
+    if sys.platform.startswith("win"):
+        return "win32"
+    if sys.platform == "darwin":
+        return "darwin"
+    return "linux"
+
+
+def _normalize_target_platform(value: str) -> str:
+    normalized = value.strip().lower()
+    aliases = {
+        "darwin": "darwin",
+        "linux": "linux",
+        "mac": "darwin",
+        "macos": "darwin",
+        "win": "win32",
+        "win32": "win32",
+        "windows": "win32",
+    }
+    target_platform = aliases.get(normalized)
+    if target_platform is None:
+        supported = ", ".join(sorted(SUPPORTED_TARGET_PLATFORMS))
+        raise SystemExit(
+            f"Unsupported SHAFA_BACKEND_TARGET '{value}'. Expected one of: {supported}."
+        )
+    return target_platform
+
+
+def _resolve_target_platform() -> str:
+    configured = os.getenv("SHAFA_BACKEND_TARGET", "").strip()
+    if not configured:
+        return _host_platform()
+    return _normalize_target_platform(configured)
+
+
+def _ensure_native_target(target_platform: str) -> None:
+    host_platform = _host_platform()
+    if target_platform == host_platform:
+        return
+
+    raise SystemExit(
+        "PyInstaller builds native executables only. "
+        f"Cannot build a {target_platform} backend from {host_platform}. "
+        "Run this build on the target OS or provide a prebuilt backend binary."
+    )
+
+
+def _output_name(target_platform: str) -> str:
+    if target_platform == "win32":
+        return "ShafaControlBackend.exe"
+    return "ShafaControlBackend"
+
+
+def _write_build_info(
+    path: Path,
+    *,
+    executable_name: str,
+    host_platform: str,
+    target_platform: str,
+) -> None:
+    payload = {
+        "executableName": executable_name,
+        "hostPlatform": host_platform,
+        "pythonVersion": ".".join(str(part) for part in sys.version_info[:3]),
+        "targetPlatform": target_platform,
+    }
+    path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
 
 
 def _data_arg(path: Path) -> str:
@@ -33,7 +106,12 @@ def _collect_package_args(package: str) -> list[str]:
 
 def main() -> None:
     root = Path(__file__).resolve().parent
-    output = root / "dist" / "backend" / "ShafaControlBackend.exe"
+    host_platform = _host_platform()
+    target_platform = _resolve_target_platform()
+    _ensure_native_target(target_platform)
+
+    output_dir = root / "dist" / "backend"
+    output = output_dir / _output_name(target_platform)
     package_args = []
     for package in (
         "uvicorn",
@@ -70,6 +148,12 @@ def main() -> None:
             "--collect-submodules=shafa_control",
             "--collect-submodules=telethon",
         ]
+    )
+    _write_build_info(
+        output_dir / "backend-build-info.json",
+        executable_name=output.name,
+        host_platform=host_platform,
+        target_platform=target_platform,
     )
     print(f"Built backend executable: {output}")
 

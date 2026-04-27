@@ -32,8 +32,11 @@
     ],
     "extraResources": [
       {
-        "from": "../dist/backend/ShafaControlBackend.exe",
-        "to": "backend/ShafaControlBackend.exe"
+        "from": "../dist/backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
