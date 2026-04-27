@@ -11,7 +11,12 @@ const BACKEND_START_MAX_ATTEMPTS = 3;
 const BACKEND_START_RETRY_DELAY_MS = 1_500;
 const API_BASE_URL_ARGUMENT = "--shafa-api-base-url";
 const DEFAULT_BACKEND_PORT = 8000;
+const TELEGRAM_ENV_KEYS = [
+  "SHAFA_TELEGRAM_API_ID",
+  "SHAFA_TELEGRAM_API_HASH",
+] as const;
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>;
+type TelegramEnvKey = (typeof TELEGRAM_ENV_KEYS)[number];
 
 interface BackendBuildInfo {
   executableName: string;
@@ -73,6 +78,117 @@ function isRetryableBackendStartupError(error: unknown): boolean {
       "retryable" in error &&
       (error as RetryableBackendStartupError).retryable,
   );
+}
+
+function addEnvFileCandidatesFromDir(
+  candidates: Set<string>,
+  startDir: string,
+): void {
+  let currentDir = path.resolve(startDir);
+
+  for (let depth = 0; depth < 5; depth += 1) {
+    candidates.add(path.join(currentDir, ".env"));
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return;
+    }
+    currentDir = parentDir;
+  }
+}
+
+function resolveEnvFileCandidates(userDataDir: string): string[] {
+  const candidates = new Set<string>();
+  const baseDirs = [
+    process.env.PORTABLE_EXECUTABLE_DIR,
+    process.env.PORTABLE_EXECUTABLE_FILE
+      ? path.dirname(process.env.PORTABLE_EXECUTABLE_FILE)
+      : undefined,
+    process.cwd(),
+    path.dirname(app.getPath("exe")),
+    path.dirname(process.execPath),
+    userDataDir,
+  ].filter((baseDir): baseDir is string => Boolean(baseDir));
+
+  if (!app.isPackaged) {
+    baseDirs.push(repoRoot());
+  }
+
+  for (const baseDir of baseDirs) {
+    addEnvFileCandidatesFromDir(candidates, baseDir);
+  }
+
+  return [...candidates];
+}
+
+function readTelegramEnvFile(
+  envPath: string,
+): Partial<Record<TelegramEnvKey, string>> {
+  const result: Partial<Record<TelegramEnvKey, string>> = {};
+  if (!fs.existsSync(envPath)) {
+    return result;
+  }
+
+  try {
+    const content = fs.readFileSync(envPath, "utf8");
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#") || !line.includes("=")) {
+        continue;
+      }
+
+      const separatorIndex = line.indexOf("=");
+      const key = line.slice(0, separatorIndex).trim();
+      if (!TELEGRAM_ENV_KEYS.includes(key as TelegramEnvKey)) {
+        continue;
+      }
+
+      result[key as TelegramEnvKey] = line
+        .slice(separatorIndex + 1)
+        .trim()
+        .replace(/^["']|["']$/g, "");
+    }
+  } catch (error) {
+    appendBackendLog(`Failed to read ${envPath}: ${String(error)}`);
+  }
+
+  return result;
+}
+
+function resolveBackendEnvironment({
+  host,
+  port,
+  userDataDir,
+}: {
+  host: string;
+  port: number;
+  userDataDir: string;
+}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+
+  for (const envPath of resolveEnvFileCandidates(userDataDir)) {
+    const values = readTelegramEnvFile(envPath);
+    let loadedAnyValue = false;
+
+    for (const key of TELEGRAM_ENV_KEYS) {
+      const value = values[key]?.trim();
+      if (!env[key] && value) {
+        env[key] = value;
+        loadedAnyValue = true;
+      }
+    }
+
+    if (loadedAnyValue) {
+      appendBackendLog(`Loaded Telegram API configuration from ${envPath}.`);
+    }
+  }
+
+  return {
+    ...env,
+    PYTHONUNBUFFERED: "1",
+    SHAFA_BACKEND_HOST: host,
+    SHAFA_BACKEND_PORT: String(port),
+    SHAFA_DESKTOP_DATA_DIR: userDataDir,
+  };
 }
 
 function resolveBackendPort(): number {
@@ -292,13 +408,7 @@ async function launchBackendProcess(
   );
   const child = spawn(command, args, {
     cwd,
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: "1",
-      SHAFA_BACKEND_HOST: host,
-      SHAFA_BACKEND_PORT: String(port),
-      SHAFA_DESKTOP_DATA_DIR: userDataDir,
-    },
+    env: resolveBackendEnvironment({ host, port, userDataDir }),
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
