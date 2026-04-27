@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import net from "node:net";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { app, BrowserWindow, dialog } from "electron";
@@ -8,6 +7,7 @@ import { app, BrowserWindow, dialog } from "electron";
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const BACKEND_START_TIMEOUT_MS = 30_000;
 const API_BASE_URL_ARGUMENT = "--shafa-api-base-url";
+const DEFAULT_BACKEND_PORT = 8000;
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 let backendProcess: BackendProcess | null = null;
@@ -23,27 +23,18 @@ function createDelay(ms: number): Promise<void> {
   });
 }
 
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Failed to allocate a local TCP port for the backend."));
-        return;
-      }
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(address.port);
-      });
-    });
-  });
+function resolveBackendPort(): number {
+  const configuredPort = process.env.SHAFA_BACKEND_PORT?.trim();
+  if (!configuredPort) {
+    return DEFAULT_BACKEND_PORT;
+  }
+
+  const port = Number.parseInt(configuredPort, 10);
+  if (!Number.isFinite(port) || port <= 0 || port > 65_535) {
+    throw new Error(`Invalid SHAFA_BACKEND_PORT value: ${configuredPort}`);
+  }
+
+  return port;
 }
 
 function streamBackendLogs(
@@ -141,7 +132,7 @@ async function waitForBackendReady(
 }
 
 async function startBackend(): Promise<string> {
-  const port = await findFreePort();
+  const port = resolveBackendPort();
   const apiBaseUrl = `http://127.0.0.1:${port}`;
   const userDataDir = path.join(app.getPath("userData"), "backend-data");
   const launch = app.isPackaged ? resolvePackagedBackendCommand() : resolveDevBackendCommand();

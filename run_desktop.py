@@ -13,6 +13,17 @@ def _resolve_npm_command() -> str:
         resolved = shutil.which(candidate)
         if resolved:
             return resolved
+
+    if os.name == "nt":
+        windows_candidates = [
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "nodejs" / "npm.cmd",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "nodejs" / "npm.cmd",
+            Path.home() / "AppData" / "Roaming" / "npm" / "npm.cmd",
+        ]
+        for candidate in windows_candidates:
+            if candidate.exists():
+                return str(candidate)
+
     raise FileNotFoundError("npm")
 
 
