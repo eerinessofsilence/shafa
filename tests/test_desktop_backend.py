@@ -9,6 +9,7 @@ import pytest
 
 def _load_desktop_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("SHAFA_DESKTOP_DATA_DIR", str(tmp_path / "desktop-data"))
+    monkeypatch.setenv("SHAFA_RUNTIME_PROJECT_DIR", "")
     sys.modules.pop("desktop_backend", None)
     return importlib.import_module("desktop_backend")
 
@@ -88,3 +89,56 @@ def test_main_does_not_retry_when_port_is_explicitly_configured(tmp_path, monkey
 
     assert exc_info.value is error
     assert calls == [8123]
+
+
+def test_copy_runtime_project_sets_stable_project_under_data_dir(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module = _load_desktop_backend(tmp_path, monkeypatch)
+    bundle_dir = tmp_path / "bundle"
+    source_dir = bundle_dir / "shafa_logic"
+    source_dir.mkdir(parents=True)
+    (source_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (source_dir / "__pycache__").mkdir()
+    (source_dir / "__pycache__" / "main.pyc").write_bytes(b"cache")
+
+    runtime_root = module._copy_runtime_project(bundle_dir, tmp_path / "data")
+
+    assert runtime_root == tmp_path / "data" / "runtime-project"
+    assert (runtime_root / "shafa_logic" / "main.py").is_file()
+    assert not (runtime_root / "shafa_logic" / "__pycache__").exists()
+
+
+def test_embedded_shafa_cli_dispatches_main_py_command(tmp_path, monkeypatch) -> None:
+    module = _load_desktop_backend(tmp_path, monkeypatch)
+    project_dir = tmp_path / "runtime-project" / "shafa_logic"
+    project_dir.mkdir(parents=True)
+    marker_path = tmp_path / "cli-marker.txt"
+    (project_dir / "main.py").write_text(
+        "import argparse\n"
+        "from pathlib import Path\n"
+        "def parse_args():\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    parser.add_argument('--shafa', action='store_true')\n"
+        "    parser.add_argument('--login-shafa', action='store_true')\n"
+        "    parser.add_argument('--mode')\n"
+        "    parser.add_argument('--telegram-send-code')\n"
+        "    parser.add_argument('--telegram-login-phone')\n"
+        "    parser.add_argument('--telegram-login-code')\n"
+        "    parser.add_argument('--telegram-login-password')\n"
+        "    parser.add_argument('--telegram-session-status', action='store_true')\n"
+        "    return parser.parse_args()\n"
+        "def main(**kwargs):\n"
+        f"    Path({str(marker_path)!r}).write_text(\n"
+        "        str(kwargs['shafa']),\n"
+        "        encoding='utf-8',\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(project_dir)
+
+    exit_code = module._run_embedded_shafa_cli(["main.py", "--shafa"])
+
+    assert exit_code == 0
+    assert marker_path.read_text(encoding="utf-8") == "True"

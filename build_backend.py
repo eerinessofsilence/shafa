@@ -80,14 +80,14 @@ def _write_build_info(
     path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
 
 
-def _data_arg(path: Path) -> str:
-    return f"{path}{os.pathsep}."
+def _data_arg(path: Path, destination: str = ".") -> str:
+    return f"{path}{os.pathsep}{destination}"
 
 
-def _add_data_args(path: Path) -> list[str]:
+def _add_data_args(path: Path, destination: str = ".") -> list[str]:
     if not path.exists():
         return []
-    return ["--add-data", _data_arg(path)]
+    return ["--add-data", _data_arg(path, destination)]
 
 
 def _collect_package_args(package: str) -> list[str]:
@@ -123,6 +123,12 @@ def main() -> None:
         "httpx",
         "websockets",
         "httptools",
+        "inquirer",
+        "PIL",
+        "playwright",
+        "dotenv",
+        "Levenshtein",
+        "multipart",
     ):
         package_args.extend(_collect_package_args(package))
 
@@ -143,6 +149,19 @@ def main() -> None:
             str(root / "build" / "backend-spec"),
             *_add_data_args(root / "accounts_state.json"),
             *_add_data_args(root / "telegram_channel_templates.json"),
+            *_add_data_args(root / "shafa_logic" / "main.py", "shafa_logic"),
+            *_add_data_args(root / "shafa_logic" / "data", "shafa_logic/data"),
+            *_add_data_args(root / "shafa_logic" / "core", "shafa_logic/core"),
+            *_add_data_args(
+                root / "shafa_logic" / "controller",
+                "shafa_logic/controller",
+            ),
+            *_add_data_args(root / "shafa_logic" / "models", "shafa_logic/models"),
+            *_add_data_args(root / "shafa_logic" / "utils", "shafa_logic/utils"),
+            *_add_data_args(
+                root / "shafa_logic" / "telegram_subscription",
+                "shafa_logic/telegram_subscription",
+            ),
             *package_args,
             "--collect-submodules=telegram_accounts_api",
             "--collect-submodules=shafa_control",

@@ -1,9 +1,12 @@
 from .account_runtime import (
     AccountRuntimeService,
+    configured_runtime_project_dir,
+    default_project_dir,
     is_runnable_project_dir,
     nested_runnable_project_dir,
     preferred_project_dir,
     project_main_path,
+    resolve_project_dir,
 )
 from .app_config import APP_MODES, AppConfig, AppConfigStore, validate_mode
 from .channel_templates import ChannelTemplate, ChannelTemplateStore
@@ -23,12 +26,15 @@ __all__ = [
     "ChannelTemplate",
     "ChannelTemplateStore",
     "CommandRunner",
+    "configured_runtime_project_dir",
+    "default_project_dir",
     "is_runnable_project_dir",
     "LogRecord",
     "LogStore",
     "nested_runnable_project_dir",
     "preferred_project_dir",
     "project_main_path",
+    "resolve_project_dir",
     "ShafaAuthService",
     "ShafaLoginContext",
     "TelegramAuthRuntime",

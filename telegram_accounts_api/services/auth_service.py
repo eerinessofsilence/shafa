@@ -20,8 +20,8 @@ from shafa_control import (
     AccountSessionStore,
     ShafaAuthService,
     TelegramAuthService,
-    preferred_project_dir,
     project_main_path,
+    resolve_project_dir,
 )
 from shafa_logic.data.const import API_BATCH_URL, APP_PLATFORM, APP_VERSION, ORIGIN_URL
 
@@ -701,7 +701,7 @@ class AccountAuthService:
         return "; ".join(parts)
 
     def _run_account_command(self, account: Account, args: list[str]):
-        project_path = preferred_project_dir(Path(account.path).expanduser())
+        project_path = resolve_project_dir(Path(account.path).expanduser())
         if not project_main_path(project_path).is_file():
             telegram_result = self._run_packaged_telegram_command(account, args)
             if telegram_result is not None:
@@ -955,7 +955,7 @@ class AccountAuthService:
         return authorized
 
     def _launch_shafa_login(self, account: Account, args: list[str]) -> None:
-        project_path = preferred_project_dir(Path(account.path).expanduser())
+        project_path = resolve_project_dir(Path(account.path).expanduser())
         if not project_main_path(project_path).is_file():
             raise BadRequestError(f"main.py не найден по пути {project_path}")
 

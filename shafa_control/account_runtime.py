@@ -37,10 +37,47 @@ def project_root_dir(project_dir: Path) -> Path:
 def nested_runnable_project_dir(project_dir: Path) -> Path | None:
     if not project_dir.is_dir():
         return None
-    candidates = [child for child in project_dir.iterdir() if child.is_dir() and is_runnable_project_dir(child)]
+    candidates = [
+        child
+        for child in project_dir.iterdir()
+        if child.is_dir() and is_runnable_project_dir(child)
+    ]
     if len(candidates) == 1:
         return candidates[0]
     return None
+
+
+def configured_runtime_project_dir() -> Path | None:
+    configured = os.getenv("SHAFA_RUNTIME_PROJECT_DIR", "").strip()
+    if not configured:
+        return None
+
+    project_dir = Path(configured).expanduser()
+    preferred = preferred_project_dir(project_dir)
+    if is_runnable_project_dir(preferred):
+        return preferred
+
+    nested = nested_runnable_project_dir(project_dir)
+    if nested is not None:
+        return nested
+
+    return None
+
+
+def default_project_dir(base_dir: Path) -> Path:
+    return configured_runtime_project_dir() or base_dir
+
+
+def resolve_project_dir(project_dir: Path) -> Path:
+    preferred = preferred_project_dir(project_dir)
+    if is_runnable_project_dir(preferred):
+        return preferred
+
+    nested = nested_runnable_project_dir(project_dir)
+    if nested is not None:
+        return nested
+
+    return configured_runtime_project_dir() or preferred
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -85,7 +122,6 @@ class AccountRuntimeService:
     ) -> dict[str, str]:
         env = dict(base_env) if base_env is not None else os.environ.copy()
         state_dir = self.state_dir(account)
-        project_path = preferred_project_dir(Path(account.path).expanduser())
         telegram_credentials = self.store.load_telegram_credentials(account)
         root_credentials = read_env_file(self.root_env_path())
         env.setdefault("PYTHONUNBUFFERED", "1")
@@ -118,7 +154,7 @@ class AccountRuntimeService:
         return env
 
     def account_python(self, account: Account) -> str:
-        project_path = preferred_project_dir(Path(account.path).expanduser())
+        project_path = resolve_project_dir(Path(account.path).expanduser())
         if os.name == "nt":
             candidate = project_path / ".venv" / "Scripts" / "python.exe"
         else:
@@ -133,7 +169,7 @@ class AccountRuntimeService:
         app_mode: str | None = None,
         base_env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
-        project_path = preferred_project_dir(Path(account.path).expanduser())
+        project_path = resolve_project_dir(Path(account.path).expanduser())
         if not project_main_path(project_path).is_file():
             return subprocess.CompletedProcess(
                 [self.account_python(account), *args],
@@ -152,7 +188,7 @@ class AccountRuntimeService:
     def export_channel_runtime_config(self, account: Account) -> Path:
         return export_runtime_config(
             account_name=account.name,
-            account_path=str(preferred_project_dir(Path(account.path).expanduser())),
+            account_path=str(resolve_project_dir(Path(account.path).expanduser())),
             links=account.channel_links,
             output_dir=self.state_dir(account),
         )

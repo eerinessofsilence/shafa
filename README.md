@@ -193,6 +193,7 @@ Important variables supported by the backend/bootstrap:
 | `SHAFA_BACKEND_HOST` | Host for desktop backend bootstrap |
 | `SHAFA_BACKEND_PORT` | Port for desktop/backend startup |
 | `SHAFA_DESKTOP_DATA_DIR` | Data dir used by packaged/dev desktop mode |
+| `SHAFA_RUNTIME_PROJECT_DIR` | Runtime copy of `shafa_logic` used by packaged desktop account launches |
 
 ### Telegram credentials
 

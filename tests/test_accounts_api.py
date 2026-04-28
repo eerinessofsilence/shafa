@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -85,6 +87,13 @@ class AccountsApiTest(unittest.TestCase):
         project_dir.mkdir(parents=True, exist_ok=True)
         (project_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
         return project_dir
+
+    def _make_runtime_project(self) -> Path:
+        runtime_root = self.base_dir / "backend-data" / "runtime-project"
+        shafa_logic_dir = runtime_root / "shafa_logic"
+        shafa_logic_dir.mkdir(parents=True, exist_ok=True)
+        (shafa_logic_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+        return shafa_logic_dir
 
     def _write_valid_shafa_session(self, account_id: str) -> None:
         account_dir = self.accounts_dir / account_id
@@ -218,7 +227,9 @@ class AccountsApiTest(unittest.TestCase):
         self.assertNotIn("open_browser", payload)
 
         stored_accounts = self._read_accounts()
-        created_account = next(item for item in stored_accounts if item["id"] == payload["id"])
+        created_account = next(
+            item for item in stored_accounts if item["id"] == payload["id"]
+        )
         self.assertEqual(created_account["path"], str(self.base_dir))
         self.assertNotIn("open_browser", created_account)
 
@@ -290,6 +301,71 @@ class AccountsApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["path"], str(self.base_dir))
+
+    def test_create_account_uses_runtime_project_when_configured(self) -> None:
+        shafa_logic_dir = self._make_runtime_project()
+
+        with patch.dict(
+            os.environ,
+            {"SHAFA_RUNTIME_PROJECT_DIR": str(shafa_logic_dir.parent)},
+        ):
+            response = self.client.post(
+                "/accounts",
+                json={
+                    "name": "Default runtime account",
+                    "phone": "",
+                    "path": "",
+                    "branch": "main",
+                    "timer_minutes": 5,
+                    "channel_links": [],
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["path"], str(shafa_logic_dir))
+
+    def test_start_account_uses_runtime_project_for_packaged_data_path(self) -> None:
+        shafa_logic_dir = self._make_runtime_project()
+        backend_data_dir = self.base_dir / "backend-data"
+        self._write_accounts(
+            [
+                {
+                    "id": "acc-runtime",
+                    "name": "Runtime account",
+                    "phone_number": "",
+                    "path": str(backend_data_dir),
+                    "branch": "main",
+                    "timer_minutes": 5,
+                    "channel_links": [],
+                    "status": "stopped",
+                    "last_run": None,
+                    "errors": 0,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            ],
+        )
+        self._write_valid_shafa_session("acc-runtime")
+        process = _FakeRunningProcess()
+        captured_context: dict[str, str] = {}
+
+        def fake_spawn(_account, launch_context):
+            captured_context.update(launch_context)
+            return process
+
+        self.service._spawn_process = fake_spawn
+        self.service._terminate_process = lambda proc: proc.request_stop()
+
+        with patch.dict(
+            os.environ,
+            {"SHAFA_RUNTIME_PROJECT_DIR": str(shafa_logic_dir.parent)},
+        ):
+            started = self.client.post("/accounts/acc-runtime/start")
+            stopped = self.client.post("/accounts/acc-runtime/stop")
+
+        self.assertEqual(started.status_code, 200)
+        self.assertEqual(stopped.status_code, 200)
+        self.assertEqual(captured_context["cwd"], str(shafa_logic_dir))
 
     def test_start_account_requires_valid_shafa_session(self) -> None:
         project_dir = self._make_project()

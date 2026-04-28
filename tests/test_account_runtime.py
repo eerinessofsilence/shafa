@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shafa_control import Account, AccountRuntimeService, AccountSessionStore
+from shafa_control import (
+    Account,
+    AccountRuntimeService,
+    AccountSessionStore,
+    configured_runtime_project_dir,
+    default_project_dir,
+    resolve_project_dir,
+)
 
 
 def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
@@ -75,3 +82,20 @@ def test_account_runtime_exports_channel_runtime_config(tmp_path: Path) -> None:
     assert config_path.exists()
     assert config_path.name == "my_account_telegram_channels.json"
     assert '"links": [' in config_path.read_text(encoding="utf-8")
+
+
+def test_account_runtime_resolves_configured_runtime_project(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "backend-data" / "runtime-project"
+    shafa_logic_dir = runtime_root / "shafa_logic"
+    shafa_logic_dir.mkdir(parents=True)
+    (shafa_logic_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setenv("SHAFA_RUNTIME_PROJECT_DIR", str(runtime_root))
+
+    missing_project = tmp_path / "backend-data"
+
+    assert configured_runtime_project_dir() == shafa_logic_dir
+    assert default_project_dir(tmp_path) == shafa_logic_dir
+    assert resolve_project_dir(missing_project) == shafa_logic_dir

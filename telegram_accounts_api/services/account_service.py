@@ -20,8 +20,12 @@ from shafa_control import (
     AccountSessionStore,
     LogRecord,
     LogStore,
+    default_project_dir,
+    is_runnable_project_dir,
+    nested_runnable_project_dir,
     preferred_project_dir,
     project_main_path,
+    resolve_project_dir,
 )
 from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
 from telegram_accounts_api.utils.account_logging import (
@@ -98,7 +102,7 @@ class AccountService:
             account_id = uuid4().hex
 
         timestamp = datetime.now(UTC).isoformat()
-        default_project_path = str(self.session_store.base_dir)
+        default_project_path = str(default_project_dir(self.session_store.base_dir))
         record = {
             "id": account_id,
             "name": data.name,
@@ -348,8 +352,27 @@ class AccountService:
         normalized = dict(item)
         normalized.pop("open_browser", None)
         path = str(normalized.get("path") or "").strip()
-        default_project_path = str(self.session_store.base_dir).strip()
-        if path == LEGACY_DEFAULT_PROJECT_PATH and default_project_path and default_project_path != path:
+        default_path = default_project_dir(self.session_store.base_dir)
+        default_project_path = str(default_path).strip()
+        raw_path = Path(path).expanduser()
+        path_is_runnable = False
+        if path:
+            path_is_runnable = (
+                is_runnable_project_dir(preferred_project_dir(raw_path))
+                or nested_runnable_project_dir(raw_path) is not None
+            )
+        has_runtime_project_default = default_path != self.session_store.base_dir
+        should_use_default_path = (
+            path == LEGACY_DEFAULT_PROJECT_PATH
+            or not path
+            or (
+                has_runtime_project_default
+                and default_project_path
+                and not path_is_runnable
+                and default_project_path != path
+            )
+        )
+        if should_use_default_path:
             normalized["path"] = default_project_path
         return normalized
 
@@ -371,7 +394,7 @@ class AccountService:
     def _build_launch_context(self, account: Account) -> dict[str, str]:
         if not account.path.strip():
             raise BadRequestError("Перед запуском нужно указать путь проекта аккаунта.")
-        normalized_path = preferred_project_dir(Path(account.path).expanduser())
+        normalized_path = resolve_project_dir(Path(account.path).expanduser())
         if not project_main_path(normalized_path).is_file():
             raise BadRequestError(f"main.py не найден по пути {normalized_path}")
         if not self.session_store.is_valid_shafa_session(account):
