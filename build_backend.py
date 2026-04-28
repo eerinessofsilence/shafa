@@ -5,9 +5,6 @@ import os
 import sys
 from pathlib import Path
 
-import PyInstaller.__main__
-from PyInstaller.utils.hooks import collect_all
-
 SUPPORTED_TARGET_PLATFORMS = {"darwin", "linux", "win32"}
 
 
@@ -90,7 +87,20 @@ def _add_data_args(path: Path, destination: str = ".") -> list[str]:
     return ["--add-data", _data_arg(path, destination)]
 
 
-def _collect_package_args(package: str) -> list[str]:
+def _load_pyinstaller_helpers():
+    try:
+        import PyInstaller.__main__ as pyinstaller_main
+        from PyInstaller.utils.hooks import collect_all, copy_metadata
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "PyInstaller is required to build the backend. "
+            "Install the build dependencies from requirements/build.txt."
+        ) from exc
+    return pyinstaller_main, collect_all, copy_metadata
+
+
+def _collect_package_args(package: str, *, recursive_metadata: bool = False) -> list[str]:
+    _, collect_all, copy_metadata = _load_pyinstaller_helpers()
     datas, binaries, hiddenimports = collect_all(package)
     args: list[str] = []
 
@@ -100,6 +110,8 @@ def _collect_package_args(package: str) -> list[str]:
         args.extend(["--add-binary", f"{src}{os.pathsep}{dest}"])
     for hiddenimport in hiddenimports:
         args.extend(["--hidden-import", hiddenimport])
+    for src, dest in copy_metadata(package, recursive=recursive_metadata):
+        args.extend(["--add-data", f"{src}{os.pathsep}{dest}"])
 
     return args
 
@@ -109,31 +121,38 @@ def main() -> None:
     host_platform = _host_platform()
     target_platform = _resolve_target_platform()
     _ensure_native_target(target_platform)
+    pyinstaller_main, _, _ = _load_pyinstaller_helpers()
 
     output_dir = root / "dist" / "backend"
     output = output_dir / _output_name(target_platform)
     package_args = []
-    for package in (
-        "uvicorn",
-        "fastapi",
-        "starlette",
-        "pydantic",
-        "pydantic_core",
-        "anyio",
-        "httpx",
-        "websockets",
-        "httptools",
-        "inquirer",
-        "PIL",
-        "playwright",
-        "dotenv",
-        "Levenshtein",
-        "multipart",
+    for package, recursive_metadata in (
+        ("uvicorn", False),
+        ("fastapi", False),
+        ("starlette", False),
+        ("pydantic", False),
+        ("pydantic_core", False),
+        ("anyio", False),
+        ("httpx", False),
+        ("websockets", False),
+        ("httptools", False),
+        # inquirer resolves metadata from dependencies like readchar at runtime.
+        ("inquirer", True),
+        ("PIL", False),
+        ("playwright", False),
+        ("dotenv", False),
+        ("Levenshtein", False),
+        ("multipart", False),
     ):
-        package_args.extend(_collect_package_args(package))
+        package_args.extend(
+            _collect_package_args(
+                package,
+                recursive_metadata=recursive_metadata,
+            )
+        )
 
     os.environ.setdefault("PYINSTALLER_CONFIG_DIR", str(root / ".pyinstaller"))
-    PyInstaller.__main__.run(
+    pyinstaller_main.run(
         [
             str(root / "desktop_backend.py"),
             "--name=ShafaControlBackend",

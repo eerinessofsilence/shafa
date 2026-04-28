@@ -7,10 +7,20 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 import argparse
 
-import inquirer
 from telegram_subscription import complete_login, send_code, session_status, submit_password, sync_channels_from_runtime_config
 
 _ADD_CHANNEL = object()
+
+
+def _load_inquirer():
+    try:
+        import inquirer
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Модуль 'inquirer' нужен только для интерактивного CLI-меню. "
+            "Для запуска меню установи его в используемое окружение Python."
+        ) from exc
+    return inquirer
 
 def _ensure_tty() -> bool:
     if not sys.stdin.isatty():
@@ -40,6 +50,7 @@ def _prompt_list(
 ) -> Optional[Any]:
     if not _ensure_tty():
         return None
+    inquirer = _load_inquirer()
     question = inquirer.List(
         "choice",
         message=message,
@@ -61,6 +72,7 @@ def _prompt_checkbox(
 ) -> Optional[list[Any]]:
     if not _ensure_tty():
         return None
+    inquirer = _load_inquirer()
     question = inquirer.Checkbox(
         "items",
         message=message,
@@ -84,6 +96,7 @@ def _prompt_text(
 ) -> Optional[str]:
     if not _ensure_tty():
         return None
+    inquirer = _load_inquirer()
 
     def _validate(_: dict, value: str) -> Any:
         if required and not value:
@@ -117,6 +130,7 @@ def _prompt_int(
 ) -> Optional[int]:
     if not _ensure_tty():
         return None
+    inquirer = _load_inquirer()
 
     def _validate(_: dict, value: str) -> Any:
         if not value:
@@ -156,6 +170,7 @@ def _prompt_minutes() -> Optional[int]:
 def _choose_yes_no(question: str, default: bool = True) -> Optional[bool]:
     if not _ensure_tty():
         return None
+    inquirer = _load_inquirer()
     prompt = inquirer.Confirm("confirm", message=question, default=default)
     try:
         answers = inquirer.prompt([prompt])
