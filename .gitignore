@@ -70,6 +70,7 @@ desktop-ui/dist-electron/
 # Test and browser artifacts
 playwright-report/
 test-results/
+.tmp/
 
 # Project runtime state
 accounts/

@@ -8,6 +8,8 @@ from shafa_control import (
     AccountSessionStore,
     configured_runtime_project_dir,
     default_project_dir,
+    project_root_dir,
+    python_candidates,
     resolve_project_dir,
 )
 
@@ -99,3 +101,37 @@ def test_account_runtime_resolves_configured_runtime_project(
     assert configured_runtime_project_dir() == shafa_logic_dir
     assert default_project_dir(tmp_path) == shafa_logic_dir
     assert resolve_project_dir(missing_project) == shafa_logic_dir
+
+
+def test_python_candidates_include_project_and_root_venvs(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    shafa_logic_dir = project_root / "shafa_logic"
+    shafa_logic_dir.mkdir(parents=True)
+    (shafa_logic_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    candidates = python_candidates(shafa_logic_dir, windows=True)
+
+    assert candidates == [
+        shafa_logic_dir / ".venv" / "Scripts" / "python.exe",
+        shafa_logic_dir / "venv" / "Scripts" / "python.exe",
+        project_root / ".venv" / "Scripts" / "python.exe",
+        project_root / "venv" / "Scripts" / "python.exe",
+    ]
+    assert project_root_dir(shafa_logic_dir) == project_root
+
+
+def test_account_runtime_prefers_root_venv_when_project_path_is_shafa_logic(
+    tmp_path: Path,
+) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    runtime = AccountRuntimeService(store)
+    project_root = tmp_path / "project"
+    shafa_logic_dir = project_root / "shafa_logic"
+    shafa_logic_dir.mkdir(parents=True)
+    (shafa_logic_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    python_exe = project_root / "venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    account = Account(id="acc-win", name="Win", path=str(project_root))
+
+    assert runtime.account_python(account) == str(python_exe)

@@ -34,6 +34,37 @@ def project_root_dir(project_dir: Path) -> Path:
     return preferred
 
 
+def python_candidates(project_dir: Path, *, windows: bool | None = None) -> list[Path]:
+    preferred = preferred_project_dir(project_dir)
+    root = project_root_dir(project_dir)
+
+    if windows is None:
+        windows = os.name == "nt"
+
+    if windows:
+        relative_candidates = [
+            (".venv", "Scripts", "python.exe"),
+            ("venv", "Scripts", "python.exe"),
+        ]
+    else:
+        relative_candidates = [
+            (".venv", "bin", "python"),
+            ("venv", "bin", "python"),
+        ]
+
+    bases: list[Path] = [preferred]
+    if root != preferred:
+        bases.append(root)
+
+    candidates: list[Path] = []
+    for base in bases:
+        for relative in relative_candidates:
+            candidate = base.joinpath(*relative)
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
 def nested_runnable_project_dir(project_dir: Path) -> Path | None:
     if not project_dir.is_dir():
         return None
@@ -155,11 +186,10 @@ class AccountRuntimeService:
 
     def account_python(self, account: Account) -> str:
         project_path = resolve_project_dir(Path(account.path).expanduser())
-        if os.name == "nt":
-            candidate = project_path / ".venv" / "Scripts" / "python.exe"
-        else:
-            candidate = project_path / ".venv" / "bin" / "python"
-        return str(candidate if candidate.exists() else Path(sys.executable))
+        for candidate in python_candidates(project_path):
+            if candidate.exists():
+                return str(candidate)
+        return str(Path(sys.executable))
 
     def run_account_command(
         self,

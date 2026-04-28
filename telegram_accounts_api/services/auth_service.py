@@ -20,6 +20,7 @@ from shafa_control import (
     AccountSessionStore,
     ShafaAuthService,
     TelegramAuthService,
+    python_candidates,
     project_main_path,
     resolve_project_dir,
 )
@@ -485,11 +486,10 @@ class AccountAuthService:
 
     def _account_python(self, account: Account) -> str:
         project_path = _preferred_project_dir(Path(account.path).expanduser())
-        if os.name == "nt":
-            candidate = project_path / ".venv" / "Scripts" / "python.exe"
-        else:
-            candidate = project_path / ".venv" / "bin" / "python"
-        return str(candidate if candidate.exists() else Path(sys.executable))
+        for candidate in python_candidates(project_path):
+            if candidate.exists():
+                return str(candidate)
+        return str(Path(sys.executable))
 
     def _run_account_command(self, account: Account, args: list[str]) -> subprocess.CompletedProcess:
         project_path = _preferred_project_dir(Path(account.path).expanduser())

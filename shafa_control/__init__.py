@@ -5,7 +5,9 @@ from .account_runtime import (
     is_runnable_project_dir,
     nested_runnable_project_dir,
     preferred_project_dir,
+    project_root_dir,
     project_main_path,
+    python_candidates,
     resolve_project_dir,
 )
 from .app_config import APP_MODES, AppConfig, AppConfigStore, validate_mode
@@ -33,7 +35,9 @@ __all__ = [
     "LogStore",
     "nested_runnable_project_dir",
     "preferred_project_dir",
+    "project_root_dir",
     "project_main_path",
+    "python_candidates",
     "resolve_project_dir",
     "ShafaAuthService",
     "ShafaLoginContext",
