@@ -57,6 +57,28 @@ def test_collect_package_args_includes_recursive_metadata(monkeypatch) -> None:
     ]
 
 
+def test_collect_package_args_skips_metadata_by_default(monkeypatch) -> None:
+    pyinstaller_main = types.SimpleNamespace(run=lambda argv: None)
+
+    def fake_collect_all(package: str):
+        assert package == "httpx"
+        return [("pkg-data", "httpx")], [], []
+
+    def fake_copy_metadata(package: str, *, recursive: bool = False):
+        raise AssertionError("copy_metadata should not be called when metadata is not requested")
+
+    monkeypatch.setattr(
+        build_backend,
+        "_load_pyinstaller_helpers",
+        lambda: (pyinstaller_main, fake_collect_all, fake_copy_metadata),
+    )
+
+    assert build_backend._collect_package_args("httpx") == [
+        "--add-data",
+        f"pkg-data{build_backend.os.pathsep}httpx",
+    ]
+
+
 def test_load_pyinstaller_helpers_requires_build_dependency(monkeypatch) -> None:
     real_import = __import__
 

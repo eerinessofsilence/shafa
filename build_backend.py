@@ -110,8 +110,9 @@ def _collect_package_args(package: str, *, recursive_metadata: bool = False) -> 
         args.extend(["--add-binary", f"{src}{os.pathsep}{dest}"])
     for hiddenimport in hiddenimports:
         args.extend(["--hidden-import", hiddenimport])
-    for src, dest in copy_metadata(package, recursive=recursive_metadata):
-        args.extend(["--add-data", f"{src}{os.pathsep}{dest}"])
+    if recursive_metadata:
+        for src, dest in copy_metadata(package, recursive=True):
+            args.extend(["--add-data", f"{src}{os.pathsep}{dest}"])
 
     return args
 
