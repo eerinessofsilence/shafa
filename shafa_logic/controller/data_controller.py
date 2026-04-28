@@ -2924,9 +2924,13 @@ async def get_next_product_for_upload_async(
     first_fetch_check: bool | None = None,
 ) -> Optional[dict]:
     if first_fetch_check:
-        await first_fetch()
+        log("INFO", "Запускаю первичную загрузку товаров из Telegram...")
+        inserted = await first_fetch()
+        log("INFO", f"Первичная загрузка Telegram завершена. Новых товаров: {inserted}.")
     else:
-        await _fetch_messages(message_amount=message_amount)
+        log("INFO", f"Проверяю новые сообщения в Telegram (limit={message_amount})...")
+        inserted = await _fetch_messages(message_amount=message_amount)
+        log("INFO", f"Проверка Telegram завершена. Новых товаров: {inserted}.")
     return _pick_next_product_for_upload()
 
 
