@@ -26,6 +26,22 @@ interface RetryableBackendStartupError extends Error {
   retryable?: boolean;
 }
 
+function configureElectronUserDataDir(): void {
+  const configuredDir = process.env.SHAFA_ELECTRON_USER_DATA_DIR?.trim();
+  if (!configuredDir) {
+    return;
+  }
+
+  const userDataDir = path.resolve(configuredDir);
+  const cacheDir = path.join(userDataDir, "Cache");
+
+  fs.mkdirSync(cacheDir, { recursive: true });
+  app.setPath("userData", userDataDir);
+  app.commandLine.appendSwitch("disk-cache-dir", cacheDir);
+}
+
+configureElectronUserDataDir();
+
 function repoRoot(): string {
   return path.resolve(__dirname, "..", "..");
 }

@@ -8,6 +8,15 @@ BACKEND_PORT="${SHAFA_BACKEND_PORT:-8000}"
 BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
 NPM_CMD="${NPM_CMD:-npm}"
 
+to_windows_path() {
+  local value="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$value"
+    return
+  fi
+  printf '%s\n' "$value"
+}
+
 PYTHON_CMD=()
 if [[ -n "${SHAFA_PYTHON:-}" ]]; then
   PYTHON_CMD=("$SHAFA_PYTHON")
@@ -93,8 +102,13 @@ wait_for_backend() {
 trap cleanup INT TERM EXIT
 
 cd "$PROJECT_ROOT"
+launcher_id="$(date +%Y%m%d-%H%M%S)-$$"
+electron_user_data_dir="$PROJECT_ROOT/runtime/electron-dev-user-data/$launcher_id"
+mkdir -p "$electron_user_data_dir"
+
 export SHAFA_BACKEND_PORT="$BACKEND_PORT"
 export SHAFA_API_BASE_URL="${SHAFA_API_BASE_URL:-$BACKEND_URL}"
+export SHAFA_ELECTRON_USER_DATA_DIR="${SHAFA_ELECTRON_USER_DATA_DIR:-$(to_windows_path "$electron_user_data_dir")}"
 
 if backend_health_check; then
   echo "Reusing backend: ${BACKEND_URL}"
