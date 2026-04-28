@@ -154,11 +154,7 @@ class AccountService:
 
     async def delete_account(self, account_id: str) -> None:
         await self.stop_account(account_id)
-        payload = await self._read_payload()
-        filtered = [item for item in payload if str(item.get("id")) != account_id]
-        if len(filtered) == len(payload):
-            raise NotFoundError(f"Account '{account_id}' not found.")
-        await self._write_payload(filtered)
+        await asyncio.to_thread(self._delete_record_sync, account_id)
         account_dir = self.accounts_dir / account_id
         if account_dir.exists():
             shutil.rmtree(account_dir)
@@ -321,6 +317,14 @@ class AccountService:
                 )
             except OSError as exc:
                 raise StorageError(f"Failed to write JSON file: {self.storage.path}") from exc
+
+    def _delete_record_sync(self, account_id: str) -> None:
+        with self._records_lock:
+            payload = self._read_payload_sync()
+            filtered = [item for item in payload if str(item.get("id")) != account_id]
+            if len(filtered) == len(payload):
+                raise NotFoundError(f"Account '{account_id}' not found.")
+            self._write_payload_sync(filtered)
 
     async def _get_record(self, account_id: str) -> dict:
         payload = await self._read_payload()

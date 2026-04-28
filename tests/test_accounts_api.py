@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -232,6 +233,39 @@ class AccountsApiTest(unittest.TestCase):
         )
         self.assertEqual(created_account["path"], str(self.base_dir))
         self.assertNotIn("open_browser", created_account)
+
+    def test_delete_accounts_concurrently_removes_all_records(self) -> None:
+        self._write_accounts(
+            [
+                {
+                    "id": f"acc-{index}",
+                    "name": f"Account {index}",
+                    "phone_number": "",
+                    "path": "/tmp/project",
+                    "branch": "main",
+                    "timer_minutes": 5,
+                    "channel_links": [],
+                    "status": "stopped",
+                    "last_run": None,
+                    "errors": 0,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+                for index in range(1, 5)
+            ],
+        )
+
+        async def delete_accounts() -> None:
+            await asyncio.gather(
+                *(
+                    self.service.delete_account(f"acc-{index}")
+                    for index in range(1, 5)
+                ),
+            )
+
+        asyncio.run(delete_accounts())
+
+        self.assertEqual(self._read_accounts(), [])
 
     def test_blank_accounts_file_is_treated_as_empty_list(self) -> None:
         self.accounts_file.write_text("", encoding="utf-8")

@@ -278,17 +278,31 @@ function App() {
       return '';
     }
 
-    const accountRequests =
-      action === 'open'
-        ? accountIds.map((accountId) => startAccountRequest(accountId))
-        : action === 'close'
-          ? accountIds.map((accountId) => stopAccountRequest(accountId))
-          : accountIds.map((accountId) => deleteAccountRequest(accountId));
-
     setIsAccountMutationPending(true);
 
     try {
-      const results = await Promise.allSettled(accountRequests);
+      const results: PromiseSettledResult<unknown>[] = [];
+
+      if (action === 'delete') {
+        for (const accountId of accountIds) {
+          try {
+            results.push({
+              status: 'fulfilled',
+              value: await deleteAccountRequest(accountId),
+            });
+          } catch (reason) {
+            results.push({ status: 'rejected', reason });
+          }
+        }
+      } else {
+        const accountRequests =
+          action === 'open'
+            ? accountIds.map((accountId) => startAccountRequest(accountId))
+            : accountIds.map((accountId) => stopAccountRequest(accountId));
+
+        results.push(...(await Promise.allSettled(accountRequests)));
+      }
+
       const successCount = results.filter(
         (result) => result.status === 'fulfilled',
       ).length;

@@ -688,12 +688,25 @@ function AccountsPage({
           setDeleteTargetAccountId(null);
         }}
         onConfirm={async () => {
-          if (deleteTargetAccountId) {
-            await onBulkAction('delete', [deleteTargetAccountId]);
-            setDeleteTargetAccountId(null);
-          } else {
-            await runBulkAction('delete');
+          const accountIdsToDelete = deleteDialogAccounts.map(
+            (account) => account.id,
+          );
+          if (accountIdsToDelete.length === 0) {
+            return;
           }
+
+          const message = await onBulkAction('delete', accountIdsToDelete);
+          if (message) {
+            setBulkFeedback(message);
+          }
+
+          const deletedIdSet = new Set(accountIdsToDelete);
+          setSelectedAccountIds((currentSelection) =>
+            currentSelection.filter(
+              (accountId) => !deletedIdSet.has(accountId),
+            ),
+          );
+          setDeleteTargetAccountId(null);
           setIsDeleteDialogOpen(false);
         }}
         onRemoveAccount={(accountId) =>
