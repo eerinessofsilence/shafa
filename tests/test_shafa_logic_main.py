@@ -105,3 +105,31 @@ def test_auto_create_product_cli_no_gui_uses_no_playwright(monkeypatch) -> None:
     module._auto_create_product(shafa=False)
 
     assert calls == [(fake_no_playwright_main, "Без Playwright", None)]
+
+
+def test_no_playwright_request_helpers_import_without_playwright(monkeypatch) -> None:
+    shafa_logic_dir = Path(__file__).resolve().parents[1] / "shafa_logic"
+    path_entry = str(shafa_logic_dir)
+    if path_entry not in sys.path:
+        sys.path.insert(0, path_entry)
+
+    for module_name in (
+        "core.requests.create_product",
+        "core.requests.upload_photo",
+    ):
+        sys.modules.pop(module_name, None)
+
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "playwright.sync_api":
+            raise ModuleNotFoundError("No module named 'playwright'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    create_product_module = importlib.import_module("core.requests.create_product")
+    upload_photo_module = importlib.import_module("core.requests.upload_photo")
+
+    assert create_product_module.BrowserContext is object
+    assert upload_photo_module.BrowserContext is object
