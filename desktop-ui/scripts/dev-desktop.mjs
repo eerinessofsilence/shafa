@@ -1,17 +1,14 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import waitOn from "wait-on";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(scriptDir, "..");
-const electronBinary = path.join(
-  appRoot,
-  "node_modules",
-  ".bin",
-  process.platform === "win32" ? "electron.cmd" : "electron",
-);
+const require = createRequire(import.meta.url);
+const electronBinary = require("electron");
 const rendererUrl = "http://127.0.0.1:5173";
 
 await waitOn({
