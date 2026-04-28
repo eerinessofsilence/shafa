@@ -182,7 +182,7 @@ const defaultLogsDirectory = joinDisplayPath(
 const defaultChannelTemplateName = 'default';
 const accountDraftInitialState: AccountDraft = {
   name: '',
-  path: defaultAccountProjectPath,
+  path: '',
   timer: `${defaultTimerMinutes} мин`,
 };
 const accountPageSizeOptions = [5, 10, 20, 50] as const;
@@ -1562,11 +1562,7 @@ function getAccountDraftFromRow(account: AccountRow): AccountDraft {
 }
 
 function isAccountDraftValid(draft: AccountDraft) {
-  return (
-    Boolean(draft.name.trim()) &&
-    Boolean(draft.path.trim()) &&
-    isTimerValueValid(draft.timer)
-  );
+  return Boolean(draft.name.trim()) && isTimerValueValid(draft.timer);
 }
 
 function formatAccountCount(count: number) {

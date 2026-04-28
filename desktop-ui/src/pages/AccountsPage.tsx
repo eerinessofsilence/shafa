@@ -3318,18 +3318,6 @@ function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
         }
         onChange={(value) => onFieldChange('timer', value)}
       />
-      <div className="md:col-span-2">
-        <TextInputField
-          label="Путь проекта"
-          value={values.path}
-          icon={
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
-              <FolderOpen className="h-3.5 w-3.5 text-info/75" />
-            </div>
-          }
-          onChange={(value) => onFieldChange('path', value)}
-        />
-      </div>
     </div>
   );
 }
