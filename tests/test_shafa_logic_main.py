@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import types
 from pathlib import Path
 from types import ModuleType
 
@@ -49,3 +50,58 @@ def test_prompt_list_reports_missing_inquirer(monkeypatch) -> None:
         assert "интерактивного CLI-меню" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when inquirer is unavailable")
+
+
+def test_auto_create_product_shafa_mode_does_not_import_with_playwright(monkeypatch) -> None:
+    module = _reload_shafa_main()
+    calls: list[object] = []
+    real_import = __import__
+
+    def fake_no_playwright_main() -> None:
+        calls.append("no_playwright_main")
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "core.with_playwright":
+            raise AssertionError("with_playwright should not be imported in shafa mode")
+        if name == "core.no_playwright":
+            return types.SimpleNamespace(main=fake_no_playwright_main)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr(
+        module,
+        "run_periodic",
+        lambda action, label, shafa=None: calls.append((action, label, shafa)),
+    )
+
+    module._auto_create_product(shafa=True)
+
+    assert calls == [(fake_no_playwright_main, "Без Playwright", True)]
+
+
+def test_auto_create_product_cli_no_gui_uses_no_playwright(monkeypatch) -> None:
+    module = _reload_shafa_main()
+    calls: list[object] = []
+    real_import = __import__
+
+    def fake_no_playwright_main() -> None:
+        calls.append("no_playwright_main")
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "core.with_playwright":
+            raise AssertionError("with_playwright should not be imported when GUI is disabled")
+        if name == "core.no_playwright":
+            return types.SimpleNamespace(main=fake_no_playwright_main)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr(module, "_choose_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        module,
+        "run_periodic",
+        lambda action, label, shafa=None: calls.append((action, label, shafa)),
+    )
+
+    module._auto_create_product(shafa=False)
+
+    assert calls == [(fake_no_playwright_main, "Без Playwright", None)]

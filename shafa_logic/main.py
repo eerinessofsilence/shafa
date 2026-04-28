@@ -216,29 +216,36 @@ def run_periodic(action: Callable[[], None], label: str, shafa: bool | None = No
 
 
 def _create_product() -> None:
-    from core.no_playwright import main as no_playwright_main
-    from core.with_playwright import main as with_playwright_main
-
     use_gui = _choose_yes_no("С окном браузера?", default=False)
     if use_gui is None:
         return
     if use_gui:
+        from core.with_playwright import main as with_playwright_main
+
         with_playwright_main()
     else:
+        from core.no_playwright import main as no_playwright_main
+
         no_playwright_main()
 
 
 def _auto_create_product(shafa: bool | None = None) -> None:
-    from core.no_playwright import main as no_playwright_main
-    from core.with_playwright import main as with_playwright_main
     if shafa:
+        from core.no_playwright import main as no_playwright_main
+
         run_periodic(no_playwright_main, "Без Playwright", shafa=shafa)
     else:
         use_gui = _choose_yes_no("С окном браузера?", default=False)
         if use_gui is None:
             return
         if use_gui:
+            from core.with_playwright import main as with_playwright_main
+
             run_periodic(with_playwright_main, "Playwright")
+        else:
+            from core.no_playwright import main as no_playwright_main
+
+            run_periodic(no_playwright_main, "Без Playwright")
 
 
 def _bootstrap_project() -> None:
