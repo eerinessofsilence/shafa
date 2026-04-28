@@ -18,13 +18,6 @@ const TELEGRAM_ENV_KEYS = [
 type BackendProcess = ChildProcessByStdio<null, Readable, Readable>;
 type TelegramEnvKey = (typeof TELEGRAM_ENV_KEYS)[number];
 
-interface BackendBuildInfo {
-  executableName: string;
-  hostPlatform: string;
-  pythonVersion: string;
-  targetPlatform: string;
-}
-
 let backendProcess: BackendProcess | null = null;
 let backendLogPath: string | null = null;
 let quitting = false;
@@ -302,62 +295,6 @@ function resolveDevBackendCommand(): { command: string; args: string[]; cwd: str
   return { command: "python3", args: [scriptPath], cwd: root };
 }
 
-function readPackagedBackendBuildInfo(): BackendBuildInfo | null {
-  const infoPath = path.join(process.resourcesPath, "backend", "backend-build-info.json");
-  if (!fs.existsSync(infoPath)) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(fs.readFileSync(infoPath, "utf8")) as BackendBuildInfo;
-  } catch (error) {
-    appendBackendLog(`Failed to read backend build info: ${String(error)}`);
-    return null;
-  }
-}
-
-function resolvePackagedBackendCommand(): { command: string; args: string[]; cwd: string } {
-  const backendDir = path.join(process.resourcesPath, "backend");
-  const buildInfo = readPackagedBackendBuildInfo();
-
-  if (buildInfo) {
-    if (buildInfo.targetPlatform !== process.platform) {
-      throw new Error(
-        `Bundled backend targets ${buildInfo.targetPlatform}, but this desktop app is running on ${process.platform}. ` +
-          "Rebuild the Windows desktop app on Windows so it can include a Windows backend binary.",
-      );
-    }
-
-    const command = path.join(backendDir, buildInfo.executableName);
-    if (!fs.existsSync(command)) {
-      throw new Error(
-        `Bundled backend executable was not found: ${command}. Rebuild the desktop package.`,
-      );
-    }
-
-    return {
-      command,
-      args: [],
-      cwd: path.dirname(command),
-    };
-  }
-
-  const expectedFilename =
-    process.platform === "win32" ? "ShafaControlBackend.exe" : "ShafaControlBackend";
-  const command = path.join(backendDir, expectedFilename);
-  if (!fs.existsSync(command)) {
-    throw new Error(
-      `Bundled backend executable was not found: ${command}. Rebuild the desktop package.`,
-    );
-  }
-
-  return {
-    command,
-    args: [],
-    cwd: path.dirname(command),
-  };
-}
-
 async function waitForBackendReady(
   apiBaseUrl: string,
   child: BackendProcess,
@@ -464,7 +401,7 @@ async function startBackend(): Promise<string> {
   const port = resolveBackendPort();
   const apiBaseUrl = `http://${host}:${port}`;
   const userDataDir = path.join(app.getPath("userData"), "backend-data");
-  const launch = app.isPackaged ? resolvePackagedBackendCommand() : resolveDevBackendCommand();
+  const launch = resolveDevBackendCommand();
 
   for (let attempt = 1; attempt <= BACKEND_START_MAX_ATTEMPTS; attempt += 1) {
     const existingHealth = await fetchBackendHealth(apiBaseUrl);

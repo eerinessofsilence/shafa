@@ -16,7 +16,6 @@ The repository combines three parts:
 - resolves and stores Telegram channel templates per account
 - shows dashboard metrics and account logs
 - runs local Shafa automation logic for product publishing
-- packages the backend and desktop app for Windows distribution
 
 ## Repository layout
 
@@ -27,9 +26,8 @@ The repository combines three parts:
 ├── shafa_control/           Account runtime, auth/session helpers, app config
 ├── shafa_logic/             Shafa automation logic and CLI-oriented flows
 ├── tests/                   Backend/API test suite
-├── requirements/            runtime/test/build Python dependency sets
+├── requirements/            runtime/test Python dependency sets
 ├── desktop_backend.py       Desktop backend bootstrap entrypoint
-├── build_backend.py         PyInstaller build script for backend binary
 └── main.py                  Alias entrypoint for `telegram_accounts_api.main:app`
 ```
 
@@ -87,7 +85,6 @@ There is also a dedicated README in [shafa_logic/README.md](/home/slava/shafa_ap
 ### Optional but commonly needed
 
 - Playwright Chromium for browser-based Shafa flows
-- Windows environment if you want packaged `.exe` builds exactly as configured
 
 ## Installation
 
@@ -103,7 +100,6 @@ Dependency sets:
 
 - `requirements.txt` - runtime dependencies
 - `requirements/test.txt` - runtime + test/manual UI dependencies
-- `requirements/build.txt` - runtime + packaging/build tooling
 
 If you use browser-based Shafa auth or product flows:
 
@@ -287,51 +283,14 @@ cd desktop-ui
 npm run typecheck
 ```
 
-## Packaging and builds
+## Builds
 
-### Build backend executable
-
-```bash
-pip install -r requirements/build.txt
-python build_backend.py
-```
-
-This produces a PyInstaller build under:
-
-- `dist/backend/`
-
-### Desktop packaging
-
-From the project root:
-
-```bash
-python build_desktop.py
-```
-
-This produces a single portable Windows executable that starts the desktop app and launches the bundled backend automatically.
-
-You can also build directly from `desktop-ui/`:
-
-```bash
-npm run dist:portable
-```
-
-If you also want an installer build:
+Frontend and Electron TypeScript production build:
 
 ```bash
 cd desktop-ui
-npm run dist:installer
+npm run build
 ```
-
-Useful scripts:
-
-- `npm run build:backend` - triggers backend build helper for desktop packaging
-- `npm run build` - renderer + Electron production build
-- `python build_desktop.py` - root-level helper to build one portable Windows `.exe`
-- `npm run dist:portable` - single portable Windows `.exe` for end users
-- `npm run dist:installer` - Windows installer build only
-- `npm run pack:win` - unpacked Windows app
-- `npm run dist:win` - alias for the portable one-file Windows build
 
 ### Desktop development
 
@@ -342,7 +301,7 @@ python run_desktop.py
 ```
 
 This starts the full desktop app in development mode by running `npm run dev` inside `desktop-ui/`.
-You do not need to start `dist/backend/ShafaControlBackend.exe` separately for local desktop development.
+The Electron main process launches `desktop_backend.py` automatically.
 
 ## Notes for contributors
 

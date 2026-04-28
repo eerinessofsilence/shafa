@@ -26,8 +26,6 @@ SHAFA_CLI_FLAGS = {
 
 
 def _bundle_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
     return Path(__file__).resolve().parent
 
 

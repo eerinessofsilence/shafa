@@ -10,51 +10,9 @@
     "dev:electron": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
     "dev:desktop": "node ./scripts/dev-desktop.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
-    "build:backend": "node ./scripts/build-backend.mjs",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run typecheck && npm run build:electron && vite build",
-    "start": "npm run build && electron .",
-    "dist:portable": "npm run build:backend && npm run build && electron-builder --win portable",
-    "dist:installer": "npm run build:backend && npm run build && electron-builder --win nsis",
-    "dist:win": "npm run dist:portable",
-    "pack:win": "npm run build:backend && npm run build && electron-builder --dir --win"
-  },
-  "build": {
-    "appId": "com.shafa.control",
-    "productName": "Shafa Control",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "../dist/backend",
-        "to": "backend",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "portable": {
-      "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
-    },
-    "nsis": {
-      "artifactName": "${productName}-${version}-${arch}-setup.${ext}",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    }
+    "start": "npm run build && electron ."
   },
   "dependencies": {
     "lucide-react": "^1.8.0",
@@ -71,7 +29,6 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "electron": "^35.1.5",
-    "electron-builder": "^26.8.1",
     "prettier": "^3.8.2",
     "prettier-plugin-tailwindcss": "^0.7.2",
     "tailwindcss": "^4.2.2",

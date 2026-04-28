@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,9 +25,6 @@ def _default_base_dir() -> Path:
     desktop_data_dir = os.getenv("SHAFA_DESKTOP_DATA_DIR", "").strip()
     if desktop_data_dir:
         return Path(desktop_data_dir).expanduser().resolve()
-
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
 
     return Path(__file__).resolve().parents[2]
 

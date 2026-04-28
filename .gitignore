@@ -32,7 +32,6 @@ parts/
 sdist/
 build/
 dist/
-.pyinstaller/
 
 # Logs and runtime output
 runtime/
@@ -67,7 +66,6 @@ node_modules/
 desktop-ui/node_modules/
 desktop-ui/dist/
 desktop-ui/dist-electron/
-desktop-ui/release/
 
 # Test and browser artifacts
 playwright-report/
