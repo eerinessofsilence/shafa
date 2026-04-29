@@ -15,6 +15,7 @@ set "SHAFA_API_BASE_URL=%API_BASE_URL%"
 set "VENV_ACTIVATE="
 set "PYTHON_EXE="
 set "PYTHON_ARGS="
+set "HIDDEN_RUNNER=%SCRIPT_DIR%run-hidden.vbs"
 
 if exist "%PROJECT_ROOT%\venv\Scripts\activate.bat" (
   set "VENV_ACTIVATE=%PROJECT_ROOT%\venv\Scripts\activate.bat"
@@ -58,6 +59,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if not exist "%HIDDEN_RUNNER%" (
+  echo Hidden runner not found: %HIDDEN_RUNNER%
+  exit /b 1
+)
+
 echo Checking backend at %API_BASE_URL%/health
 call :check_backend
 if errorlevel 1 goto start_backend
@@ -66,11 +72,11 @@ echo Reusing running backend at %API_BASE_URL%
 goto start_frontend
 
 :start_backend
-echo Starting backend in a new window...
+echo Starting backend in background...
 if defined VENV_ACTIVATE (
-  start "Shafa Backend" cmd /k "cd /d ""%PROJECT_ROOT%"" && call ""%VENV_ACTIVATE%"" && python -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && call ""%VENV_ACTIVATE%"" && python -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
 ) else (
-  start "Shafa Backend" cmd /k "cd /d ""%PROJECT_ROOT%"" && ""%PYTHON_EXE%"" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && ""%PYTHON_EXE%"" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
 )
 
 echo Waiting for backend to become ready...
@@ -78,10 +84,10 @@ call :wait_for_backend
 if errorlevel 1 exit /b 1
 
 :start_frontend
-echo Starting frontend in a new window...
-start "Shafa Frontend" cmd /k "cd /d ""%PROJECT_ROOT%\desktop-ui"" && npm run dev"
+echo Starting frontend in background...
+wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%\desktop-ui"" && npm run dev"
 
-echo Backend and frontend launch commands were started.
+echo Backend and frontend were started in background.
 exit /b 0
 
 :check_backend
