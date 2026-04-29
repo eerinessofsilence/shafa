@@ -30,7 +30,7 @@ def _bundle_dir() -> Path:
 
 
 def _data_dir() -> Path:
-    configured = os.getenv("SHAFA_DESKTOP_DATA_DIR")
+    configured = os.getenv("SHAFA_DESKTOP_DATA_DIR", "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
     return _bundle_dir()
@@ -184,7 +184,7 @@ def main() -> None:
     import uvicorn
     from telegram_accounts_api.main import app
 
-    host = os.getenv("SHAFA_BACKEND_HOST", "127.0.0.1")
+    host = os.getenv("SHAFA_BACKEND_HOST", "127.0.0.1").strip() or "127.0.0.1"
     configured_port = os.getenv("SHAFA_BACKEND_PORT", "").strip()
     port, used_fallback_port = _resolve_backend_port(host)
     log_level = os.getenv("LOG_LEVEL", "info").lower()

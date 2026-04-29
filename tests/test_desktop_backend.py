@@ -69,6 +69,24 @@ def test_main_retries_with_free_port_when_default_port_is_busy(tmp_path, monkeyp
     assert module.os.environ["SHAFA_BACKEND_PORT"] == "8100"
 
 
+def test_main_strips_backend_host_from_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SHAFA_BACKEND_HOST", "127.0.0.1 ")
+    monkeypatch.setenv("SHAFA_BACKEND_PORT", "8123")
+    module = _load_desktop_backend(tmp_path, monkeypatch)
+    expected_app = _stub_api_app(monkeypatch)
+    calls: list[tuple[str, int]] = []
+
+    def fake_run(app, *, host: str, port: int, log_level: str, access_log: bool) -> None:
+        assert app is expected_app
+        calls.append((host, port))
+
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=fake_run))
+
+    module.main()
+
+    assert calls == [("127.0.0.1", 8123)]
+
+
 def test_main_does_not_retry_when_port_is_explicitly_configured(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SHAFA_BACKEND_PORT", "8123")
     module = _load_desktop_backend(tmp_path, monkeypatch)
