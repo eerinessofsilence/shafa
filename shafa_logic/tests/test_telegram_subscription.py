@@ -6,10 +6,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+import io
 
 from telegram_subscription.sync import (
     _channel_tuple_from_entity,
     _extract_search_query,
+    _log,
     _resolve_channel_tuples,
     get_telegram_channels,
     sync_channels_from_runtime_config,
@@ -38,6 +40,21 @@ class TelegramSubscriptionTests(unittest.TestCase):
     def test_parse_id_bot_response_raises_with_raw_response(self) -> None:
         with self.assertRaisesRegex(ValueError, "Raw response"):
             parse_id_bot_response("unexpected bot text without id")
+
+    def test_log_falls_back_when_stdout_cannot_encode_unicode(self) -> None:
+        class _BrokenEncodingStream(io.StringIO):
+            encoding = "cp1251"
+
+            def write(self, s: str) -> int:
+                s.encode(self.encoding)
+                return super().write(s)
+
+        stream = _BrokenEncodingStream()
+
+        with patch("sys.stdout", stream):
+            _log("failed to resolve https://t.me/test: fox 🦊")
+
+        self.assertIn("failed to resolve https://t.me/test: fox ?", stream.getvalue())
 
     def test_runtime_json_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

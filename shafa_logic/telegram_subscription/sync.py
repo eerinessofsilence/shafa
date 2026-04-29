@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 from urllib.parse import urlparse
@@ -319,4 +320,10 @@ def _telegram_session_path() -> Path:
 
 
 def _log(message: str) -> None:
-    print(f"[telegram_subscription] {message}")
+    line = f"[telegram_subscription] {message}"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        print(line.encode(encoding, errors="replace").decode(encoding, errors="replace"))
