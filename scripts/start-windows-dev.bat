@@ -17,6 +17,9 @@ set "VENV_ACTIVATE="
 set "PYTHON_EXE="
 set "PYTHON_ARGS="
 set "HIDDEN_RUNNER=%SCRIPT_DIR%run-hidden.vbs"
+set "LOG_DIR=%PROJECT_ROOT%\runtime\windows-dev-logs"
+set "BACKEND_LOG=%LOG_DIR%\backend.log"
+set "FRONTEND_LOG=%LOG_DIR%\frontend.log"
 
 if exist "%PROJECT_ROOT%\venv\Scripts\activate.bat" (
   set "VENV_ACTIVATE=%PROJECT_ROOT%\venv\Scripts\activate.bat"
@@ -65,24 +68,17 @@ if not exist "%HIDDEN_RUNNER%" (
   exit /b 1
 )
 
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+break > "%BACKEND_LOG%"
+break > "%FRONTEND_LOG%"
+
 echo Releasing dev ports if needed...
 call :kill_port %BACKEND_PORT%
 call :kill_port %FRONTEND_PORT%
 
-echo Checking backend at %API_BASE_URL%/health
-call :check_backend
-if errorlevel 1 goto start_backend
-
-echo Reusing running backend at %API_BASE_URL%
-goto start_frontend
-
 :start_backend
 echo Starting backend in background...
-if defined VENV_ACTIVATE (
-  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && set SHAFA_BACKEND_HOST=%BACKEND_HOST% && set SHAFA_BACKEND_PORT=%BACKEND_PORT% && call ""%VENV_ACTIVATE%"" && python desktop_backend.py"
-) else (
-  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && set SHAFA_BACKEND_HOST=%BACKEND_HOST% && set SHAFA_BACKEND_PORT=%BACKEND_PORT% && ""%PYTHON_EXE%"" %PYTHON_ARGS% desktop_backend.py"
-)
+wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && set SHAFA_BACKEND_HOST=%BACKEND_HOST% && set SHAFA_BACKEND_PORT=%BACKEND_PORT% && ""%PYTHON_EXE%"" %PYTHON_ARGS% desktop_backend.py >> ""%BACKEND_LOG%"" 2>&1"
 
 echo Waiting for backend to become ready...
 call :wait_for_backend
@@ -90,7 +86,7 @@ if errorlevel 1 exit /b 1
 
 :start_frontend
 echo Starting frontend in background...
-wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%\desktop-ui"" && npm run dev"
+wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%\desktop-ui"" && npm run dev >> ""%FRONTEND_LOG%"" 2>&1"
 
 echo Backend and frontend were started in background.
 exit /b 0
@@ -107,6 +103,7 @@ for /L %%N in (1,1,60) do (
 )
 
 echo Backend did not become ready at %API_BASE_URL%/health
+echo See backend log: %BACKEND_LOG%
 exit /b 1
 
 :kill_port
