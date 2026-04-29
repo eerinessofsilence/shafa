@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,6 +51,24 @@ def _preferred_project_dir(project_dir: Path) -> Path:
     if shafa_logic_dir.is_dir() and _project_main_path(shafa_logic_dir).is_file():
         return shafa_logic_dir
     return project_dir
+
+
+def _windows_gui_python(python_command: str) -> str:
+    candidate = Path(python_command)
+    if candidate.name.lower() == "python.exe":
+        pythonw_candidate = candidate.with_name("pythonw.exe")
+        if pythonw_candidate.exists():
+            return str(pythonw_candidate)
+
+    resolved = shutil.which(python_command)
+    if resolved:
+        resolved_path = Path(resolved)
+        if resolved_path.name.lower() == "python.exe":
+            pythonw_candidate = resolved_path.with_name("pythonw.exe")
+            if pythonw_candidate.exists():
+                return str(pythonw_candidate)
+
+    return python_command
 
 
 SHAFA_SETTINGS_REFERER_URL = "https://shafa.ua/uk/my/settings"
@@ -964,10 +983,14 @@ class AccountAuthService:
         log_file = account_dir / "shafa_login.log"
         log_file.write_text("", encoding="utf-8")
 
+        python_command = self.runtime.account_python(account)
+        if os.name == "nt":
+            python_command = _windows_gui_python(python_command)
+
         try:
             with log_file.open("a", encoding="utf-8") as stream:
                 process = subprocess.Popen(
-                    [self.runtime.account_python(account), *args],
+                    [python_command, *args],
                     cwd=str(project_path),
                     stdin=subprocess.DEVNULL,
                     stdout=stream,

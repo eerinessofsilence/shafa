@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -11,7 +12,7 @@ from shafa_control import AccountSessionStore
 from telegram_accounts_api.dependencies import get_account_service, get_auth_service
 from telegram_accounts_api.main import app
 from telegram_accounts_api.services.account_service import AccountService
-from telegram_accounts_api.services.auth_service import AccountAuthService
+from telegram_accounts_api.services.auth_service import AccountAuthService, _windows_gui_python
 from telegram_accounts_api.utils.storage import JsonListStorage
 
 
@@ -74,6 +75,19 @@ class ShafaBrowserLoginApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(self.launched_commands, [("acc-1", ["main.py", "--login-shafa"])])
         self.assertIn("started", response.json()["message"].lower())
+
+    def test_windows_gui_python_prefers_pythonw_when_adjacent(self) -> None:
+        python_exe = self.base_dir / "venv" / "Scripts" / "python.exe"
+        pythonw_exe = self.base_dir / "venv" / "Scripts" / "pythonw.exe"
+        python_exe.parent.mkdir(parents=True, exist_ok=True)
+        python_exe.write_text("", encoding="utf-8")
+        pythonw_exe.write_text("", encoding="utf-8")
+
+        self.assertEqual(_windows_gui_python(str(python_exe)), str(pythonw_exe))
+
+    def test_windows_gui_python_falls_back_to_original_command(self) -> None:
+        with patch("telegram_accounts_api.services.auth_service.shutil.which", return_value=None):
+            self.assertEqual(_windows_gui_python("python"), "python")
 
 
 if __name__ == "__main__":
