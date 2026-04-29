@@ -68,9 +68,9 @@ goto start_frontend
 :start_backend
 echo Starting backend in a new window...
 if defined VENV_ACTIVATE (
-  start "Shafa Backend" cmd /k "cd /d \"%PROJECT_ROOT%\" && call \"%VENV_ACTIVATE%\" && python -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  start "Shafa Backend" cmd /k "cd /d ""%PROJECT_ROOT%"" && call ""%VENV_ACTIVATE%"" && python -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
 ) else (
-  start "Shafa Backend" cmd /k "cd /d \"%PROJECT_ROOT%\" && \"%PYTHON_EXE%\" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  start "Shafa Backend" cmd /k "cd /d ""%PROJECT_ROOT%"" && ""%PYTHON_EXE%"" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
 )
 
 echo Waiting for backend to become ready...
@@ -79,7 +79,7 @@ if errorlevel 1 exit /b 1
 
 :start_frontend
 echo Starting frontend in a new window...
-start "Shafa Frontend" cmd /k "cd /d \"%PROJECT_ROOT%\desktop-ui\" && npm run dev"
+start "Shafa Frontend" cmd /k "cd /d ""%PROJECT_ROOT%\desktop-ui"" && npm run dev"
 
 echo Backend and frontend launch commands were started.
 exit /b 0
