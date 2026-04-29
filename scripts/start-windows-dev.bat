@@ -9,6 +9,7 @@ if defined SHAFA_BACKEND_HOST set "BACKEND_HOST=%SHAFA_BACKEND_HOST%"
 
 set "BACKEND_PORT=8000"
 if defined SHAFA_BACKEND_PORT set "BACKEND_PORT=%SHAFA_BACKEND_PORT%"
+set "FRONTEND_PORT=5173"
 
 set "API_BASE_URL=http://%BACKEND_HOST%:%BACKEND_PORT%"
 set "SHAFA_API_BASE_URL=%API_BASE_URL%"
@@ -64,6 +65,10 @@ if not exist "%HIDDEN_RUNNER%" (
   exit /b 1
 )
 
+echo Releasing dev ports if needed...
+call :kill_port %BACKEND_PORT%
+call :kill_port %FRONTEND_PORT%
+
 echo Checking backend at %API_BASE_URL%/health
 call :check_backend
 if errorlevel 1 goto start_backend
@@ -103,3 +108,16 @@ for /L %%N in (1,1,60) do (
 
 echo Backend did not become ready at %API_BASE_URL%/health
 exit /b 1
+
+:kill_port
+set "TARGET_PORT=%~1"
+if "%TARGET_PORT%"=="" exit /b 0
+
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%TARGET_PORT% .*LISTENING"') do (
+  if not "%%P"=="0" (
+    echo Stopping process %%P on port %TARGET_PORT%...
+    taskkill /PID %%P /F >nul 2>nul
+  )
+)
+
+exit /b 0
