@@ -12,6 +12,13 @@ if not "%SHAFA_BACKEND_PORT%"=="" set "BACKEND_PORT=%SHAFA_BACKEND_PORT%"
 
 set "API_BASE_URL=http://%BACKEND_HOST%:%BACKEND_PORT%"
 set "SHAFA_API_BASE_URL=%API_BASE_URL%"
+set "VENV_ACTIVATE="
+
+if exist "%PROJECT_ROOT%\venv\Scripts\activate.bat" (
+  set "VENV_ACTIVATE=%PROJECT_ROOT%\venv\Scripts\activate.bat"
+) else if exist "%PROJECT_ROOT%\.venv\Scripts\activate.bat" (
+  set "VENV_ACTIVATE=%PROJECT_ROOT%\.venv\Scripts\activate.bat"
+)
 
 set "PYTHON_EXE="
 set "PYTHON_ARGS="
@@ -51,7 +58,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 if errorlevel 1 (
   echo Starting backend in a new window...
-  start "Shafa Backend" cmd /k "cd /d \"%PROJECT_ROOT%\" && \"%PYTHON_EXE%\" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  if defined VENV_ACTIVATE (
+    start "Shafa Backend" cmd /k "cd /d \"%PROJECT_ROOT%\" && call \"%VENV_ACTIVATE%\" && \"%PYTHON_EXE%\" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  ) else (
+    start "Shafa Backend" cmd /k "cd /d \"%PROJECT_ROOT%\" && \"%PYTHON_EXE%\" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  )
 
   echo Waiting for backend to become ready...
   powershell -NoProfile -ExecutionPolicy Bypass -Command ^
