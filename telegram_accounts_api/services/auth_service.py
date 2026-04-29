@@ -71,6 +71,10 @@ def _windows_gui_python(python_command: str) -> str:
     return python_command
 
 
+def _windows_start_command(executable: str, args: list[str]) -> list[str]:
+    return ["cmd", "/c", "start", "", executable, *args]
+
+
 SHAFA_SETTINGS_REFERER_URL = "https://shafa.ua/uk/my/settings"
 SHAFA_PROFILE_OPERATION_NAME = "WEB_MainInfoSettingsFormData"
 SHAFA_PROFILE_QUERY = """query WEB_MainInfoSettingsFormData {
@@ -986,24 +990,34 @@ class AccountAuthService:
         python_command = self.runtime.account_python(account)
         if os.name == "nt":
             python_command = _windows_gui_python(python_command)
+        command = [python_command, *args]
+        creationflags = 0
+        if os.name == "nt":
+            command = _windows_start_command(python_command, args)
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         try:
             with log_file.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    f"Launching Shafa login from {project_path} with command: {command!r}\n"
+                )
+                stream.flush()
                 process = subprocess.Popen(
-                    [python_command, *args],
+                    command,
                     cwd=str(project_path),
                     stdin=subprocess.DEVNULL,
                     stdout=stream,
                     stderr=stream,
                     env=self.runtime.account_env(account),
                     start_new_session=True,
+                    creationflags=creationflags,
                 )
         except OSError as exc:
             raise BadRequestError(f"Не удалось запустить вход в Shafa: {exc}") from exc
 
         time.sleep(1)
         exit_code = process.poll()
-        if exit_code is None:
+        if exit_code is None or (os.name == "nt" and exit_code == 0):
             return
 
         log_tail = ""
