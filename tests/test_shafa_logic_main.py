@@ -5,6 +5,7 @@ import sys
 import types
 from pathlib import Path
 from types import ModuleType
+from types import SimpleNamespace
 
 
 def _reload_shafa_main() -> ModuleType:
@@ -133,3 +134,45 @@ def test_no_playwright_request_helpers_import_without_playwright(monkeypatch) ->
 
     assert create_product_module.BrowserContext is object
     assert upload_photo_module.BrowserContext is object
+
+
+def test_launch_visible_browser_prefers_msedge_on_windows(monkeypatch) -> None:
+    module = _reload_shafa_main()
+    calls: list[tuple[str | None, bool]] = []
+
+    class _Chromium:
+        def launch(self, *, headless: bool, channel: str | None = None):
+            calls.append((channel, headless))
+            return f"browser:{channel or 'chromium'}"
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    browser, browser_name = module._launch_visible_browser(
+        SimpleNamespace(chromium=_Chromium()),
+        headless=False,
+    )
+
+    assert browser == "browser:msedge"
+    assert browser_name == "msedge"
+    assert calls == [("msedge", False)]
+
+
+def test_launch_visible_browser_falls_back_to_plain_chromium(monkeypatch) -> None:
+    module = _reload_shafa_main()
+    calls: list[tuple[str | None, bool]] = []
+
+    class _Chromium:
+        def launch(self, *, headless: bool, channel: str | None = None):
+            calls.append((channel, headless))
+            if channel is not None:
+                raise RuntimeError(f"missing channel {channel}")
+            return "browser:chromium"
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    browser, browser_name = module._launch_visible_browser(
+        SimpleNamespace(chromium=_Chromium()),
+        headless=False,
+    )
+
+    assert browser == "browser:chromium"
+    assert browser_name == "chromium"
+    assert calls == [("msedge", False), ("chrome", False), (None, False)]

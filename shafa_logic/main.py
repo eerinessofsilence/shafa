@@ -10,6 +10,7 @@ import argparse
 from telegram_subscription import complete_login, send_code, session_status, submit_password, sync_channels_from_runtime_config
 
 _ADD_CHANNEL = object()
+SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
 
 
 def _load_inquirer():
@@ -254,24 +255,46 @@ def _bootstrap_project() -> None:
     bootstrap.main()
 
 
+def _launch_visible_browser(playwright, *, headless: bool):
+    launch_kwargs = {"headless": headless}
+    last_error: Exception | None = None
+
+    if os.name == "nt" and not headless:
+        for channel in ("msedge", "chrome"):
+            try:
+                browser = playwright.chromium.launch(channel=channel, **launch_kwargs)
+                return browser, channel
+            except Exception as exc:  # pragma: no cover - exercised via fallback tests
+                last_error = exc
+
+    try:
+        browser = playwright.chromium.launch(**launch_kwargs)
+        return browser, "chromium"
+    except Exception:
+        if last_error is not None:
+            raise last_error
+        raise
+
+
 def _login_account() -> None:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 
     from core.context import new_context_with_storage
     from core.core import get_csrftoken_from_context
-    from data.const import REFERER_URL, STORAGE_STATE_PATH
+    from data.const import STORAGE_STATE_PATH
     from data.db import init_db, save_cookies
 
     confirmation_file = Path(os.getenv("SHAFA_LOGIN_CONFIRMATION_FILE", "").strip())
     init_db()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser, browser_name = _launch_visible_browser(p, headless=False)
         try:
             ctx = new_context_with_storage(browser)
             page = ctx.new_page()
             page.set_default_timeout(60000)
-            page.goto(REFERER_URL, wait_until="domcontentloaded", timeout=60000)
+            print(f"Открываю браузер Shafa через {browser_name}.")
+            page.goto(SHAFA_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
             try:
                 page.wait_for_load_state("networkidle", timeout=10000)
             except PlaywrightTimeoutError:
