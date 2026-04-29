@@ -74,9 +74,9 @@ goto start_frontend
 :start_backend
 echo Starting backend in background...
 if defined VENV_ACTIVATE (
-  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && call ""%VENV_ACTIVATE%"" && python -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && set SHAFA_BACKEND_HOST=%BACKEND_HOST% && set SHAFA_BACKEND_PORT=%BACKEND_PORT% && call ""%VENV_ACTIVATE%"" && python desktop_backend.py"
 ) else (
-  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && ""%PYTHON_EXE%"" %PYTHON_ARGS% -m uvicorn telegram_accounts_api.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload"
+  wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && set SHAFA_BACKEND_HOST=%BACKEND_HOST% && set SHAFA_BACKEND_PORT=%BACKEND_PORT% && ""%PYTHON_EXE%"" %PYTHON_ARGS% desktop_backend.py"
 )
 
 echo Waiting for backend to become ready...
