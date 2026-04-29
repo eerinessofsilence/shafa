@@ -20,6 +20,7 @@ set "HIDDEN_RUNNER=%SCRIPT_DIR%run-hidden.vbs"
 set "LOG_DIR=%PROJECT_ROOT%\runtime\windows-dev-logs"
 set "BACKEND_LOG=%LOG_DIR%\backend.log"
 set "FRONTEND_LOG=%LOG_DIR%\frontend.log"
+set "DESKTOP_DATA_DIR=%PROJECT_ROOT%\runtime\desktop-backend-data"
 
 if exist "%PROJECT_ROOT%\venv\Scripts\activate.bat" (
   set "VENV_ACTIVATE=%PROJECT_ROOT%\venv\Scripts\activate.bat"
@@ -69,6 +70,7 @@ if not exist "%HIDDEN_RUNNER%" (
 )
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+if not exist "%DESKTOP_DATA_DIR%" mkdir "%DESKTOP_DATA_DIR%"
 break > "%BACKEND_LOG%"
 break > "%FRONTEND_LOG%"
 
@@ -78,7 +80,7 @@ call :kill_port %FRONTEND_PORT%
 
 :start_backend
 echo Starting backend in background...
-wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && set SHAFA_BACKEND_HOST=%BACKEND_HOST% && set SHAFA_BACKEND_PORT=%BACKEND_PORT% && ""%PYTHON_EXE%"" %PYTHON_ARGS% desktop_backend.py >> ""%BACKEND_LOG%"" 2>&1"
+wscript //nologo "%HIDDEN_RUNNER%" "cmd.exe /c cd /d ""%PROJECT_ROOT%"" && set SHAFA_BACKEND_HOST=%BACKEND_HOST% && set SHAFA_BACKEND_PORT=%BACKEND_PORT% && set SHAFA_DESKTOP_DATA_DIR=%DESKTOP_DATA_DIR% && set SHAFA_RUNTIME_PROJECT_DIR=%PROJECT_ROOT% && ""%PYTHON_EXE%"" %PYTHON_ARGS% desktop_backend.py >> ""%BACKEND_LOG%"" 2>&1"
 
 echo Waiting for backend to become ready...
 call :wait_for_backend

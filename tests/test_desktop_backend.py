@@ -110,6 +110,19 @@ def test_copy_runtime_project_sets_stable_project_under_data_dir(
     assert not (runtime_root / "shafa_logic" / "__pycache__").exists()
 
 
+def test_copy_runtime_project_reuses_configured_runtime_dir(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module = _load_desktop_backend(tmp_path, monkeypatch)
+    configured_runtime_dir = tmp_path / "existing-runtime-root"
+    monkeypatch.setenv("SHAFA_RUNTIME_PROJECT_DIR", str(configured_runtime_dir))
+
+    runtime_root = module._copy_runtime_project(tmp_path / "bundle", tmp_path / "data")
+
+    assert runtime_root == configured_runtime_dir.resolve()
+
+
 def test_embedded_shafa_cli_dispatches_main_py_command(tmp_path, monkeypatch) -> None:
     module = _load_desktop_backend(tmp_path, monkeypatch)
     project_dir = tmp_path / "runtime-project" / "shafa_logic"

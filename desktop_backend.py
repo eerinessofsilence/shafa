@@ -37,6 +37,10 @@ def _data_dir() -> Path:
 
 
 def _copy_runtime_project(bundle_dir: Path, data_dir: Path) -> Path | None:
+    configured_runtime_dir = os.getenv("SHAFA_RUNTIME_PROJECT_DIR", "").strip()
+    if configured_runtime_dir:
+        return Path(configured_runtime_dir).expanduser().resolve()
+
     source_dir = bundle_dir / SHAFA_LOGIC_DIRNAME
     if not (source_dir / "main.py").is_file():
         return None
