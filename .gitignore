@@ -35,6 +35,7 @@ dist/
 
 # Logs and runtime output
 runtime/
+runtime-project/
 logs/
 *.log
 *.bak
@@ -81,3 +82,4 @@ chart_history.json
 channel_templates.json
 message_templates.json
 telegram_channel_templates.json
+telegram_templates/

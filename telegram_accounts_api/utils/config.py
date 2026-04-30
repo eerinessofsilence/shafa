@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,9 +34,15 @@ def get_settings() -> AppSettings:
     base_dir = _default_base_dir()
     accounts_file = Path(os.getenv("ACCOUNTS_STATE_FILE", base_dir / "accounts_state.json")).resolve()
     templates_file = Path(os.getenv("MESSAGE_TEMPLATES_FILE", base_dir / "message_templates.json")).resolve()
-    channel_templates_file = Path(
-        os.getenv("CHANNEL_TEMPLATES_STATE_FILE", base_dir / "telegram_channel_templates.json")
-    ).resolve()
+    configured_channel_templates_file = os.getenv("CHANNEL_TEMPLATES_STATE_FILE", "").strip()
+    if configured_channel_templates_file:
+        channel_templates_file = Path(configured_channel_templates_file).expanduser().resolve()
+    else:
+        channel_templates_file = (base_dir / "telegram_templates" / "channel_templates.json").resolve()
+        legacy_channel_templates_file = (base_dir / "telegram_channel_templates.json").resolve()
+        if legacy_channel_templates_file.exists() and not channel_templates_file.exists():
+            channel_templates_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_channel_templates_file, channel_templates_file)
     accounts_dir = Path(os.getenv("ACCOUNTS_DIR", base_dir / "accounts")).resolve()
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     return AppSettings(

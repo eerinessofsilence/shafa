@@ -8,12 +8,15 @@ import socket
 import sys
 from pathlib import Path
 
-SEED_FILES = ("accounts_state.json", "telegram_channel_templates.json")
+SEED_FILES = ("accounts_state.json",)
 SEED_JSON_PAYLOAD = "[]\n"
 DEFAULT_BACKEND_PORT = 8000
 ADDRESS_IN_USE_WINERROR = 10048
 RUNTIME_PROJECT_DIRNAME = "runtime-project"
 SHAFA_LOGIC_DIRNAME = "shafa_logic"
+CHANNEL_TEMPLATES_DIRNAME = "telegram_templates"
+CHANNEL_TEMPLATES_FILENAME = "channel_templates.json"
+LEGACY_CHANNEL_TEMPLATES_FILENAME = "telegram_channel_templates.json"
 SHAFA_CLI_FLAGS = {
     "--shafa",
     "--login-shafa",
@@ -76,13 +79,24 @@ def _bootstrap_environment() -> Path:
             shutil.copyfile(source, target)
         if not target.exists():
             target.write_text(SEED_JSON_PAYLOAD, encoding="utf-8")
+    channel_templates_dir = data_dir / CHANNEL_TEMPLATES_DIRNAME
+    channel_templates_dir.mkdir(parents=True, exist_ok=True)
+    channel_templates_file = channel_templates_dir / CHANNEL_TEMPLATES_FILENAME
+    legacy_channel_templates_source = bundle_dir / LEGACY_CHANNEL_TEMPLATES_FILENAME
+    legacy_channel_templates_target = data_dir / LEGACY_CHANNEL_TEMPLATES_FILENAME
+    if legacy_channel_templates_target.exists() and not channel_templates_file.exists():
+        shutil.copyfile(legacy_channel_templates_target, channel_templates_file)
+    elif legacy_channel_templates_source.exists() and not channel_templates_file.exists():
+        shutil.copyfile(legacy_channel_templates_source, channel_templates_file)
+    if not channel_templates_file.exists():
+        channel_templates_file.write_text(SEED_JSON_PAYLOAD, encoding="utf-8")
 
     os.environ.setdefault("TELEGRAM_ACCOUNTS_BASE_DIR", str(data_dir))
     os.environ.setdefault("ACCOUNTS_STATE_FILE", str(data_dir / "accounts_state.json"))
     os.environ.setdefault("MESSAGE_TEMPLATES_FILE", str(data_dir / "message_templates.json"))
     os.environ.setdefault(
         "CHANNEL_TEMPLATES_STATE_FILE",
-        str(data_dir / "telegram_channel_templates.json"),
+        str(channel_templates_file),
     )
     os.environ.setdefault("ACCOUNTS_DIR", str(data_dir / "accounts"))
     if runtime_project_dir is not None:

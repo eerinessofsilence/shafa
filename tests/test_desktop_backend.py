@@ -43,6 +43,16 @@ def test_resolve_backend_port_falls_back_when_preferred_port_is_busy(tmp_path, m
     assert port == 8123
 
 
+def test_bootstrap_uses_telegram_templates_directory(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("CHANNEL_TEMPLATES_STATE_FILE", raising=False)
+
+    module = _load_desktop_backend(tmp_path, monkeypatch)
+
+    expected_file = module.DATA_DIR / "telegram_templates" / "channel_templates.json"
+    assert expected_file.is_file()
+    assert module.os.environ["CHANNEL_TEMPLATES_STATE_FILE"] == str(expected_file)
+
+
 def test_main_retries_with_free_port_when_default_port_is_busy(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("SHAFA_BACKEND_PORT", raising=False)
     module = _load_desktop_backend(tmp_path, monkeypatch)

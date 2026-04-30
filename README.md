@@ -160,7 +160,7 @@ Primary files/directories:
 
 - `accounts_state.json` - accounts list/state
 - `message_templates.json` - reusable text templates
-- `telegram_channel_templates.json` - per-account Telegram channel templates
+- `telegram_templates/channel_templates.json` - Telegram channel templates
 - `accounts/<account_id>/` - per-account directory
 - `accounts/<account_id>/telegram.session` - Telethon session
 - `accounts/<account_id>/auth.json` - Shafa cookies/storage state
