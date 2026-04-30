@@ -15,8 +15,11 @@ import {
   submitTelegramPassword,
 } from '../api/auth';
 import {
+  createGlobalChannelTemplate as createGlobalChannelTemplateRequest,
   createChannelTemplate as createChannelTemplateRequest,
   deleteChannelTemplate as deleteChannelTemplateRequest,
+  listGlobalChannelTemplates as listGlobalChannelTemplatesRequest,
+  updateGlobalChannelTemplate as updateGlobalChannelTemplateRequest,
   updateChannelTemplate as updateChannelTemplateRequest,
 } from '../api/channelTemplates';
 import {
@@ -76,8 +79,10 @@ import { StatusPill } from '../components/StatusPill';
 import type {
   AccountRow,
   ApiAccountRead,
+  ApiChannelTemplateRead,
   ApiShafaAuthStatus,
   ApiTelegramAuthStatus,
+  ChannelTemplateType,
   StatusTone,
   TelegramChannel,
 } from '../types';
@@ -87,6 +92,7 @@ import {
   ChevronDown,
   Clock3,
   EllipsisVertical,
+  FilePlus2,
   FileJson,
   FolderOpen,
   Link2,
@@ -100,6 +106,8 @@ import {
   Plus,
   Save,
   ShieldCheck,
+  Footprints,
+  Shirt,
   Trash2,
   TriangleAlert,
   Upload,
@@ -110,6 +118,7 @@ import {
   type ChangeEvent,
   type ReactNode,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -166,8 +175,15 @@ function AccountsPage({
   const [deleteTargetAccountId, setDeleteTargetAccountId] = useState<
     string | null
   >(null);
+  const [templateSourceAccountId, setTemplateSourceAccountId] = useState<
+    string | null
+  >(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isTemplateFromAccountDialogOpen, setIsTemplateFromAccountDialogOpen] =
+    useState(false);
+  const [isTemplateMutationPending, setIsTemplateMutationPending] =
+    useState(false);
   const detailsAccount = detailsAccountId
     ? (accounts.find((account) => account.id === detailsAccountId) ?? null)
     : null;
@@ -177,6 +193,8 @@ function AccountsPage({
   const deleteTargetAccount = deleteTargetAccountId
     ? (accounts.find((account) => account.id === deleteTargetAccountId) ?? null)
     : null;
+  const templateSourceAccount =
+    accounts.find((account) => account.id === templateSourceAccountId) ?? null;
   const selectedAccounts = accounts.filter((account) =>
     selectedAccountIds.includes(account.id),
   );
@@ -320,6 +338,79 @@ function AccountsPage({
     setIsDeleteDialogOpen(true);
   };
 
+  const openTemplateFromAccountDialog = (accountId: string) => {
+    setTemplateSourceAccountId(accountId);
+    setIsTemplateFromAccountDialogOpen(true);
+  };
+
+  const createTemplateFromAccount = async (
+    account: AccountRow,
+    links: string[],
+    draft: {
+      name: string;
+      type: ChannelTemplateType;
+    },
+  ) => {
+    const templateLinks = normalizeTelegramLinks(links);
+
+    if (templateLinks.length === 0) {
+      return;
+    }
+
+    setIsTemplateMutationPending(true);
+    setBulkFeedback('');
+
+    try {
+      await createGlobalChannelTemplateRequest({
+        links: templateLinks,
+        name: draft.name.trim(),
+        type: draft.type,
+      });
+      setBulkFeedback(
+        `Шаблон «${draft.name.trim()}» создан из аккаунта ${account.name}.`,
+      );
+      setTemplateSourceAccountId(null);
+      setIsTemplateFromAccountDialogOpen(false);
+    } finally {
+      setIsTemplateMutationPending(false);
+    }
+  };
+
+  const addAccountChannelsToTemplate = async (
+    account: AccountRow,
+    accountLinks: string[],
+    template: ApiChannelTemplateRead,
+  ) => {
+    const cleanAccountLinks = normalizeTelegramLinks(accountLinks);
+    const nextLinks = normalizeTelegramLinks([
+      ...template.links,
+      ...cleanAccountLinks,
+    ]);
+    const addedCount = nextLinks.length - template.links.length;
+
+    if (cleanAccountLinks.length === 0) {
+      return;
+    }
+
+    setIsTemplateMutationPending(true);
+    setBulkFeedback('');
+
+    try {
+      await updateGlobalChannelTemplateRequest(template.id, {
+        links: nextLinks,
+      });
+      setBulkFeedback(
+        addedCount > 0
+          ? `В шаблон «${template.name}» добавлено каналов: ${addedCount}.`
+          : `Все каналы аккаунта ${account.name} уже есть в шаблоне «${template.name}».`,
+      );
+      setTemplateSourceAccountId(null);
+      setIsTemplateFromAccountDialogOpen(false);
+    } finally {
+      setIsTemplateMutationPending(false);
+    }
+  };
+
   useEffect(() => {
     if (currentPage <= totalPages) {
       return;
@@ -376,6 +467,13 @@ function AccountsPage({
       setIsDeleteDialogOpen(false);
     }
   }, [deleteDialogAccounts.length, isDeleteDialogOpen]);
+
+  useEffect(() => {
+    if (!templateSourceAccount && isTemplateFromAccountDialogOpen) {
+      setTemplateSourceAccountId(null);
+      setIsTemplateFromAccountDialogOpen(false);
+    }
+  }, [isTemplateFromAccountDialogOpen, templateSourceAccount]);
 
   return (
     <div className="space-y-6">
@@ -617,7 +715,10 @@ function AccountsPage({
                             <div className="flex justify-end">
                               <AccountRowActionMenu
                                 account={account}
-                                disabled={isMutationPending}
+                                disabled={
+                                  isMutationPending || isTemplateMutationPending
+                                }
+                                onCreateTemplate={openTemplateFromAccountDialog}
                                 onDelete={openDeleteAccountsDialog}
                                 onEdit={openAccountDetails}
                               />
@@ -678,6 +779,17 @@ function AccountsPage({
         isSubmitting={isMutationPending}
         onClose={() => setIsCreateDialogOpen(false)}
         onCreateAccount={onCreateAccount}
+      />
+      <CreateTemplateFromAccountDialog
+        account={templateSourceAccount}
+        isOpen={isTemplateFromAccountDialogOpen}
+        isSubmitting={isTemplateMutationPending}
+        onClose={() => {
+          setIsTemplateFromAccountDialogOpen(false);
+          setTemplateSourceAccountId(null);
+        }}
+        onAddToExistingTemplate={addAccountChannelsToTemplate}
+        onCreateTemplate={createTemplateFromAccount}
       />
       <DeleteAccountsDialog
         accounts={deleteDialogAccounts}
@@ -801,6 +913,7 @@ function AccountDialogShell({
 interface AccountRowActionMenuProps {
   account: AccountRow;
   disabled: boolean;
+  onCreateTemplate: (accountId: string) => void;
   onDelete: (accountId: string) => void;
   onEdit: (accountId: string) => void;
 }
@@ -808,6 +921,7 @@ interface AccountRowActionMenuProps {
 function AccountRowActionMenu({
   account,
   disabled,
+  onCreateTemplate,
   onDelete,
   onEdit,
 }: AccountRowActionMenuProps) {
@@ -897,6 +1011,24 @@ function AccountRowActionMenu({
             >
               <PencilLine className="h-4 w-4" />
               Редактировать
+            </button>
+            <button
+              className={getButtonClassName({
+                size: 'row',
+                variant: 'ghost',
+                fullWidth: true,
+                align: 'left',
+                className: 'px-3',
+              })}
+              disabled={account.telegramChannels.length === 0}
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                onCreateTemplate(account.id);
+              }}
+            >
+              <FilePlus2 className="h-4 w-4" />В шаблон
             </button>
             <button
               className={getButtonClassName({
@@ -2111,7 +2243,7 @@ function TelegramAuthCard({
               className={getButtonClassName({
                 tone: 'info',
                 variant: 'solid',
-                className: 'h-[42px]',
+                className: 'h-10.5',
               })}
               disabled={isPhoneDisabled}
               type="button"
@@ -2148,7 +2280,7 @@ function TelegramAuthCard({
                 className={getButtonClassName({
                   tone: 'info',
                   variant: 'solid',
-                  className: 'h-[42px]',
+                  className: 'h-10.5',
                 })}
                 disabled={isCodeDisabled}
                 type="button"
@@ -2187,7 +2319,7 @@ function TelegramAuthCard({
                 className={getButtonClassName({
                   tone: 'info',
                   variant: 'solid',
-                  className: 'h-[42px]',
+                  className: 'h-10.5',
                 })}
                 disabled={isPasswordDisabled}
                 type="button"
@@ -2601,6 +2733,524 @@ function DeleteAccountsDialog({
   );
 }
 
+const templateTypeOptions: Array<{
+  label: string;
+  shortLabel: string;
+  value: ChannelTemplateType;
+}> = [
+  { label: 'Одежда', shortLabel: 'Одежда', value: 'clothes' },
+  { label: 'Обувь', shortLabel: 'Обувь', value: 'shoes' },
+];
+
+type TemplateFromAccountMode = 'create' | 'existing';
+
+interface AccountTemplateSource {
+  id: string;
+  name: string;
+  type: ChannelTemplateType | null;
+  links: string[];
+}
+
+function getTemplateTypeIcon(type: ChannelTemplateType) {
+  return type === 'shoes' ? (
+    <Footprints className="h-4 w-4" />
+  ) : (
+    <Shirt className="h-4 w-4" />
+  );
+}
+
+function getTemplateTypeLabel(type: ChannelTemplateType) {
+  return (
+    templateTypeOptions.find((option) => option.value === type)?.label ?? type
+  );
+}
+
+interface CreateTemplateFromAccountDialogProps {
+  account: AccountRow | null;
+  isOpen: boolean;
+  isSubmitting: boolean;
+  onClose: () => void;
+  onAddToExistingTemplate: (
+    account: AccountRow,
+    links: string[],
+    template: ApiChannelTemplateRead,
+  ) => Promise<void>;
+  onCreateTemplate: (
+    account: AccountRow,
+    links: string[],
+    draft: {
+      name: string;
+      type: ChannelTemplateType;
+    },
+  ) => Promise<void>;
+}
+
+function CreateTemplateFromAccountDialog({
+  account,
+  isOpen,
+  isSubmitting,
+  onClose,
+  onAddToExistingTemplate,
+  onCreateTemplate,
+}: CreateTemplateFromAccountDialogProps) {
+  const [mode, setMode] = useState<TemplateFromAccountMode>('create');
+  const [name, setName] = useState('');
+  const [type, setType] = useState<ChannelTemplateType>('clothes');
+  const [existingTemplates, setExistingTemplates] = useState<
+    ApiChannelTemplateRead[]
+  >([]);
+  const [selectedSourceTemplateId, setSelectedSourceTemplateId] = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [isTemplatesLoading, setIsTemplatesLoading] = useState(false);
+  const [templatesError, setTemplatesError] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const sourceTemplates = useMemo<AccountTemplateSource[]>(() => {
+    if (!account) {
+      return [];
+    }
+
+    const accountTemplates = account.channelTemplates ?? [];
+
+    if (accountTemplates.length > 0) {
+      return accountTemplates.map((template) => ({
+        id: template.id,
+        name: template.name,
+        type: template.type,
+        links: normalizeTelegramLinks(template.links),
+      }));
+    }
+
+    const runtimeLinks = normalizeTelegramLinks(
+      account.telegramChannels.map((channel) => channel.handle),
+    );
+
+    return runtimeLinks.length > 0
+      ? [
+          {
+            id: 'runtime',
+            name: 'Текущий список аккаунта',
+            type: null,
+            links: runtimeLinks,
+          },
+        ]
+      : [];
+  }, [account]);
+  const selectedSourceTemplate =
+    sourceTemplates.find((template) => template.id === selectedSourceTemplateId) ??
+    sourceTemplates[0] ??
+    null;
+  const links = selectedSourceTemplate?.links ?? [];
+  const filteredTemplates = useMemo(
+    () => existingTemplates.filter((template) => template.type === type),
+    [existingTemplates, type],
+  );
+  const selectedTemplate =
+    filteredTemplates.find((template) => template.id === selectedTemplateId) ??
+    filteredTemplates[0] ??
+    null;
+  const isSaveDisabled =
+    isSubmitting ||
+    !account ||
+    !selectedSourceTemplate ||
+    links.length === 0 ||
+    (mode === 'create' ? !name.trim() : !selectedTemplate);
+
+  useEffect(() => {
+    if (!isOpen || !account) {
+      setMode('create');
+      setSubmitError('');
+      setTemplatesError('');
+      return;
+    }
+
+    setMode('create');
+    setName(account.name);
+    setType('clothes');
+    setSelectedSourceTemplateId(
+      getPrimaryChannelTemplate(account.channelTemplates ?? [])?.id ??
+        sourceTemplates[0]?.id ??
+        '',
+    );
+    setSelectedTemplateId('');
+    setSubmitError('');
+  }, [account, isOpen, sourceTemplates]);
+
+  useEffect(() => {
+    if (!isOpen || mode !== 'existing') {
+      return;
+    }
+
+    let isCancelled = false;
+    setIsTemplatesLoading(true);
+    setTemplatesError('');
+
+    void (async () => {
+      try {
+        const templates = await listGlobalChannelTemplatesRequest();
+        if (isCancelled) {
+          return;
+        }
+        setExistingTemplates(templates);
+      } catch (error) {
+        if (isCancelled) {
+          return;
+        }
+        setTemplatesError(
+          formatApiError(error, 'Не удалось загрузить существующие шаблоны.'),
+        );
+      } finally {
+        if (!isCancelled) {
+          setIsTemplatesLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isOpen, mode]);
+
+  useEffect(() => {
+    if (mode !== 'existing') {
+      return;
+    }
+
+    setSelectedTemplateId((currentTemplateId) =>
+      filteredTemplates.some((template) => template.id === currentTemplateId)
+        ? currentTemplateId
+        : (filteredTemplates[0]?.id ?? ''),
+    );
+  }, [filteredTemplates, mode]);
+
+  if (!isOpen || !account) {
+    return null;
+  }
+
+  return (
+    <AccountDialogShell
+      closeLabel="Закрыть создание шаблона"
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Шаблон из аккаунта"
+    >
+      <div className="space-y-5 pt-6">
+        <div className="flex flex-wrap gap-2">
+          <ActionButton
+            icon={<FilePlus2 className="h-4 w-4" />}
+            size="sm"
+            tone={mode === 'create' ? 'info' : 'neutral'}
+            variant={mode === 'create' ? 'solid' : 'soft'}
+            onClick={() => setMode('create')}
+          >
+            Новый шаблон
+          </ActionButton>
+          <ActionButton
+            icon={<Link2 className="h-4 w-4" />}
+            size="sm"
+            tone={mode === 'existing' ? 'info' : 'neutral'}
+            variant={mode === 'existing' ? 'solid' : 'soft'}
+            onClick={() => setMode('existing')}
+          >
+            Добавить существующий шаблон
+          </ActionButton>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <span className={fieldLabelClassName}>Шаблон аккаунта</span>
+          <AccountSourceTemplatePicker
+            selectedTemplateId={selectedSourceTemplate?.id ?? ''}
+            templates={sourceTemplates}
+            onSelect={setSelectedSourceTemplateId}
+          />
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-[1fr_300px]">
+          {mode === 'create' ? (
+            <label className="flex flex-col gap-2">
+              <span className={fieldLabelClassName}>Название шаблона</span>
+              <input
+                className={accountControlClassName}
+                type="text"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span className={fieldLabelClassName}>Шаблон</span>
+              <ExistingTemplatePicker
+                isLoading={isTemplatesLoading}
+                selectedTemplateId={selectedTemplate?.id ?? ''}
+                templates={filteredTemplates}
+                onSelect={setSelectedTemplateId}
+              />
+            </div>
+          )}
+          <div className="flex flex-col gap-2">
+            <span className={fieldLabelClassName}>Тип</span>
+            <AccountTemplateTypeSegmentedControl
+              value={type}
+              onChange={setType}
+            />
+          </div>
+        </div>
+
+        {templatesError ? (
+          <p className="text-sm text-error">{templatesError}</p>
+        ) : null}
+
+        <div className="rounded-[22px] border border-border/25 bg-secondary/55 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <strong className="block text-text">
+                {selectedSourceTemplate?.name ?? account.name}
+              </strong>
+              <p className="mt-1 text-sm text-text-muted">
+                Каналов для переноса: {links.length}
+              </p>
+            </div>
+            <span className="inline-flex min-w-8 items-center justify-center rounded-full bg-info/5 p-1.5 text-sm font-semibold text-info">
+              {links.length}
+            </span>
+          </div>
+
+          {links.length > 0 ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {links.map((link) => (
+                <span
+                  key={link}
+                  className="inline-flex items-center rounded-xl border border-border/25 bg-foreground px-3 py-1 text-sm font-medium text-text"
+                >
+                  {link}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-sm leading-6 text-text-muted">
+              У аккаунта нет Telegram-каналов для шаблона.
+            </p>
+          )}
+        </div>
+
+        {submitError ? (
+          <p className="text-sm text-error">{submitError}</p>
+        ) : null}
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <ActionButton
+            disabled={isSubmitting}
+            icon={<X className="h-4 w-4" />}
+            size="sm"
+            onClick={onClose}
+          >
+            Отмена
+          </ActionButton>
+          <ActionButton
+            disabled={isSaveDisabled}
+            icon={
+              isSubmitting ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <FilePlus2 className="h-4 w-4" />
+              )
+            }
+            size="sm"
+            tone="success"
+            variant="solid"
+            onClick={async () => {
+              if (!account) {
+                return;
+              }
+
+              setSubmitError('');
+
+              try {
+                if (!selectedSourceTemplate) {
+                  return;
+                }
+
+                if (mode === 'existing') {
+                  if (!selectedTemplate) {
+                    return;
+                  }
+                  await onAddToExistingTemplate(
+                    account,
+                    links,
+                    selectedTemplate,
+                  );
+                } else {
+                  await onCreateTemplate(account, links, { name, type });
+                }
+              } catch (error) {
+                setSubmitError(
+                  formatApiError(
+                    error,
+                    mode === 'existing'
+                      ? 'Не удалось добавить каналы в выбранный шаблон.'
+                      : 'Не удалось создать шаблон.',
+                  ),
+                );
+              }
+            }}
+          >
+            {mode === 'existing' ? 'Добавить в шаблон' : 'Создать шаблон'}
+          </ActionButton>
+        </div>
+      </div>
+    </AccountDialogShell>
+  );
+}
+
+interface ExistingTemplatePickerProps {
+  isLoading: boolean;
+  selectedTemplateId: string;
+  templates: ApiChannelTemplateRead[];
+  onSelect: (templateId: string) => void;
+}
+
+interface AccountSourceTemplatePickerProps {
+  selectedTemplateId: string;
+  templates: AccountTemplateSource[];
+  onSelect: (templateId: string) => void;
+}
+
+function AccountSourceTemplatePicker({
+  selectedTemplateId,
+  templates,
+  onSelect,
+}: AccountSourceTemplatePickerProps) {
+  if (templates.length === 0) {
+    return (
+      <div className="flex min-h-10.5 items-center rounded-lg border border-dashed border-border bg-secondary px-4 text-sm text-text-muted">
+        Нет шаблонов аккаунта
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-2 md:grid-cols-2">
+      {templates.map((template) => {
+        const isSelected = selectedTemplateId === template.id;
+
+        return (
+          <button
+            key={template.id}
+            className={cx(
+              'flex min-h-10.5 cursor-pointer items-center justify-between gap-3 rounded-lg border px-4 text-left text-sm transition',
+              isSelected
+                ? 'border-info bg-info/10 text-text'
+                : 'border-border bg-secondary text-text-muted hover:border-border-strong hover:bg-foreground hover:text-text',
+            )}
+            type="button"
+            onClick={() => onSelect(template.id)}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {template.type ? (
+                <span className="shrink-0 text-text-muted">
+                  {getTemplateTypeIcon(template.type)}
+                </span>
+              ) : (
+                <FolderOpen className="h-4 w-4 shrink-0 text-text-muted" />
+              )}
+              <span className="min-w-0 truncate font-medium">
+                {template.name}
+              </span>
+            </span>
+            <span className="shrink-0 rounded-full bg-info/5 px-2 py-0.5 text-xs font-semibold text-info">
+              {template.links.length}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExistingTemplatePicker({
+  isLoading,
+  selectedTemplateId,
+  templates,
+  onSelect,
+}: ExistingTemplatePickerProps) {
+  if (isLoading) {
+    return (
+      <div className="flex h-10.5 items-center gap-2 rounded-lg border border-border bg-secondary px-4 text-sm text-text-muted">
+        <LoaderCircle className="h-4 w-4 animate-spin" />
+        Загружаем
+      </div>
+    );
+  }
+
+  if (templates.length === 0) {
+    return (
+      <div className="flex min-h-10.5 items-center rounded-lg border border-dashed border-border bg-secondary px-4 text-sm text-text-muted">
+        Нет шаблонов этого типа
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-2">
+      {templates.map((template) => {
+        const isSelected = selectedTemplateId === template.id;
+
+        return (
+          <button
+            key={template.id}
+            className={cx(
+              'flex min-h-10.5 cursor-pointer items-center justify-between gap-3 rounded-lg border px-4 text-left text-sm transition',
+              isSelected
+                ? 'border-info bg-info/10 text-text'
+                : 'border-border bg-secondary text-text-muted hover:border-border-strong hover:bg-foreground hover:text-text',
+            )}
+            type="button"
+            onClick={() => onSelect(template.id)}
+          >
+            <span className="min-w-0 truncate font-medium">
+              {template.name}
+            </span>
+            <span className="shrink-0 rounded-full bg-info/5 px-2 py-0.5 text-xs font-semibold text-info">
+              {template.links.length}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface AccountTemplateTypeSegmentedControlProps {
+  value: ChannelTemplateType;
+  onChange: (value: ChannelTemplateType) => void;
+}
+
+function AccountTemplateTypeSegmentedControl({
+  value,
+  onChange,
+}: AccountTemplateTypeSegmentedControlProps) {
+  return (
+    <div className="grid h-10.5 grid-cols-2 rounded-[10px] border border-border bg-secondary p-1">
+      {templateTypeOptions.map((option) => (
+        <button
+          key={option.value}
+          aria-pressed={value === option.value}
+          className={cx(
+            'inline-flex min-w-0 cursor-pointer items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium transition',
+            value === option.value
+              ? 'bg-info text-white shadow-[0_1px_2px_rgba(15,23,42,0.08)]'
+              : 'text-text-muted hover:bg-foreground hover:text-text',
+          )}
+          type="button"
+          onClick={() => onChange(option.value)}
+        >
+          {getTemplateTypeIcon(option.value)}
+          <span>{option.shortLabel}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 interface TelegramChannelsPanelProps {
   account: AccountRow;
   isSubmittingAccount: boolean;
@@ -2613,6 +3263,241 @@ interface TelegramChannelsPanelProps {
 interface ImportedChannelTemplate {
   links: string[];
   name: string;
+}
+
+type GlobalTemplateFilter = ChannelTemplateType | 'all';
+
+interface TemplateLoadMenuProps {
+  disabled: boolean;
+  onOpenTemplates: () => void;
+  onUploadJson: () => void;
+}
+
+function TemplateLoadMenu({
+  disabled,
+  onOpenTemplates,
+  onUploadJson,
+}: TemplateLoadMenuProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+
+      if (
+        target instanceof Node &&
+        menuRef.current &&
+        !menuRef.current.contains(target)
+      ) {
+        setIsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (disabled) {
+      setIsOpen(false);
+    }
+  }, [disabled]);
+
+  return (
+    <div ref={menuRef} className={cx('relative inline-flex', isOpen && 'z-40')}>
+      <ActionButton
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+        disabled={disabled}
+        icon={<FolderOpen className="h-4 w-4 shrink-0" />}
+        size="sm"
+        onClick={() => setIsOpen((current) => !current)}
+      >
+        Загрузить шаблон
+      </ActionButton>
+
+      {!disabled && isOpen ? (
+        <div className="absolute left-0 top-full z-40 w-full pt-2">
+          <div
+            className="w-full rounded-xl border border-border/25 bg-foreground p-1.5 text-sm shadow-[0_18px_44px_rgba(15,23,42,0.16)]"
+            role="menu"
+          >
+            <button
+              className="flex h-10 w-full text-sm cursor-pointer items-center gap-2 rounded-lg px-3 text-left font-medium text-text transition hover:bg-secondary"
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                onOpenTemplates();
+              }}
+            >
+              <FolderOpen className="h-4 w-4 shrink-0 text-text-muted" />
+              Из сохранённых шаблонов
+            </button>
+            <button
+              className="flex h-10 w-full text-sm cursor-pointer items-center gap-2 rounded-lg px-3 text-left font-medium text-text transition hover:bg-secondary"
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                onUploadJson();
+              }}
+            >
+              <FileJson className="h-4 w-4 shrink-0 text-text-muted" />
+              Из JSON-файла
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface AccountGlobalTemplatePickerProps {
+  error: string;
+  isLoading: boolean;
+  isSubmitting: boolean;
+  templates: ApiChannelTemplateRead[];
+  typeFilter: GlobalTemplateFilter;
+  onClose: () => void;
+  onSelect: (template: ApiChannelTemplateRead) => void;
+  onTypeFilterChange: (value: GlobalTemplateFilter) => void;
+}
+
+function AccountGlobalTemplatePicker({
+  error,
+  isLoading,
+  isSubmitting,
+  templates,
+  typeFilter,
+  onClose,
+  onSelect,
+  onTypeFilterChange,
+}: AccountGlobalTemplatePickerProps) {
+  return (
+    <div className="rounded-[22px] border border-border/25 bg-secondary/60 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h4 className={cardTitleClassName}>Сохранённые шаблоны</h4>
+          <p className="mt-1 text-sm text-text-muted">
+            Каналы выбранного шаблона заменят текущий список аккаунта.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2">
+          <ActionButton
+            disabled={isSubmitting}
+            icon={<X className="h-4 w-4" />}
+            size="sm"
+            onClick={onClose}
+          >
+            Закрыть
+          </ActionButton>
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          aria-pressed={typeFilter === 'all'}
+          className={cx(
+            'inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50',
+            typeFilter === 'all'
+              ? 'border-info bg-info text-white'
+              : 'border-border bg-foreground text-text-muted hover:border-border-strong hover:text-text',
+          )}
+          disabled={isSubmitting}
+          type="button"
+          onClick={() => onTypeFilterChange('all')}
+        >
+          <FolderOpen className="h-4 w-4" />
+          Все
+        </button>
+        {templateTypeOptions.map((option) => (
+          <button
+            key={option.value}
+            aria-pressed={typeFilter === option.value}
+            className={cx(
+              'inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50',
+              typeFilter === option.value
+                ? 'border-info bg-info text-white'
+                : 'border-border bg-foreground text-text-muted hover:border-border-strong hover:text-text',
+            )}
+            disabled={isSubmitting}
+            type="button"
+            onClick={() => onTypeFilterChange(option.value)}
+          >
+            {getTemplateTypeIcon(option.value)}
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      {error ? (
+        <div className="mt-4 rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="mt-4">
+        {isLoading ? (
+          <div className="flex min-h-24 items-center justify-center gap-2 rounded-[18px] border border-border/20 bg-foreground text-sm text-text-muted">
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+            Загружаем шаблоны
+          </div>
+        ) : templates.length === 0 ? (
+          <div className="rounded-[18px] border border-dashed border-border/30 bg-foreground px-4 py-5 text-sm text-text-muted">
+            Нет шаблонов для выбранного типа.
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            {templates.map((template) => (
+              <button
+                key={template.id}
+                className="flex min-h-19 cursor-pointer items-center justify-between gap-4 rounded-[18px] border border-border/25 bg-foreground p-4 text-left transition hover:border-info/35 hover:bg-info/5 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSubmitting}
+                type="button"
+                onClick={() => onSelect(template)}
+              >
+                <span className="min-w-0">
+                  <span className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-info/8 text-info">
+                      {getTemplateTypeIcon(template.type)}
+                    </span>
+                    <strong className="min-w-0 max-w-full truncate text-[16px] font-semibold text-text">
+                      {template.name}
+                    </strong>
+                    <span className="rounded-full border border-border/20 bg-secondary px-2 py-0.5 text-xs font-medium text-text-muted">
+                      {getTemplateTypeLabel(template.type)}
+                    </span>
+                  </span>
+                </span>
+
+                <span className="inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full bg-info/6 px-2 text-sm font-semibold text-info">
+                  {template.links.length}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function getTemplateLinksValue(
@@ -2638,11 +3523,9 @@ function isTemplatePayloadRecord(
 interface TelegramChannelComposerProps {
   draft: TelegramChannelDraft;
   isSubmitting?: boolean;
-  deleteLabel?: string;
   submitLabel: string;
   title: string;
   onCancel: () => void;
-  onDelete?: () => void;
   onDraftChange: (
     field: keyof TelegramChannelDraft,
     value: TelegramChannelDraft[keyof TelegramChannelDraft],
@@ -2870,6 +3753,16 @@ function TelegramChannelsPanel({
   const [feedback, setFeedback] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGlobalTemplatePickerOpen, setIsGlobalTemplatePickerOpen] =
+    useState(false);
+  const [globalTemplates, setGlobalTemplates] = useState<
+    ApiChannelTemplateRead[]
+  >([]);
+  const [globalTemplateTypeFilter, setGlobalTemplateTypeFilter] =
+    useState<GlobalTemplateFilter>('all');
+  const [globalTemplatesError, setGlobalTemplatesError] = useState('');
+  const [isGlobalTemplatesLoading, setIsGlobalTemplatesLoading] =
+    useState(false);
   const accountChannelTemplates = account.channelTemplates ?? [];
   const existingTemplateNames = new Set(
     accountChannelTemplates.map((template) => template.name),
@@ -2880,6 +3773,15 @@ function TelegramChannelsPanel({
   const channelHandles = channels.map((channel) => channel.handle);
   const hasAdditionalTemplates = accountChannelTemplates.length > 1;
   const isActionDisabled = isSubmitting || isSubmittingAccount;
+  const visibleGlobalTemplates = useMemo(
+    () =>
+      globalTemplateTypeFilter === 'all'
+        ? globalTemplates
+        : globalTemplates.filter(
+            (template) => template.type === globalTemplateTypeFilter,
+          ),
+    [globalTemplateTypeFilter, globalTemplates],
+  );
 
   useEffect(() => {
     setIsComposerOpen(false);
@@ -2888,6 +3790,8 @@ function TelegramChannelsPanel({
     setEditingDraft(telegramDraftInitialState);
     setFeedback('');
     setError('');
+    setIsGlobalTemplatePickerOpen(false);
+    setGlobalTemplatesError('');
   }, [account.id]);
 
   const startEditing = (channel: TelegramChannel) => {
@@ -2998,19 +3902,6 @@ function TelegramChannelsPanel({
     resetEditing();
   };
 
-  const deleteChannel = async (channelId: string) => {
-    const nextLinks = channels
-      .filter((channel) => channel.id !== channelId)
-      .map((channel) => channel.handle);
-
-    await persistChannels(
-      nextLinks,
-      nextLinks.length === 0
-        ? 'Все каналы удалены из аккаунта.'
-        : 'Канал удалён и синхронизирован с аккаунтом.',
-    );
-  };
-
   const importTemplateFile = async (file: File) => {
     setIsSubmitting(true);
     setError('');
@@ -3081,6 +3972,59 @@ function TelegramChannelsPanel({
     }
   };
 
+  const loadGlobalTemplates = async () => {
+    setIsGlobalTemplatesLoading(true);
+    setGlobalTemplatesError('');
+
+    try {
+      setGlobalTemplates(await listGlobalChannelTemplatesRequest());
+    } catch (nextError) {
+      setGlobalTemplatesError(
+        formatApiError(nextError, 'Не удалось загрузить сохранённые шаблоны.'),
+      );
+    } finally {
+      setIsGlobalTemplatesLoading(false);
+    }
+  };
+
+  const openGlobalTemplatePicker = async () => {
+    if (isActionDisabled) {
+      return;
+    }
+
+    setIsGlobalTemplatePickerOpen(true);
+    setIsComposerOpen(false);
+    resetEditing();
+    await loadGlobalTemplates();
+  };
+
+  const loadGlobalTemplateIntoAccount = async (
+    template: ApiChannelTemplateRead,
+  ) => {
+    const templateLinks = normalizeTelegramLinks(template.links);
+
+    if (templateLinks.length === 0) {
+      setGlobalTemplatesError(
+        `В шаблоне «${template.name}» нет Telegram-каналов.`,
+      );
+      return;
+    }
+
+    const saved = await persistChannels(
+      templateLinks,
+      `Шаблон «${template.name}» загружен и синхронизирован с аккаунтом.`,
+    );
+
+    if (!saved) {
+      return;
+    }
+
+    setGlobalTemplatesError('');
+    setIsGlobalTemplatePickerOpen(false);
+    setIsComposerOpen(false);
+    resetEditing();
+  };
+
   return (
     <section className="space-y-4 border-t border-border/20 pt-2">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -3094,14 +4038,11 @@ function TelegramChannelsPanel({
             type="file"
             onChange={(event) => void handleTemplateFileChange(event)}
           />
-          <ActionButton
-            disabled={isActionDisabled}
-            icon={<FileJson className="h-4 w-4" />}
-            size="sm"
-            onClick={() => templatesInputRef.current?.click()}
-          >
-            Загрузить JSON
-          </ActionButton>
+          <TemplateLoadMenu
+            disabled={isActionDisabled || isGlobalTemplatesLoading}
+            onOpenTemplates={() => void openGlobalTemplatePicker()}
+            onUploadJson={() => templatesInputRef.current?.click()}
+          />
           <ActionButton
             disabled={isActionDisabled}
             icon={<Plus className="h-3.5 w-3.5 text-text" />}
@@ -3121,13 +4062,6 @@ function TelegramChannelsPanel({
         </div>
       ) : null}
 
-      {!activeTemplate && channels.length > 0 ? (
-        <div className="rounded-2xl border border-border/15 bg-secondary/65 px-4 py-3 text-sm text-text-muted">
-          Для этого аккаунта уже есть рабочие `channel_links`. При первом
-          сохранении интерфейс создаст шаблон `{defaultChannelTemplateName}`.
-        </div>
-      ) : null}
-
       {error ? (
         <div className="rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
           {error}
@@ -3141,6 +4075,21 @@ function TelegramChannelsPanel({
       ) : null}
 
       <div className="space-y-4">
+        {isGlobalTemplatePickerOpen ? (
+          <AccountGlobalTemplatePicker
+            error={globalTemplatesError}
+            isLoading={isGlobalTemplatesLoading}
+            isSubmitting={isActionDisabled}
+            templates={visibleGlobalTemplates}
+            typeFilter={globalTemplateTypeFilter}
+            onClose={() => setIsGlobalTemplatePickerOpen(false)}
+            onSelect={(template) =>
+              void loadGlobalTemplateIntoAccount(template)
+            }
+            onTypeFilterChange={setGlobalTemplateTypeFilter}
+          />
+        ) : null}
+
         {isComposerOpen ? (
           <div className="rounded-[22px] border border-border/25 bg-secondary/60 p-4">
             <TelegramChannelComposer
@@ -3181,12 +4130,10 @@ function TelegramChannelsPanel({
                   >
                     <TelegramChannelComposer
                       draft={editingDraft}
-                      deleteLabel="Удалить"
                       isSubmitting={isActionDisabled}
                       submitLabel="Обновить"
                       title={`${channel.title}`}
                       onCancel={resetEditing}
-                      onDelete={() => void deleteChannel(channel.id)}
                       onDraftChange={(field, value) =>
                         setEditingDraft((current) => ({
                           ...current,
@@ -3230,12 +4177,10 @@ function TelegramChannelsPanel({
 
 function TelegramChannelComposer({
   draft,
-  deleteLabel,
   isSubmitting = false,
   submitLabel,
   title,
   onCancel,
-  onDelete,
   onDraftChange,
   onSubmit,
 }: TelegramChannelComposerProps) {
@@ -3263,17 +4208,6 @@ function TelegramChannelComposer({
       </label>
 
       <div className="flex justify-end text-sm gap-2">
-        {onDelete ? (
-          <ActionButton
-            disabled={isSubmitting}
-            icon={<Trash2 className="h-4 w-4" />}
-            size="sm"
-            tone="danger"
-            onClick={onDelete}
-          >
-            {deleteLabel ?? 'Удалить'}
-          </ActionButton>
-        ) : null}
         <ActionButton
           disabled={isSubmitting}
           icon={<X className="h-4 w-4" />}
