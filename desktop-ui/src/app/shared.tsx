@@ -88,6 +88,7 @@ import {
   Save,
   Settings,
   ShieldCheck,
+  Files,
   Trash2,
   Upload,
   TriangleAlert,
@@ -121,6 +122,7 @@ const telegramDraftInitialState = {
 const navItemIcons: Record<PageId, ReactNode> = {
   dashboard: <LayoutGrid className="h-4 w-4" />,
   accounts: <Users className="h-4 w-4" />,
+  templates: <Files className="h-4 w-4" />,
   parsing: <Power className="h-4 w-4" />,
   logs: <BarChart3 className="h-4 w-4" />,
   settings: <Settings className="h-4 w-4" />,
@@ -1737,8 +1739,8 @@ function AppSidebar({
                 type="button"
                 className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition-all duration-200 ${
                   activePage === item.id
-                    ? 'border border-info/45 bg-sidebar-card-active text-text shadow-[0_1px_2px_rgba(15,23,42,0.02)]'
-                    : 'border border-transparent bg-sidebar-card text-text-soft hover:border-border hover:bg-sidebar-card-hover'
+                    ? 'border border-info/50 bg-sidebar-card-active text-text shadow-[0_1px_2px_rgba(15,23,42,0.02)]'
+                    : 'border border-border/25 bg-sidebar-card/50 text-text-soft hover:border-border hover:bg-sidebar-card-hover'
                 }`}
                 onClick={() => onNavigate(item.id)}
               >

@@ -35,6 +35,7 @@ import AccountsPage from './pages/AccountsPage';
 import DashboardPage from './pages/DashboardPage';
 import LogsPage from './pages/LogsPage';
 import SettingsPage from './pages/SettingsPage';
+import TemplatesPage from './pages/TemplatesPage';
 import type { AccountRow, PageId } from './types';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -384,6 +385,7 @@ function App() {
           <section className="min-h-screen overflow-auto">
             <div className="mx-auto max-w-265 px-7.5 py-10">
               {activePage === 'dashboard' && <DashboardPage />}
+              {activePage === 'templates' && <TemplatesPage />}
               {activePage === 'accounts' && (
                 <AccountsPage
                   accounts={accounts}

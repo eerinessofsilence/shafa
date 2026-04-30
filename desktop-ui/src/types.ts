@@ -1,6 +1,7 @@
 export type PageId =
   | 'dashboard'
   | 'accounts'
+  | 'templates'
   | 'parsing'
   | 'logs'
   | 'settings';
@@ -61,11 +62,23 @@ export interface ApiResolvedTelegramChannel {
   alias: string;
 }
 
+export type ChannelTemplateType = 'clothes' | 'shoes';
+
 export interface ApiChannelTemplateSummary {
   id: string;
+  account_id?: string | null;
   name: string;
+  type: ChannelTemplateType;
   links: string[];
   resolved_channels: ApiResolvedTelegramChannel[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ApiChannelTemplateRead extends ApiChannelTemplateSummary {
+  account_id: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ApiAccountRead {
@@ -137,11 +150,13 @@ export interface ApiAccountUpdate {
 
 export interface ApiChannelTemplateCreate {
   name: string;
+  type?: ChannelTemplateType;
   links: string[];
 }
 
 export interface ApiChannelTemplateUpdate {
   name?: string;
+  type?: ChannelTemplateType;
   links?: string[];
 }
 
