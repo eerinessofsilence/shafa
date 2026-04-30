@@ -12,7 +12,6 @@ import {
   formatAccountDateTime,
   formatApiError,
   mapLinksToTelegramChannels,
-  SelectionCheckbox,
   TelegramChannelCard,
   normalizeTelegramLinks,
 } from '../app/shared';
@@ -29,7 +28,6 @@ import {
   LoaderCircle,
   PencilLine,
   Plus,
-  RefreshCw,
   Shirt,
   Trash2,
   X,
@@ -145,7 +143,6 @@ function TemplatesPage() {
     field: TemplateSortField;
     direction: TemplateSortDirection;
   } | null>(null);
-  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isMutationPending, setIsMutationPending] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -187,34 +184,6 @@ function TemplatesPage() {
       }),
     [filteredTemplates, sortState],
   );
-  const visibleTemplateIds = sortedTemplates.map((template) => template.id);
-  const selectedVisibleCount = selectedTemplateIds.filter((templateId) =>
-    visibleTemplateIds.includes(templateId),
-  ).length;
-  const isAllVisibleSelected =
-    visibleTemplateIds.length > 0 &&
-    selectedVisibleCount === visibleTemplateIds.length;
-  const isPartiallyVisibleSelected =
-    selectedVisibleCount > 0 && !isAllVisibleSelected;
-  const allTemplateIds = templates.map((template) => template.id);
-  const allTemplateSignature = allTemplateIds.join('|');
-  const templateCountByType = useMemo(
-    () =>
-      templateTypeOptions.reduce<Record<ChannelTemplateType, number>>(
-        (accumulator, option) => ({
-          ...accumulator,
-          [option.value]: templates.filter(
-            (template) => template.type === option.value,
-          ).length,
-        }),
-        {
-          clothes: 0,
-          shoes: 0,
-        },
-      ),
-    [templates],
-  );
-
   const loadTemplates = async () => {
     setLoadError('');
     setIsLoading(true);
@@ -231,20 +200,6 @@ function TemplatesPage() {
   useEffect(() => {
     void loadTemplates();
   }, []);
-
-  useEffect(() => {
-    const templateIdSet = new Set(allTemplateIds);
-
-    setSelectedTemplateIds((currentSelection) => {
-      const nextSelection = currentSelection.filter((templateId) =>
-        templateIdSet.has(templateId),
-      );
-
-      return nextSelection.length === currentSelection.length
-        ? currentSelection
-        : nextSelection;
-    });
-  }, [allTemplateSignature]);
 
   useEffect(() => {
     if (!feedback) {
@@ -308,35 +263,6 @@ function TemplatesPage() {
     });
   };
 
-  const toggleTemplateSelection = (templateId: string) => {
-    setSelectedTemplateIds((currentSelection) =>
-      currentSelection.includes(templateId)
-        ? currentSelection.filter((selectedId) => selectedId !== templateId)
-        : [...currentSelection, templateId],
-    );
-  };
-
-  const toggleAllVisibleTemplates = () => {
-    const visibleIdSet = new Set(visibleTemplateIds);
-
-    setSelectedTemplateIds((currentSelection) => {
-      if (selectedVisibleCount > 0) {
-        return currentSelection.filter(
-          (selectedId) => !visibleIdSet.has(selectedId),
-        );
-      }
-
-      const nextSelection = new Set([
-        ...currentSelection,
-        ...visibleTemplateIds,
-      ]);
-
-      return templates
-        .map((template) => template.id)
-        .filter((templateId) => nextSelection.has(templateId));
-    });
-  };
-
   const deleteTemplate = async () => {
     if (!deletingTemplate || isMutationPending) {
       return;
@@ -348,9 +274,6 @@ function TemplatesPage() {
     try {
       await deleteGlobalChannelTemplate(deletingTemplate.id);
       setDeletingTemplate(null);
-      setSelectedTemplateIds((currentSelection) =>
-        currentSelection.filter((templateId) => templateId !== deletingTemplate.id),
-      );
       setFeedback('Шаблон удалён.');
       await loadTemplates();
     } finally {
@@ -360,36 +283,7 @@ function TemplatesPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Шаблоны"
-        actions={
-          <>
-            <ActionButton
-              disabled={isLoading}
-              icon={
-                isLoading ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )
-              }
-              size="sm"
-              onClick={() => void loadTemplates()}
-            >
-              Обновить
-            </ActionButton>
-            <ActionButton
-              icon={<FilePlus2 className="h-4 w-4" />}
-              size="sm"
-              tone="info"
-              variant="solid"
-              onClick={() => setIsCreateDialogOpen(true)}
-            >
-              Добавить
-            </ActionButton>
-          </>
-        }
-      />
+      <PageHeader title="Шаблоны" />
 
       {loadError ? (
         <div className="flex items-center justify-between gap-3 rounded-2xl border border-error/15 bg-error/8 px-4 py-3 text-sm text-error">
@@ -414,11 +308,21 @@ function TemplatesPage() {
       <Panel
         title="Каталог шаблонов"
         actions={
-          <TemplateTypeFilter
-            activeFilter={activeFilter}
-            counts={templateCountByType}
-            onChange={setActiveFilter}
-          />
+          <>
+            <TemplateTypeFilter
+              activeFilter={activeFilter}
+              onChange={setActiveFilter}
+            />
+            <ActionButton
+              icon={<FilePlus2 className="h-4 w-4" />}
+              size="sm"
+              tone="info"
+              variant="solid"
+              onClick={() => setIsCreateDialogOpen(true)}
+            >
+              Добавить
+            </ActionButton>
+          </>
         }
       >
         <div className="overflow-hidden rounded-2xl border border-border/25 bg-secondary/50">
@@ -426,14 +330,6 @@ function TemplatesPage() {
             <table className="w-full border-separate [border-spacing:0_10px]">
               <thead>
                 <tr>
-                  <th className="border-b border-border/25 px-4 pb-3 text-left">
-                    <SelectionCheckbox
-                      checked={isAllVisibleSelected}
-                      indeterminate={isPartiallyVisibleSelected}
-                      label="Выбрать все видимые шаблоны"
-                      onToggle={toggleAllVisibleTemplates}
-                    />
-                  </th>
                   {templateTableHeaders.map((header) => (
                     <th
                       key={header.id}
@@ -479,7 +375,7 @@ function TemplatesPage() {
               <tbody>
                 {isLoading && templates.length === 0 ? (
                   <tr>
-                    <td colSpan={templateTableHeaders.length + 2}>
+                    <td colSpan={templateTableHeaders.length + 1}>
                       <TemplateEmptyState
                         title="Загружаем шаблоны"
                         text="Получаем список из API."
@@ -488,7 +384,7 @@ function TemplatesPage() {
                   </tr>
                 ) : sortedTemplates.length === 0 ? (
                   <tr>
-                    <td colSpan={templateTableHeaders.length + 2}>
+                    <td colSpan={templateTableHeaders.length + 1}>
                       <TemplateEmptyState
                         title="Пока нет шаблонов"
                         text="Создай шаблон для одежды или обуви."
@@ -496,21 +392,15 @@ function TemplatesPage() {
                     </td>
                   </tr>
                 ) : (
-                  sortedTemplates.map((template) => {
-                    const isChecked = selectedTemplateIds.includes(template.id);
-
-                    return (
-                      <TemplateRow
-                        key={template.id}
-                        disabled={isMutationPending}
-                        isChecked={isChecked}
-                        template={template}
-                        onDelete={setDeletingTemplate}
-                        onEdit={setEditingTemplate}
-                        onToggleSelection={toggleTemplateSelection}
-                      />
-                    );
-                  })
+                  sortedTemplates.map((template) => (
+                    <TemplateRow
+                      key={template.id}
+                      disabled={isMutationPending}
+                      template={template}
+                      onDelete={setDeletingTemplate}
+                      onEdit={setEditingTemplate}
+                    />
+                  ))
                 )}
               </tbody>
             </table>
@@ -565,13 +455,11 @@ function TemplatesPage() {
 
 interface TemplateTypeFilterProps {
   activeFilter: TemplateFilter;
-  counts: Record<ChannelTemplateType, number>;
   onChange: (filter: TemplateFilter) => void;
 }
 
 function TemplateTypeFilter({
   activeFilter,
-  counts,
   onChange,
 }: TemplateTypeFilterProps) {
   const options: Array<{
@@ -580,7 +468,7 @@ function TemplateTypeFilter({
   }> = [
     { label: 'Все', value: 'all' },
     ...templateTypeOptions.map((option) => ({
-      label: `${option.shortLabel} ${counts[option.value]}`,
+      label: option.shortLabel,
       value: option.value,
     })),
   ];
@@ -608,22 +496,18 @@ function TemplateTypeFilter({
 
 interface TemplateRowProps {
   disabled: boolean;
-  isChecked: boolean;
   template: ApiChannelTemplateRead;
   onDelete: (template: ApiChannelTemplateRead) => void;
   onEdit: (template: ApiChannelTemplateRead) => void;
-  onToggleSelection: (templateId: string) => void;
 }
 
 function TemplateRow({
   disabled,
-  isChecked,
   template,
   onDelete,
   onEdit,
-  onToggleSelection,
 }: TemplateRowProps) {
-  const rowSurfaceClassName = isChecked ? 'bg-info/8' : 'group-hover:bg-secondary/50';
+  const rowSurfaceClassName = 'group-hover:bg-secondary/50';
   const rowCellClassName = `px-4 py-4 align-middle transition-colors duration-200 ${rowSurfaceClassName}`;
 
   return (
@@ -631,20 +515,7 @@ function TemplateRow({
       className="group cursor-pointer text-sm"
       onClick={() => onEdit(template)}
     >
-      <td
-        className={`${rowCellClassName} w-16 rounded-l-2xl`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleSelection(template.id);
-        }}
-      >
-        <SelectionCheckbox
-          checked={isChecked}
-          label={`Выбрать шаблон ${template.name}`}
-          onToggle={() => onToggleSelection(template.id)}
-        />
-      </td>
-      <td className={rowCellClassName}>
+      <td className={`${rowCellClassName} rounded-l-2xl`}>
         <div className="font-medium text-text">{template.name}</div>
       </td>
       <td className={rowCellClassName}>
