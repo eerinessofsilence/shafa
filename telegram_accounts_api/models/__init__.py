@@ -3,7 +3,9 @@ from .common import ActionResponse, HealthResponse
 from .channel_template import (
     ChannelTemplateCreate,
     ChannelTemplateRead,
+    ChannelTemplateResolveRequest,
     ChannelTemplateSummary,
+    ChannelTemplateType,
     ChannelTemplateUpdate,
     ResolvedTelegramChannel,
 )
@@ -26,7 +28,9 @@ __all__ = [
     "HealthResponse",
     "ChannelTemplateCreate",
     "ChannelTemplateRead",
+    "ChannelTemplateResolveRequest",
     "ChannelTemplateSummary",
+    "ChannelTemplateType",
     "ChannelTemplateUpdate",
     "ResolvedTelegramChannel",
     "SendMessageRequest",

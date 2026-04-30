@@ -78,7 +78,18 @@ class TelegramService:
         async with self._client(account_id) as client:
             resolved: list[ResolvedTelegramChannel] = []
             for link in clean_links:
-                resolved.append(await self._resolve_single_channel(client, link))
+                try:
+                    resolved.append(await self._resolve_single_channel(client, link))
+                except TelegramOperationError:
+                    raise
+                except Exception as exc:
+                    raise TelegramOperationError(
+                        (
+                            f"Канал не найден: {link}. Telegram не смог найти публичный канал "
+                            "по этой ссылке или у аккаунта, через который выполняется проверка, нет доступа к нему."
+                        ),
+                        status_code=400,
+                    ) from exc
         return resolved
 
     async def _resolve_credentials(self, account_id: str) -> tuple[int, str, Path]:
