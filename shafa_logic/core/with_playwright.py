@@ -30,6 +30,7 @@ from data.const import (
     MEDIA_DIR_PATH,
     REFERER_URL,
     STORAGE_STATE_PATH,
+    get_price_markup,
 )
 from data.db import init_db, save_cookies, save_uploaded_product
 from utils.logging import log
@@ -88,8 +89,9 @@ def main() -> None:
             ),
         )
         return
-    price_with_markup = price_value + DEFAULT_MARKUP
-    log("INFO", f"Цена товара (с наценкой {DEFAULT_MARKUP}): {price_with_markup}.")
+    price_markup = get_price_markup(DEFAULT_MARKUP)
+    price_with_markup = price_value + price_markup
+    log("INFO", f"Цена товара (с наценкой {price_markup}): {price_with_markup}.")
 
     try:
         media_dir = Path(MEDIA_DIR_PATH)
@@ -249,7 +251,7 @@ def main() -> None:
                     csrftoken,
                     photo_ids,
                     product_raw_data,
-                    markup=DEFAULT_MARKUP,
+                    markup=price_markup,
                 )
                 errors = result.get("errors") or []
                 if errors and _has_invalid_size_error(errors) and parsed_data:
@@ -288,7 +290,7 @@ def main() -> None:
                         csrftoken,
                         photo_ids,
                         product_raw_data,
-                        markup=DEFAULT_MARKUP,
+                        markup=price_markup,
                     )
                     errors = result.get("errors") or []
                 if errors:

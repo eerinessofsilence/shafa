@@ -17,6 +17,7 @@ class Account:
     telegram_password: str = ""
     branch: str = "main"
     timer_minutes: int = 5
+    markup_amount: Optional[int] = None
     channel_links: list[str] = field(default_factory=list)
     status: str = "stopped"
     last_run: str = "—"
@@ -32,6 +33,7 @@ class Account:
             "telegram_password": self.telegram_password,
             "branch": self.branch,
             "timer_minutes": self.timer_minutes,
+            "markup_amount": self.markup_amount,
             "channel_links": self.channel_links,
             "status": self.status,
             "last_run": self.last_run,
@@ -48,8 +50,19 @@ class Account:
             telegram_password=str(data.get("telegram_password") or ""),
             branch=data.get("branch", "main"),
             timer_minutes=int(data.get("timer_minutes", 5)),
+            markup_amount=cls._parse_markup_amount(data.get("markup_amount")),
             channel_links=sanitize_channel_links(data.get("channel_links", [])),
             status=data.get("status", "stopped"),
             last_run=data.get("last_run", "—"),
             errors=int(data.get("errors", 0)),
         )
+
+    @staticmethod
+    def _parse_markup_amount(value: object) -> Optional[int]:
+        if value is None or value == "":
+            return None
+        try:
+            parsed_value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0, parsed_value)

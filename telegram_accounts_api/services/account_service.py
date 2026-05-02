@@ -48,6 +48,7 @@ ACCOUNT_KNOWN_FIELDS = {
     "path",
     "branch",
     "timer_minutes",
+    "markup_amount",
     "channel_links",
     "status",
     "last_run",
@@ -110,6 +111,7 @@ class AccountService:
             "path": data.path or default_project_path,
             "branch": data.branch,
             "timer_minutes": data.timer_minutes,
+            "markup_amount": data.markup_amount,
             "channel_links": data.channel_links,
             "status": "stopped",
             "last_run": None,
@@ -137,6 +139,8 @@ class AccountService:
                 item["path"] = data.path
             if data.timer_minutes is not None:
                 item["timer_minutes"] = data.timer_minutes
+            if "markup_amount" in data.model_fields_set:
+                item["markup_amount"] = data.markup_amount
             if data.channel_links is not None:
                 item["channel_links"] = data.channel_links
 
@@ -283,6 +287,7 @@ class AccountService:
             path=runtime_account.path,
             branch=runtime_account.branch,
             timer_minutes=runtime_account.timer_minutes,
+            markup_amount=runtime_account.markup_amount,
             channel_links=runtime_account.channel_links,
             status=status,
             last_run=item.get("last_run"),
@@ -389,11 +394,22 @@ class AccountService:
             phone_number=phone,
             branch=str(item.get("branch") or "main").strip() or "main",
             timer_minutes=int(item.get("timer_minutes", 5)),
+            markup_amount=self._parse_markup_amount(item.get("markup_amount")),
             channel_links=item.get("channel_links") or [],
             status="started" if str(item.get("status")).strip().lower() in {"started", "running"} else "stopped",
             last_run=item.get("last_run") or "—",
             errors=int(item.get("errors", 0)),
         )
+
+    @staticmethod
+    def _parse_markup_amount(value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed_value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0, min(parsed_value, 100000))
 
     def _build_launch_context(self, account: Account) -> dict[str, str]:
         if not account.path.strip():

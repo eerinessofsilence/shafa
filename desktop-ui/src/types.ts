@@ -88,6 +88,7 @@ export interface ApiAccountRead {
   path: string;
   branch: string;
   timer_minutes: number;
+  markup_amount: number | null;
   channel_links: string[];
   status: ApiAccountStatus;
   last_run: string | null;
@@ -137,6 +138,7 @@ export interface ApiAccountCreate {
   phone: string;
   path: string;
   timer_minutes: number;
+  markup_amount?: number | null;
   channel_links: string[];
   branch?: string;
 }
@@ -145,6 +147,7 @@ export interface ApiAccountUpdate {
   name?: string;
   path?: string;
   timer_minutes?: number;
+  markup_amount?: number | null;
   channel_links?: string[];
 }
 
@@ -219,6 +222,7 @@ export interface AccountRow {
   path: string;
   branch: string;
   timer: string;
+  markup: string;
   errors: string;
   statusLabel: string;
   statusTone: StatusTone;

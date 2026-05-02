@@ -123,6 +123,7 @@ APP_PLATFORM = "web"
 APP_VERSION = "v2025.12.31.3"
 DEFAULT_MARKUP = 400
 DEFAULT_CLOTHES_MARKUP = 500
+PRICE_MARKUP_ENV = "SHAFA_PRICE_MARKUP"
 DEFAULT_MESSAGE_PARSE_LIMIT = 150
 MAX_PRODUCT_CREATE_ATTEMPTS = 2
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -133,6 +134,17 @@ ACCOUNT_STATE_DIR = _get_env_path("SHAFA_ACCOUNT_STATE_DIR", _ROOT_DIR / "data")
 ACCOUNT_STATE_DIR.mkdir(parents=True, exist_ok=True)
 PROJECT_DATA_DIR = _ROOT_DIR / "data"
 PROJECT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_price_markup(default: int) -> int:
+    configured_markup = _get_env_int(PRICE_MARKUP_ENV)
+
+    if configured_markup is None:
+        return default
+
+    return max(0, configured_markup)
+
+
 STORAGE_STATE_PATH = _get_env_path("SHAFA_STORAGE_STATE_PATH", ACCOUNT_STATE_DIR / "auth.json")
 TELEGRAM_SESSION_PATH = _get_env_path(
     "SHAFA_TELEGRAM_SESSION_PATH",

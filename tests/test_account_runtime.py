@@ -32,6 +32,31 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
 
 
+def test_account_runtime_sets_account_price_markup(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    runtime = AccountRuntimeService(store)
+    account = Account(
+        id="acc-markup",
+        name="Markup",
+        path=str(tmp_path / "project"),
+        markup_amount=650,
+    )
+
+    env = runtime.account_env(account, base_env={"SHAFA_PRICE_MARKUP": "400"})
+
+    assert env["SHAFA_PRICE_MARKUP"] == "650"
+
+
+def test_account_runtime_clears_inherited_price_markup(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    runtime = AccountRuntimeService(store)
+    account = Account(id="acc-markup", name="Markup", path=str(tmp_path / "project"))
+
+    env = runtime.account_env(account, base_env={"SHAFA_PRICE_MARKUP": "400"})
+
+    assert "SHAFA_PRICE_MARKUP" not in env
+
+
 def test_account_runtime_uses_root_env_credentials(tmp_path: Path) -> None:
     store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
     runtime = AccountRuntimeService(store)

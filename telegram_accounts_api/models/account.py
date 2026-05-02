@@ -16,6 +16,7 @@ class AccountBase(BaseModel):
     path: str = Field(default="")
     branch: str = Field(default="main")
     timer_minutes: int = Field(default=5, ge=1, le=1440)
+    markup_amount: int | None = Field(default=None, ge=0, le=100000)
     channel_links: list[str] = Field(default_factory=list)
 
     @field_validator("name", "phone", "path", "branch", mode="before")
@@ -41,6 +42,7 @@ class AccountUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     path: str | None = Field(default=None)
     timer_minutes: int | None = Field(default=None, ge=1, le=1440)
+    markup_amount: int | None = Field(default=None, ge=0, le=100000)
     channel_links: list[str] | None = None
 
     @field_validator("name", "path", mode="before")

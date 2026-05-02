@@ -113,6 +113,7 @@ import {
 const defaultTimerMinutes = 5;
 const minimumTimerMinutes = 1;
 const maximumTimerMinutes = 1440;
+const maximumMarkupAmount = 100000;
 const productName = 'Shafa Control';
 const accountControlClassName =
   'h-[42px] w-full rounded-[8px] border border-border bg-foreground px-4 text-[15px] text-text outline-none transition hover:border-border-strong focus:border-info focus:ring-2 focus:ring-info/10';
@@ -130,7 +131,7 @@ const navItemIcons: Record<PageId, ReactNode> = {
 
 type TelegramChannelDraft = Pick<TelegramChannel, 'handle'>;
 type ActionTone = ButtonTone;
-type AccountEditableField = 'name' | 'path' | 'timer';
+type AccountEditableField = 'name' | 'path' | 'timer' | 'markup';
 type AccountDraft = Pick<AccountRow, AccountEditableField>;
 type AccountSortField = 'name' | 'timer' | 'channels' | 'status' | 'errors';
 type AccountSortDirection = 'asc' | 'desc';
@@ -186,6 +187,7 @@ const accountDraftInitialState: AccountDraft = {
   name: '',
   path: '',
   timer: `${defaultTimerMinutes} мин`,
+  markup: '',
 };
 const accountPageSizeOptions = [5, 10, 20, 50] as const;
 const tablePaginationSelectClassName =
@@ -378,6 +380,46 @@ function parseTimerLabel(value: string) {
   }
 
   return Math.min(parsedValue, maximumTimerMinutes);
+}
+
+function formatMarkupLabel(amount: number | null | undefined) {
+  return amount === null || amount === undefined ? '' : String(amount);
+}
+
+function extractMarkupAmount(value: string) {
+  const digits = value.replace(/[^\d]/g, '');
+
+  if (!digits) {
+    return null;
+  }
+
+  const parsedValue = Number.parseInt(digits, 10);
+
+  return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function isMarkupValueValid(value: string) {
+  if (!value.trim()) {
+    return true;
+  }
+
+  const parsedValue = extractMarkupAmount(value);
+
+  return (
+    parsedValue !== null &&
+    parsedValue >= 0 &&
+    parsedValue <= maximumMarkupAmount
+  );
+}
+
+function parseMarkupLabel(value: string) {
+  const parsedValue = extractMarkupAmount(value);
+
+  if (parsedValue === null) {
+    return null;
+  }
+
+  return Math.min(parsedValue, maximumMarkupAmount);
 }
 
 function formatDateInputValue(value: Date) {
@@ -1147,6 +1189,7 @@ function mapApiAccountToRow(account: ApiAccountRead): AccountRow {
     path: account.path,
     branch: account.branch || 'main',
     timer: formatTimerLabel(account.timer_minutes),
+    markup: formatMarkupLabel(account.markup_amount),
     errors: String(account.errors),
     statusLabel,
     statusTone,
@@ -1167,6 +1210,7 @@ function createAccountCreatePayload(draft: AccountDraft): ApiAccountCreate {
     phone: '',
     path: draft.path.trim(),
     timer_minutes: parseTimerLabel(draft.timer),
+    markup_amount: parseMarkupLabel(draft.markup),
     channel_links: [],
   };
 }
@@ -1176,6 +1220,7 @@ function createAccountUpdatePayload(draft: AccountDraft): ApiAccountUpdate {
     name: draft.name.trim(),
     path: draft.path.trim(),
     timer_minutes: parseTimerLabel(draft.timer),
+    markup_amount: parseMarkupLabel(draft.markup),
   };
 }
 
@@ -1560,11 +1605,16 @@ function getAccountDraftFromRow(account: AccountRow): AccountDraft {
     name: account.name,
     path: account.path,
     timer: account.timer,
+    markup: account.markup,
   };
 }
 
 function isAccountDraftValid(draft: AccountDraft) {
-  return Boolean(draft.name.trim()) && isTimerValueValid(draft.timer);
+  return (
+    Boolean(draft.name.trim()) &&
+    isTimerValueValid(draft.timer) &&
+    isMarkupValueValid(draft.markup)
+  );
 }
 
 function formatAccountCount(count: number) {
@@ -2021,6 +2071,7 @@ export {
   defaultChannelTemplateName,
   defaultTimerMinutes,
   extractAccountExtraText,
+  extractMarkupAmount,
   extractTimerMinutes,
   fieldLabelClassName,
   formatAccountCount,
@@ -2029,6 +2080,7 @@ export {
   formatAccountTextValue,
   formatApiError,
   formatDashboardRunTimestamp,
+  formatMarkupLabel,
   formatTimerLabel,
   getAccountDraftFromRow,
   getAccountLogEventSurfaceClassName,
@@ -2043,6 +2095,7 @@ export {
   getTelegramStepMeta,
   isAccountDraftValid,
   isLikelyEmail,
+  isMarkupValueValid,
   isRecord,
   isTimerValueValid,
   joinUniqueMessages,
@@ -2057,6 +2110,7 @@ export {
   mapApiAccountToRow,
   mapLinksToTelegramChannels,
   maximumTimerMinutes,
+  maximumMarkupAmount,
   mergeAndSortAccountLogEntries,
   minimumTimerMinutes,
   normalizeTelegramHandle,

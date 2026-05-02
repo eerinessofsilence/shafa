@@ -121,6 +121,7 @@ class AccountsApiTest(unittest.TestCase):
                 "name": "Updated account",
                 "path": "/tmp/updated-project",
                 "timer_minutes": 15,
+                "markup_amount": 650,
                 "channel_links": [
                     "t.me/updated_channel",
                     "https://t.me/second_channel",
@@ -134,6 +135,7 @@ class AccountsApiTest(unittest.TestCase):
         self.assertEqual(payload["path"], "/tmp/updated-project")
         self.assertNotIn("open_browser", payload)
         self.assertEqual(payload["timer_minutes"], 15)
+        self.assertEqual(payload["markup_amount"], 650)
         self.assertEqual(
             payload["channel_links"],
             [
@@ -150,6 +152,7 @@ class AccountsApiTest(unittest.TestCase):
         self.assertEqual(stored_payload["path"], "/tmp/updated-project")
         self.assertNotIn("open_browser", stored_payload)
         self.assertEqual(stored_payload["timer_minutes"], 15)
+        self.assertEqual(stored_payload["markup_amount"], 650)
         self.assertEqual(
             stored_payload["channel_links"],
             [
@@ -179,9 +182,23 @@ class AccountsApiTest(unittest.TestCase):
             "/accounts/acc-1",
             json={"timer_minutes": 0},
         )
+        invalid_markup = self.client.patch(
+            "/accounts/acc-1",
+            json={"markup_amount": -1},
+        )
 
         self.assertEqual(empty_name.status_code, 422)
         self.assertEqual(invalid_timer.status_code, 422)
+        self.assertEqual(invalid_markup.status_code, 422)
+
+    def test_patch_can_clear_markup_amount(self) -> None:
+        self.client.patch("/accounts/acc-1", json={"markup_amount": 700})
+
+        response = self.client.patch("/accounts/acc-1", json={"markup_amount": None})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["markup_amount"])
+        self.assertIsNone(self._read_accounts()[0]["markup_amount"])
 
     def test_get_account_returns_actual_session_flags(self) -> None:
         account_dir = self.accounts_dir / "acc-1"

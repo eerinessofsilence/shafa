@@ -12,6 +12,7 @@ from data.const import (
     CREATE_PRODUCT_MUTATION,
     DEFAULT_MARKUP,
     LOG_CREATE_PRODUCT_REQUEST,
+    get_price_markup,
 )
 from models.product import Product
 from utils.logging import log
@@ -103,9 +104,10 @@ def create_product(
     csrftoken: str,
     photo_ids: list[str],
     product_raw_data: dict,
-    markup: int = DEFAULT_MARKUP,
+    markup: int | None = None,
 ) -> dict:
-    payload = build_create_product_payload(photo_ids, product_raw_data, markup)
+    effective_markup = get_price_markup(DEFAULT_MARKUP) if markup is None else markup
+    payload = build_create_product_payload(photo_ids, product_raw_data, effective_markup)
     _log_create_product_payload(payload)
     resp = ctx.request.post(
         API_URL,
@@ -133,7 +135,7 @@ def create_product(
                 retry_payload = build_create_product_payload(
                     photo_ids,
                     retry_raw,
-                    markup,
+                    effective_markup,
                 )
                 _log_create_product_payload(retry_payload)
                 resp = ctx.request.post(

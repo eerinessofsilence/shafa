@@ -38,6 +38,7 @@ import {
   defaultChannelTemplateName,
   defaultTimerMinutes,
   extractAccountExtraText,
+  extractMarkupAmount,
   extractTimerMinutes,
   fieldLabelClassName,
   formatAccountCount,
@@ -54,10 +55,12 @@ import {
   getTelegramStepMeta,
   isAccountDraftValid,
   isLikelyEmail,
+  isMarkupValueValid,
   isRecord,
   isTimerValueValid,
   joinUniqueMessages,
   mapLinksToTelegramChannels,
+  maximumMarkupAmount,
   maximumTimerMinutes,
   minimumTimerMinutes,
   normalizeTelegramHandle,
@@ -91,6 +94,7 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  CircleDollarSign,
   EllipsisVertical,
   FilePlus2,
   FileJson,
@@ -118,10 +122,12 @@ import {
   type ChangeEvent,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 interface AccountsPageProps {
   accounts: AccountRow[];
@@ -918,6 +924,10 @@ interface AccountRowActionMenuProps {
   onEdit: (accountId: string) => void;
 }
 
+const accountRowActionMenuWidth = 208;
+const accountRowActionMenuGap = 8;
+const accountRowActionMenuViewportPadding = 12;
+
 function AccountRowActionMenu({
   account,
   disabled,
@@ -925,7 +935,75 @@ function AccountRowActionMenu({
   onDelete,
   onEdit,
 }: AccountRowActionMenuProps) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const closeTimeoutRef = useRef<number | null>(null);
   const [isOpen, setIsOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+
+  const clearCloseTimeout = () => {
+    if (closeTimeoutRef.current === null) {
+      return;
+    }
+
+    window.clearTimeout(closeTimeoutRef.current);
+    closeTimeoutRef.current = null;
+  };
+
+  const updateMenuPosition = () => {
+    const trigger = triggerRef.current;
+
+    if (!trigger) {
+      return;
+    }
+
+    const rect = trigger.getBoundingClientRect();
+    const left = Math.min(
+      window.innerWidth -
+        accountRowActionMenuViewportPadding -
+        accountRowActionMenuWidth,
+      Math.max(
+        accountRowActionMenuViewportPadding,
+        rect.right - accountRowActionMenuWidth,
+      ),
+    );
+
+    setMenuPosition({
+      left,
+      top: rect.bottom + accountRowActionMenuGap,
+    });
+  };
+
+  const openMenu = () => {
+    if (disabled) {
+      return;
+    }
+
+    clearCloseTimeout();
+    updateMenuPosition();
+    setIsOpen(true);
+  };
+
+  const closeMenu = () => {
+    clearCloseTimeout();
+    setIsOpen(false);
+  };
+
+  const scheduleCloseMenu = () => {
+    clearCloseTimeout();
+    closeTimeoutRef.current = window.setTimeout(() => {
+      setIsOpen(false);
+      closeTimeoutRef.current = null;
+    }, 140);
+  };
+
+  const runMenuAction = (action: (accountId: string) => void) => {
+    closeMenu();
+    action(account.id);
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -934,124 +1012,209 @@ function AccountRowActionMenu({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setIsOpen(false);
+        closeMenu();
       }
     };
 
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+
+      if (
+        target instanceof Node &&
+        (triggerRef.current?.contains(target) || menuRef.current?.contains(target))
+      ) {
+        return;
+      }
+
+      closeMenu();
+    };
+
+    const handleResize = () => updateMenuPosition();
+    const handleScroll = () => closeMenu();
+
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('scroll', handleScroll, true);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('scroll', handleScroll, true);
     };
   }, [isOpen]);
 
+  useLayoutEffect(() => {
+    if (!isOpen || !menuPosition) {
+      return;
+    }
+
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+
+    if (!trigger || !menu) {
+      return;
+    }
+
+    const rect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const width = menuRect.width || accountRowActionMenuWidth;
+    const height = menuRect.height;
+    const nextLeft = Math.min(
+      window.innerWidth - accountRowActionMenuViewportPadding - width,
+      Math.max(accountRowActionMenuViewportPadding, rect.right - width),
+    );
+    const belowTop = rect.bottom + accountRowActionMenuGap;
+    const aboveTop = rect.top - accountRowActionMenuGap - height;
+    const nextTop =
+      belowTop + height > window.innerHeight - accountRowActionMenuViewportPadding &&
+      aboveTop >= accountRowActionMenuViewportPadding
+        ? aboveTop
+        : Math.min(
+            belowTop,
+            window.innerHeight - accountRowActionMenuViewportPadding - height,
+          );
+
+    if (nextLeft !== menuPosition.left || nextTop !== menuPosition.top) {
+      setMenuPosition({ left: nextLeft, top: nextTop });
+    }
+  }, [isOpen, menuPosition]);
+
   useEffect(() => {
     if (disabled) {
-      setIsOpen(false);
+      closeMenu();
     }
   }, [disabled]);
+
+  useEffect(() => () => clearCloseTimeout(), []);
+
+  const menu =
+    isOpen && menuPosition && typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            ref={menuRef}
+            className="z-[1000]"
+            style={{
+              left: menuPosition.left,
+              position: 'fixed',
+              top: menuPosition.top,
+              width: accountRowActionMenuWidth,
+            }}
+            onBlurCapture={(event) => {
+              const nextTarget = event.relatedTarget;
+
+              if (
+                !(nextTarget instanceof Node) ||
+                (!menuRef.current?.contains(nextTarget) &&
+                  !triggerRef.current?.contains(nextTarget))
+              ) {
+                scheduleCloseMenu();
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+            onFocusCapture={clearCloseTimeout}
+            onMouseEnter={clearCloseTimeout}
+            onMouseLeave={scheduleCloseMenu}
+          >
+            <div
+              className="rounded-2xl border border-border/20 bg-foreground p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
+              role="menu"
+            >
+              <button
+                className={getButtonClassName({
+                  size: 'row',
+                  variant: 'ghost',
+                  fullWidth: true,
+                  align: 'left',
+                  className: 'px-3',
+                })}
+                role="menuitem"
+                type="button"
+                onClick={() => runMenuAction(onEdit)}
+              >
+                <PencilLine className="h-4 w-4" />
+                Редактировать
+              </button>
+              <button
+                className={getButtonClassName({
+                  size: 'row',
+                  variant: 'ghost',
+                  fullWidth: true,
+                  align: 'left',
+                  className: 'px-3',
+                })}
+                disabled={account.telegramChannels.length === 0}
+                role="menuitem"
+                type="button"
+                onClick={() => runMenuAction(onCreateTemplate)}
+              >
+                <FilePlus2 className="h-4 w-4" />В шаблон
+              </button>
+              <button
+                className={getButtonClassName({
+                  tone: 'danger',
+                  size: 'row',
+                  variant: 'ghost',
+                  fullWidth: true,
+                  align: 'left',
+                  className: 'px-3',
+                })}
+                role="menuitem"
+                type="button"
+                onClick={() => runMenuAction(onDelete)}
+              >
+                <Trash2 className="h-4 w-4" />
+                Удалить
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
     <div
       className={cx('relative', isOpen && 'z-40')}
       onClick={(event) => event.stopPropagation()}
-      onMouseEnter={() => {
-        if (!disabled) {
-          setIsOpen(true);
-        }
-      }}
-      onMouseLeave={() => setIsOpen(false)}
-      onFocusCapture={() => {
-        if (!disabled) {
-          setIsOpen(true);
-        }
-      }}
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleCloseMenu}
+      onFocusCapture={openMenu}
       onBlurCapture={(event) => {
         const nextTarget = event.relatedTarget;
 
         if (
           !(nextTarget instanceof Node) ||
-          !event.currentTarget.contains(nextTarget)
+          (!event.currentTarget.contains(nextTarget) &&
+            !menuRef.current?.contains(nextTarget))
         ) {
-          setIsOpen(false);
+          scheduleCloseMenu();
         }
       }}
     >
       <button
+        ref={triggerRef}
         aria-expanded={isOpen}
         aria-haspopup="menu"
         aria-label={`Действия для аккаунта ${account.name}`}
         className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-transparent text-text-muted transition-colors duration-200 hover:bg-foreground hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
         disabled={disabled}
         type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+
+          if (isOpen) {
+            closeMenu();
+            return;
+          }
+
+          openMenu();
+        }}
       >
         <EllipsisVertical className="h-4.5 w-4.5" />
       </button>
 
-      {isOpen ? (
-        <div className="absolute top-full right-0 z-50 pt-2">
-          <div
-            className="w-52 rounded-2xl border border-border/20 bg-foreground p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
-            role="menu"
-          >
-            <button
-              className={getButtonClassName({
-                size: 'row',
-                variant: 'ghost',
-                fullWidth: true,
-                align: 'left',
-                className: 'px-3',
-              })}
-              role="menuitem"
-              type="button"
-              onClick={() => {
-                setIsOpen(false);
-                onEdit(account.id);
-              }}
-            >
-              <PencilLine className="h-4 w-4" />
-              Редактировать
-            </button>
-            <button
-              className={getButtonClassName({
-                size: 'row',
-                variant: 'ghost',
-                fullWidth: true,
-                align: 'left',
-                className: 'px-3',
-              })}
-              disabled={account.telegramChannels.length === 0}
-              role="menuitem"
-              type="button"
-              onClick={() => {
-                setIsOpen(false);
-                onCreateTemplate(account.id);
-              }}
-            >
-              <FilePlus2 className="h-4 w-4" />В шаблон
-            </button>
-            <button
-              className={getButtonClassName({
-                tone: 'danger',
-                size: 'row',
-                variant: 'ghost',
-                fullWidth: true,
-                align: 'left',
-                className: 'px-3',
-              })}
-              role="menuitem"
-              type="button"
-              onClick={() => {
-                setIsOpen(false);
-                onDelete(account.id);
-              }}
-            >
-              <Trash2 className="h-4 w-4" />
-              Удалить
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {menu}
     </div>
   );
 }
@@ -4244,17 +4407,19 @@ interface AccountFormFieldsProps {
 
 function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
   return (
-    <div className="grid gap-3 md:grid-cols-2">
-      <TextInputField
-        label="Имя аккаунта"
-        value={values.name}
-        icon={
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
-            <User className="h-3.5 w-3.5 text-info/75" />
-          </div>
-        }
-        onChange={(value) => onFieldChange('name', value)}
-      />
+    <div className="grid grid-cols-2 gap-3">
+      <div className="col-span-2">
+        <TextInputField
+          label="Имя аккаунта"
+          value={values.name}
+          icon={
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+              <User className="h-3.5 w-3.5 text-info/75" />
+            </div>
+          }
+          onChange={(value) => onFieldChange('name', value)}
+        />
+      </div>
       <MinutesTimePickerField
         label="Таймер"
         value={values.timer}
@@ -4264,6 +4429,16 @@ function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
           </div>
         }
         onChange={(value) => onFieldChange('timer', value)}
+      />
+      <MarkupAmountField
+        label="Наценка"
+        value={values.markup}
+        icon={
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+            <CircleDollarSign className="h-3.5 w-3.5 text-info/75" />
+          </div>
+        }
+        onChange={(value) => onFieldChange('markup', value)}
       />
     </div>
   );
@@ -4283,6 +4458,90 @@ function TextInputField({ label, value, onChange, icon }: EditableFieldProps) {
           value={value}
           onChange={(event) => onChange(event.target.value)}
         />
+      </div>
+    </label>
+  );
+}
+
+function MarkupAmountField({
+  label,
+  value,
+  onChange,
+  icon,
+}: EditableFieldProps) {
+  const [inputValue, setInputValue] = useState(() => {
+    const parsedValue = extractMarkupAmount(value);
+    return parsedValue === null ? '' : String(parsedValue);
+  });
+
+  useEffect(() => {
+    const parsedValue = extractMarkupAmount(value);
+    const normalizedValue = parsedValue === null ? '' : String(parsedValue);
+
+    setInputValue((currentValue) =>
+      currentValue === normalizedValue ? currentValue : normalizedValue,
+    );
+  }, [value]);
+
+  const hasValue = inputValue.trim().length > 0;
+  const hasError = !isMarkupValueValid(inputValue);
+  const helperText = hasError
+    ? `Введите значение от 0 до ${maximumMarkupAmount}`
+    : null;
+  const unitOffset = `${Math.max(inputValue.length, 1)}ch`;
+
+  const handleInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextValue = event.target.value.replace(/[^\d]/g, '').slice(0, 6);
+    setInputValue(nextValue);
+    onChange(nextValue);
+  };
+
+  return (
+    <label className="flex flex-col gap-3">
+      <span className={fieldLabelClassName}>
+        {icon}
+        {label}
+      </span>
+      <div>
+        <div
+          className={cx(
+            'relative overflow-hidden rounded-xl border bg-secondary transition-all duration-200 focus-within:border-info/55 focus-within:ring-4 focus-within:ring-info/10',
+            hasError ? 'border-error ring-2 ring-error/10' : 'border-border/25',
+          )}
+        >
+          <input
+            className="h-12 w-full bg-transparent pr-18 pl-4 text-[17px] text-text outline-none placeholder:text-text-muted/45"
+            inputMode="numeric"
+            placeholder="По умолчанию"
+            type="text"
+            value={inputValue}
+            onChange={handleInputChange}
+          />
+          {hasValue ? (
+            <span
+              className="pointer-events-none absolute top-1/2 -translate-y-1/2 text-sm font-semibold text-text-muted"
+              style={{ left: `calc(1rem + ${unitOffset} + 0.55rem)` }}
+            >
+              грн
+            </span>
+          ) : null}
+        </div>
+
+        <div className="mt-1 flex items-start justify-between gap-3 px-1">
+          <p
+            className={cx(
+              'text-sm leading-6',
+              hasError ? 'text-error' : 'text-text-muted',
+            )}
+          >
+            {hasError ? (
+              <span className="inline-flex items-center gap-1.5">
+                <TriangleAlert className="h-4 w-4" />
+                {helperText}
+              </span>
+            ) : null}
+          </p>
+        </div>
       </div>
     </label>
   );

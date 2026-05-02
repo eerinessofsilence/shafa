@@ -162,6 +162,10 @@ class AccountRuntimeService:
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
+        if account.markup_amount is None:
+            env.pop("SHAFA_PRICE_MARKUP", None)
+        else:
+            env["SHAFA_PRICE_MARKUP"] = str(account.markup_amount)
         api_id = (
             telegram_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()
             or root_credentials.get("SHAFA_TELEGRAM_API_ID", "").strip()

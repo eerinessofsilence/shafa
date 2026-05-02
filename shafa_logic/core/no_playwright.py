@@ -44,6 +44,7 @@ from data.const import (
     REFERER_URL,
     STORAGE_STATE_PATH,
     UPLOAD_PHOTO_MUTATION,
+    get_price_markup,
 )
 from data.db import (
     init_db,
@@ -668,11 +669,6 @@ def create_product(
     product_raw_data: dict,
     markup: int,
 ) -> dict:
-    if product_raw_data.get("catalog") in SLUG_TO_WORDS:
-        markup = DEFAULT_CLOTHES_MARKUP
-    else:
-        markup = DEFAULT_MARKUP
-
     payload = _build_create_product_payload(photo_ids, product_raw_data, markup)
     headers = {
         **_base_headers(csrftoken),
@@ -808,11 +804,10 @@ def main() -> None:
         )
         return
     if catalog_slug in SLUG_TO_WORDS:
-        markup = DEFAULT_CLOTHES_MARKUP + price_value
-        _markup = DEFAULT_CLOTHES_MARKUP
+        _markup = get_price_markup(DEFAULT_CLOTHES_MARKUP)
     else:
-        markup = DEFAULT_MARKUP + price_value
-        _markup = DEFAULT_MARKUP
+        _markup = get_price_markup(DEFAULT_MARKUP)
+    markup = _markup + price_value
     log("INFO", f"Цена товара (с наценкой {_markup}): {markup}.")
 
     try:
