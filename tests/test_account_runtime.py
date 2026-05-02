@@ -23,6 +23,9 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     env = runtime.account_env(account, app_mode="sneakers", base_env={"BASE": "1"})
 
     assert env["BASE"] == "1"
+    assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["PYTHONUTF8"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["SHAFA_APP_MODE"] == "sneakers"
     assert env["SHAFA_ACCOUNT_STATE_DIR"].endswith("accounts/acc-1")
     assert env["SHAFA_STORAGE_STATE_PATH"].endswith("accounts/acc-1/auth.json")

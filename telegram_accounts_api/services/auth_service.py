@@ -494,6 +494,8 @@ class AccountAuthService:
         project_path = _preferred_project_dir(Path(account.path).expanduser())
         api_id, api_hash = self._resolve_telegram_credentials(account)
         env.setdefault("PYTHONUNBUFFERED", "1")
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
         env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
@@ -532,6 +534,8 @@ class AccountAuthService:
             cwd=str(project_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=self._account_env(account),
         )
 

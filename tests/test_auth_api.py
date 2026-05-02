@@ -117,6 +117,24 @@ def test_telegram_auth_api_runs_separate_steps(tmp_path: Path) -> None:
     assert submit_password_response.json()["current_step"] == "SUCCESS"
 
 
+def test_auth_service_account_env_uses_utf8_output(tmp_path: Path) -> None:
+    accounts_file = tmp_path / "accounts_state.json"
+    accounts_dir = tmp_path / "accounts"
+    account_service = AccountService(
+        storage=JsonListStorage(accounts_file),
+        accounts_dir=accounts_dir,
+    )
+    store = AccountSessionStore(tmp_path, accounts_dir, accounts_file)
+    service = AccountAuthService(account_service=account_service, store=store)
+    account = Account(id="acc-utf8", name="UTF8", path=str(tmp_path / "project"))
+
+    env = service._account_env(account)
+
+    assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["PYTHONUTF8"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+
+
 def test_telegram_auth_api_uses_backend_env_credentials(tmp_path: Path) -> None:
     client, _store = _make_client(tmp_path)
 

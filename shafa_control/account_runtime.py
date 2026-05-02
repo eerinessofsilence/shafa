@@ -156,6 +156,8 @@ class AccountRuntimeService:
         telegram_credentials = self.store.load_telegram_credentials(account)
         root_credentials = read_env_file(self.root_env_path())
         env.setdefault("PYTHONUNBUFFERED", "1")
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
         env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
@@ -217,6 +219,8 @@ class AccountRuntimeService:
             cwd=str(project_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=self.account_env(account, app_mode=app_mode, base_env=base_env),
         )
 
