@@ -156,10 +156,7 @@ class AccountRuntimeService:
         telegram_credentials = self.store.load_telegram_credentials(account)
         root_credentials = read_env_file(self.root_env_path())
         env.setdefault("PYTHONUNBUFFERED", "1")
-<<<<<<< HEAD
         env.setdefault("PYTHONUTF8", "1")
-=======
->>>>>>> 35bdfe1 (feat: fix db access and windows encode error)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))

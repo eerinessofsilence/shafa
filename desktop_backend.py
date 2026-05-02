@@ -8,15 +8,11 @@ import socket
 import sys
 from pathlib import Path
 
-<<<<<<< HEAD
-SEED_FILES = ("accounts_state.json",)
-=======
 from shafa_logic.utils.stdio import install_safe_stdio
 
 install_safe_stdio()
 
 SEED_FILES = ("accounts_state.json", "telegram_channel_templates.json")
->>>>>>> 35bdfe1 (feat: fix db access and windows encode error)
 SEED_JSON_PAYLOAD = "[]\n"
 DEFAULT_BACKEND_PORT = 8000
 ADDRESS_IN_USE_WINERROR = 10048
