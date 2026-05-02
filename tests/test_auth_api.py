@@ -9,8 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from fastapi.testclient import TestClient
-
 from shafa_control import Account, AccountSessionStore
 from telegram_accounts_api.dependencies import get_account_service, get_auth_service
 from telegram_accounts_api.main import app
@@ -18,6 +16,7 @@ from telegram_accounts_api.models.account import AccountCreate
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.utils.storage import JsonListStorage
+from tests.asgi_client import SyncASGITestClient, async_dependency
 
 
 def _make_client(tmp_path: Path):
@@ -71,9 +70,9 @@ def _make_client(tmp_path: Path):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected command")
 
     auth_service = AccountAuthService(account_service=account_service, store=store, runner=runner)
-    app.dependency_overrides[get_account_service] = lambda: account_service
-    app.dependency_overrides[get_auth_service] = lambda: auth_service
-    return TestClient(app), store
+    app.dependency_overrides[get_account_service] = async_dependency(account_service)
+    app.dependency_overrides[get_auth_service] = async_dependency(auth_service)
+    return SyncASGITestClient(app), store
 
 
 def test_telegram_auth_api_runs_separate_steps(tmp_path: Path) -> None:
@@ -451,7 +450,7 @@ def test_shafa_auth_api_returns_profile_fields(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    auth_service = app.dependency_overrides[get_auth_service]()
+    auth_service = asyncio.run(app.dependency_overrides[get_auth_service]())
     with patch.object(
         auth_service,
         "_fetch_shafa_profile",

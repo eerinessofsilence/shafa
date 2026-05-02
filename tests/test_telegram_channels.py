@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from telegram_channels import (
     DEFAULT_CHANNEL_ALIAS,
+    extract_telegram_invite_hash,
     export_runtime_config,
     load_runtime_config,
     parse_id_bot_response,
@@ -38,11 +39,15 @@ def test_sanitize_channel_links_normalizes_and_deduplicates() -> None:
 
 def test_parse_id_bot_response_extracts_id_and_title() -> None:
     channel_id, title = parse_id_bot_response(
-        "Chat ID: -1001234567890\nTitle: My Sample Channel"
+        "🆔 Chat ID: -1001234567890\n📝 Title: My Sample Channel"
     )
 
     assert channel_id == -1001234567890
     assert title == "My Sample Channel"
+
+
+def test_extract_telegram_invite_hash_supports_plus_links() -> None:
+    assert extract_telegram_invite_hash("https://t.me/+BXoIi5pdNbpmYTYy") == "BXoIi5pdNbpmYTYy"
 
 
 def test_export_and_load_runtime_config(tmp_path: Path) -> None:

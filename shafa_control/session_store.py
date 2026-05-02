@@ -99,7 +99,7 @@ class AccountSessionStore:
             "telegram_login_pending": self.has_pending_telegram_code(account),
             "telegram_credentials_path": str(self.telegram_credentials_file(account)),
             "telegram_credentials_configured": self.has_telegram_credentials(account),
-            "telegram_channels_path": str(self.channels_file(account)),
+            "telegram_channels_path": str(self.shared_telegram_channels_file()),
             "media_dir_path": str(self.media_dir(account)),
             "logs_path": str(self.account_log_file(account)),
         }
@@ -151,6 +151,17 @@ class AccountSessionStore:
 
     def channel_templates_file(self, account: Account) -> Path:
         return self.account_dir(account) / "channel_templates.json"
+
+    def shared_telegram_dir(self) -> Path:
+        path = self.base_dir / "telegram_shared"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def shared_telegram_db_file(self) -> Path:
+        return self.shared_telegram_dir() / "telegram_feed.sqlite3"
+
+    def shared_telegram_channels_file(self) -> Path:
+        return self.shared_telegram_dir() / "shafa_telegram_channels.json"
 
     def logs_dir(self, account: Account) -> Path:
         path = self.account_dir(account) / "logs"

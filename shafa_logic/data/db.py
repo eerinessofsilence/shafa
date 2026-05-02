@@ -7,11 +7,11 @@ from typing import Optional
 from urllib.parse import urlparse
 import re
 
-from data.const import DB_PATH
+from data.const import DB_PATH, TELEGRAM_PRODUCTS_DB_PATH
 from data.size_mapping import normalize_size_text
 
 _COOKIE_BASE_DOMAIN = "shafa.ua"
-_DB_INITIALIZED = False
+_DB_INITIALIZED_PATHS: set[Path] = set()
 _SIZE_ID_BY_NAME_CACHE: Optional[dict[str, int]] = None
 _SIZE_ID_BY_NAME_CATALOG_CACHE: Optional[dict[tuple[str, str], int]] = None
 _SIZE_IDS_CACHE: Optional[set[int]] = None
@@ -137,7 +137,8 @@ def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    global _DB_INITIALIZED
+    global _DB_INITIALIZED_PATHS
+    db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(
@@ -229,13 +230,18 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _ensure_telegram_products_schema(conn)
         _drop_legacy_telegram_channels_table(conn)
         _ensure_size_catalogs_schema(conn)
-    _DB_INITIALIZED = True
+    _DB_INITIALIZED_PATHS.add(db_path)
 
 
-def _ensure_db_initialized() -> None:
-    if _DB_INITIALIZED:
+def _ensure_db_initialized(db_path: Path = DB_PATH) -> None:
+    db_path = Path(db_path)
+    if db_path in _DB_INITIALIZED_PATHS:
         return
-    init_db()
+    init_db(db_path)
+
+
+def _telegram_products_db_path() -> Path:
+    return Path(TELEGRAM_PRODUCTS_DB_PATH)
 
 
 def _normalize_catalog_slug(catalog_slug: Optional[str]) -> Optional[str]:
@@ -805,8 +811,9 @@ def save_telegram_product(
     size = parsed_data.get("size")
     if size is None or str(size).strip() == "":
         return False
-    _ensure_db_initialized()
-    with _connect() as conn:
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO telegram_products
@@ -827,11 +834,11 @@ def save_telegram_product(
 def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> None:
     if not channels:
         return
-    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+    from telegram_subscription.sync import get_telegram_channel_records, set_telegram_channels
 
     current = {
-        int(channel_id): (int(channel_id), str(name).strip(), str(alias or "main"))
-        for channel_id, name, alias in get_telegram_channels()
+        int(record["channel_id"]): dict(record)
+        for record in get_telegram_channel_records()
     }
     for entry in channels:
         if len(entry) == 2:
@@ -843,88 +850,102 @@ def save_telegram_channels(channels: list[tuple[int, str, Optional[str]]]) -> No
         if not text:
             text = str(channel_id)
         normalized_id = int(channel_id)
-        current[normalized_id] = (normalized_id, text, _normalize_telegram_channel_alias(alias))
+        current[normalized_id] = {
+            "channel_id": normalized_id,
+            "name": text,
+            "alias": _normalize_telegram_channel_alias(alias),
+            "source_link": current.get(normalized_id, {}).get("source_link"),
+        }
     set_telegram_channels(current.values())
 
 
 def load_telegram_channels() -> list[dict]:
-    from telegram_subscription.sync import get_telegram_channels
+    from telegram_subscription.sync import get_telegram_channel_records
 
     return [
-        {"channel_id": channel_id, "name": name, "alias": alias}
-        for channel_id, name, alias in get_telegram_channels()
+        {
+            "channel_id": int(record["channel_id"]),
+            "name": str(record["name"]),
+            "alias": str(record["alias"]),
+            "source_link": record.get("source_link"),
+        }
+        for record in get_telegram_channel_records()
     ]
 
 
 def delete_telegram_channel(channel_id: int) -> None:
-    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+    from telegram_subscription.sync import get_telegram_channel_records, set_telegram_channels
 
     set_telegram_channels(
         [
-            (current_channel_id, name, alias)
-            for current_channel_id, name, alias in get_telegram_channels()
-            if current_channel_id != int(channel_id)
+            record
+            for record in get_telegram_channel_records()
+            if int(record["channel_id"]) != int(channel_id)
         ]
     )
 
 
 def rename_telegram_channel(channel_id: int, name: str) -> bool:
-    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+    from telegram_subscription.sync import get_telegram_channel_records, set_telegram_channels
 
     text = str(name).strip()
     if not text:
         return False
     updated = False
-    channels: list[tuple[int, str, str]] = []
-    for current_channel_id, current_name, alias in get_telegram_channels():
+    channels: list[dict] = []
+    for record in get_telegram_channel_records():
+        current_channel_id = int(record["channel_id"])
         if current_channel_id == int(channel_id):
-            channels.append((current_channel_id, text, alias))
+            channels.append({**record, "name": text})
             updated = True
         else:
-            channels.append((current_channel_id, current_name, alias))
+            channels.append(record)
     if updated:
         set_telegram_channels(channels)
     return updated
 
 
 def update_telegram_channel_alias(channel_id: int, alias: Optional[str]) -> bool:
-    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+    from telegram_subscription.sync import get_telegram_channel_records, set_telegram_channels
 
     value = _normalize_telegram_channel_alias(alias)
     updated = False
-    channels: list[tuple[int, str, str]] = []
-    for current_channel_id, name, current_alias in get_telegram_channels():
+    channels: list[dict] = []
+    for record in get_telegram_channel_records():
+        current_channel_id = int(record["channel_id"])
         if current_channel_id == int(channel_id):
-            channels.append((current_channel_id, name, value))
+            channels.append({**record, "alias": value})
             updated = True
         else:
-            channels.append((current_channel_id, name, current_alias))
+            channels.append(record)
     if updated:
         set_telegram_channels(channels)
     return updated
 
 
 def update_telegram_channel_id(old_channel_id: int, new_channel_id: int) -> bool:
-    from telegram_subscription.sync import get_telegram_channels, set_telegram_channels
+    from telegram_subscription.sync import get_telegram_channel_records, set_telegram_channels
 
     if old_channel_id == new_channel_id:
         return False
-    channels = get_telegram_channels()
-    if any(channel_id == int(new_channel_id) for channel_id, _, _ in channels):
+    channels = get_telegram_channel_records()
+    if any(int(record["channel_id"]) == int(new_channel_id) for record in channels):
         return False
     updated = False
-    next_channels: list[tuple[int, str, str]] = []
-    for channel_id, name, alias in channels:
+    next_channels: list[dict] = []
+    for record in channels:
+        channel_id = int(record["channel_id"])
         if channel_id == int(old_channel_id):
-            next_channels.append((int(new_channel_id), name, alias))
+            next_channels.append({**record, "channel_id": int(new_channel_id)})
             updated = True
         else:
-            next_channels.append((channel_id, name, alias))
+            next_channels.append(record)
     if not updated:
         return False
     set_telegram_channels(next_channels)
-    _ensure_db_initialized()
-    with _connect() as conn:
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
         try:
             conn.execute(
                 """
@@ -941,8 +962,9 @@ def update_telegram_channel_id(old_channel_id: int, new_channel_id: int) -> bool
 
 
 def get_next_uncreated_telegram_product(channel_id: int) -> Optional[sqlite3.Row]:
-    _ensure_db_initialized()
-    with _connect() as conn:
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
         return conn.execute(
             """
             SELECT *
@@ -960,8 +982,9 @@ def mark_telegram_product_created(
     message_id: int,
     created_product_id: Optional[str] = None,
 ) -> None:
-    _ensure_db_initialized()
-    with _connect() as conn:
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
         conn.execute(
             """
             UPDATE telegram_products
@@ -979,9 +1002,10 @@ def increment_telegram_product_attempt(
     message_id: int,
     failure_reason: Optional[str] = None,
 ) -> int:
-    _ensure_db_initialized()
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
     normalized_reason = str(failure_reason or "").strip() or None
-    with _connect() as conn:
+    with _connect(telegram_db_path) as conn:
         conn.execute(
             """
             UPDATE telegram_products
@@ -1006,7 +1030,8 @@ def increment_telegram_product_attempt(
 
 
 def reset_telegram_products_created(channel_id: Optional[int] = None) -> int:
-    _ensure_db_initialized()
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
     if channel_id is None:
         where_clause = (
             "created != 0 OR created_product_id IS NOT NULL "
@@ -1021,7 +1046,7 @@ def reset_telegram_products_created(channel_id: Optional[int] = None) -> int:
             ") AND channel_id = ?"
         )
         params = (channel_id,)
-    with _connect() as conn:
+    with _connect(telegram_db_path) as conn:
         cursor = conn.execute(
             f"""
             UPDATE telegram_products
@@ -1035,6 +1060,20 @@ def reset_telegram_products_created(channel_id: Optional[int] = None) -> int:
             params,
         )
     return cursor.rowcount
+
+
+def telegram_products_exist() -> bool:
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM telegram_products
+            LIMIT 1
+            """
+        ).fetchone()
+    return row is not None
 
 
 def save_cookies(cookies: list[dict]) -> None:

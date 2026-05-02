@@ -158,7 +158,7 @@ class AccountService:
 
     async def delete_account(self, account_id: str) -> None:
         await self.stop_account(account_id)
-        await asyncio.to_thread(self._delete_record_sync, account_id)
+        self._delete_record_sync(account_id)
         account_dir = self.accounts_dir / account_id
         if account_dir.exists():
             shutil.rmtree(account_dir)
@@ -231,7 +231,7 @@ class AccountService:
         with self._process_lock:
             self._expected_stops.add(account_id)
 
-        await asyncio.to_thread(self._terminate_process, managed.process)
+        self._terminate_process(managed.process)
         updated_record = await self._update_record(
             account_id,
             lambda item: self._mark_process_stopped(item),
@@ -302,10 +302,10 @@ class AccountService:
         )
 
     async def _read_payload(self) -> list[dict]:
-        return await asyncio.to_thread(self._read_payload_sync)
+        return self._read_payload_sync()
 
     async def _write_payload(self, payload: list[dict]) -> None:
-        await asyncio.to_thread(self._write_payload_sync, payload)
+        self._write_payload_sync(payload)
 
     def _read_payload_sync(self) -> list[dict]:
         with self._records_lock:
@@ -339,7 +339,7 @@ class AccountService:
         raise NotFoundError(f"Account '{account_id}' not found.")
 
     async def _update_record(self, account_id: str, update_fn: Callable[[dict], None]) -> dict:
-        return await asyncio.to_thread(self._update_record_sync, account_id, update_fn)
+        return self._update_record_sync(account_id, update_fn)
 
     def _update_record_sync(self, account_id: str, update_fn: Callable[[dict], None]) -> dict:
         with self._records_lock:

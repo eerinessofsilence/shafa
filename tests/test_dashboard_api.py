@@ -6,8 +6,6 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from telegram_accounts_api.dependencies import (
     get_account_log_store,
     get_account_service,
@@ -18,6 +16,7 @@ from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.dashboard_service import DashboardService
 from telegram_accounts_api.utils.account_logging import AccountLogStore, set_account_log_store
 from telegram_accounts_api.utils.storage import JsonListStorage
+from tests.asgi_client import SyncASGITestClient, async_dependency
 
 
 class DashboardApiTest(unittest.TestCase):
@@ -74,12 +73,12 @@ class DashboardApiTest(unittest.TestCase):
             log_store=self.log_store,
             now_provider=lambda: self.now,
         )
-        app.dependency_overrides[get_account_service] = lambda: self.account_service
-        app.dependency_overrides[get_account_log_store] = lambda: self.log_store
-        app.dependency_overrides[get_dashboard_service] = lambda: self.dashboard_service
+        app.dependency_overrides[get_account_service] = async_dependency(self.account_service)
+        app.dependency_overrides[get_account_log_store] = async_dependency(self.log_store)
+        app.dependency_overrides[get_dashboard_service] = async_dependency(self.dashboard_service)
         self.addCleanup(app.dependency_overrides.clear)
         self.addCleanup(lambda: set_account_log_store(AccountLogStore()))
-        self.client = TestClient(app)
+        self.client = SyncASGITestClient(app)
 
         self._write_ready_account("acc-1")
         self._write_history_log(

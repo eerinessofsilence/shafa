@@ -13,6 +13,7 @@ from telegram_subscription.sync import (
     _extract_search_query,
     _log,
     _resolve_channel_tuples,
+    get_telegram_channel_records,
     get_telegram_channels,
     sync_channels_from_runtime_config,
     parse_id_bot_response,
@@ -69,6 +70,26 @@ class TelegramSubscriptionTests(unittest.TestCase):
                 actual = get_telegram_channels(path=channels_path)
 
         self.assertEqual(actual, expected)
+
+    def test_runtime_json_preserves_source_link_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            channels_path = Path(temp_dir) / "shafa_telegram_channels.json"
+
+            with patch("telegram_subscription.sync._mirror_channels_to_db"):
+                set_telegram_channels(
+                    [
+                        {
+                            "channel_id": -1001,
+                            "name": "Channel One",
+                            "alias": "main",
+                            "source_link": "https://t.me/+invite_hash",
+                        }
+                    ],
+                    path=channels_path,
+                )
+                records = get_telegram_channel_records(path=channels_path)
+
+        self.assertEqual(records[0]["source_link"], "https://t.me/+invite_hash")
 
     def test_extract_search_query_prefers_username_from_link(self) -> None:
         self.assertEqual(

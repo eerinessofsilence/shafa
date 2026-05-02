@@ -10,12 +10,12 @@ from urllib.parse import urlparse
 DEFAULT_CHANNEL_ALIAS = "main extra_photos"
 
 _ID_PATTERNS = (
-    re.compile(r"(?im)^\s*(?:chat\s*)?id\s*:\s*(-?\d+)\s*$"),
-    re.compile(r"(?im)^\s*(?:channel\s*)?id\s*:\s*(-?\d+)\s*$"),
+    re.compile(r"(?im)(?:^|\n)\s*.*?\b(?:chat\s*)?id\b\s*:\s*(-?\d+)\s*$"),
+    re.compile(r"(?im)(?:^|\n)\s*.*?\b(?:channel\s*)?id\b\s*:\s*(-?\d+)\s*$"),
 )
 _TITLE_PATTERNS = (
-    re.compile(r"(?im)^\s*title\s*:\s*(.+?)\s*$"),
-    re.compile(r"(?im)^\s*chat\s*title\s*:\s*(.+?)\s*$"),
+    re.compile(r"(?im)(?:^|\n)\s*.*?\btitle\b\s*:\s*(.+?)\s*$"),
+    re.compile(r"(?im)(?:^|\n)\s*.*?\bchat\s*title\b\s*:\s*(.+?)\s*$"),
 )
 
 
@@ -59,6 +59,27 @@ def sanitize_channel_links(links: Iterable[str]) -> list[str]:
         seen.add(key)
         unique_links.append(normalized)
     return unique_links
+
+
+def extract_telegram_invite_hash(link: str) -> str | None:
+    value = link.strip()
+    if not value:
+        return None
+    if "://" not in value:
+        value = f"https://{value}"
+
+    parsed = urlparse(value)
+    path = (parsed.path or "").strip("/")
+    if not path:
+        return None
+    if path.startswith("+"):
+        invite_hash = path[1:]
+    elif path.startswith("joinchat/"):
+        invite_hash = path.split("/", 1)[1]
+    else:
+        return None
+    invite_hash = invite_hash.strip().strip("/")
+    return invite_hash or None
 
 
 def export_runtime_config(
@@ -115,9 +136,15 @@ def parse_id_bot_response(response_text: str) -> tuple[int, str]:
             break
 
     if channel_id is None:
-        raise ValueError("Could not extract channel id from @ID_Bot response.")
+        raise ValueError(
+            "Could not extract channel id from @ID_Bot response. "
+            f"Raw response: {response_text!r}"
+        )
     if not title:
-        raise ValueError("Could not extract channel title from @ID_Bot response.")
+        raise ValueError(
+            "Could not extract channel title from @ID_Bot response. "
+            f"Raw response: {response_text!r}"
+        )
     return channel_id, title
 
 

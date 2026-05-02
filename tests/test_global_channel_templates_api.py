@@ -5,14 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from telegram_accounts_api.dependencies import get_channel_template_service, get_telegram_service
 from telegram_accounts_api.main import app
 from telegram_accounts_api.models.channel_template import ResolvedTelegramChannel
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.channel_template_service import ChannelTemplateService
 from telegram_accounts_api.utils.storage import JsonListStorage
+from tests.asgi_client import SyncASGITestClient, async_dependency
 
 
 class GlobalChannelTemplatesApiTest(unittest.TestCase):
@@ -30,9 +29,9 @@ class GlobalChannelTemplatesApiTest(unittest.TestCase):
                 accounts_dir=self.base_dir / "accounts",
             ),
         )
-        app.dependency_overrides[get_channel_template_service] = lambda: self.service
+        app.dependency_overrides[get_channel_template_service] = async_dependency(self.service)
         self.addCleanup(app.dependency_overrides.clear)
-        self.client = TestClient(app)
+        self.client = SyncASGITestClient(app)
 
     def _write_accounts(self, payload: list[dict]) -> None:
         self.accounts_file.write_text(
@@ -175,7 +174,7 @@ class GlobalChannelTemplatesApiTest(unittest.TestCase):
                     )
                 ]
 
-        app.dependency_overrides[get_telegram_service] = lambda: FakeTelegramService()
+        app.dependency_overrides[get_telegram_service] = async_dependency(FakeTelegramService())
 
         response = self.client.post(
             "/channel-templates/resolve",

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from shafa_control import AccountSessionStore
 from telegram_accounts_api.dependencies import get_account_log_store, get_account_service, get_auth_service
 from telegram_accounts_api.main import app
+from telegram_accounts_api.routers.logs import stream_account_logs
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.utils.account_logging import AccountLogStore, log, set_account_log_store
 from telegram_accounts_api.utils.storage import JsonListStorage
+from tests.asgi_client import SyncASGITestClient, async_dependency
 
 
 class AccountLogsApiTest(unittest.TestCase):
@@ -74,12 +76,12 @@ class AccountLogsApiTest(unittest.TestCase):
             store=store,
             shafa_login_launcher=lambda _account, _args: None,
         )
-        app.dependency_overrides[get_account_service] = lambda: self.account_service
-        app.dependency_overrides[get_auth_service] = lambda: self.auth_service
-        app.dependency_overrides[get_account_log_store] = lambda: self.log_store
+        app.dependency_overrides[get_account_service] = async_dependency(self.account_service)
+        app.dependency_overrides[get_auth_service] = async_dependency(self.auth_service)
+        app.dependency_overrides[get_account_log_store] = async_dependency(self.log_store)
         self.addCleanup(app.dependency_overrides.clear)
         self.addCleanup(lambda: set_account_log_store(AccountLogStore()))
-        self.client = TestClient(app)
+        self.client = SyncASGITestClient(app)
         self.local_tz = datetime.now().astimezone().tzinfo or UTC
 
     def test_get_account_logs_returns_only_requested_account(self) -> None:
@@ -283,9 +285,39 @@ class AccountLogsApiTest(unittest.TestCase):
         )
 
     def test_websocket_streams_new_account_logs(self) -> None:
-        with self.client.websocket_connect("/ws/logs/acc-1") as websocket:
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.accepted = asyncio.Event()
+                self.messages: asyncio.Queue[dict] = asyncio.Queue()
+
+            async def accept(self) -> None:
+                self.accepted.set()
+
+            async def send_json(self, payload: dict) -> None:
+                await self.messages.put(payload)
+
+            async def close(self, code: int | None = None) -> None:
+                return None
+
+        async def _exercise_websocket() -> dict:
+            websocket = _FakeWebSocket()
+            task = asyncio.create_task(
+                stream_account_logs(
+                    websocket,
+                    "acc-1",
+                    self.account_service,
+                    self.log_store,
+                )
+            )
+            await websocket.accepted.wait()
             log("acc-1", "INFO", "Browser login started")
-            message = websocket.receive_json()
+            message = await asyncio.wait_for(websocket.messages.get(), timeout=2)
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            return message
+
+        message = asyncio.run(_exercise_websocket())
 
         self.assertEqual(message["account_id"], "acc-1")
         self.assertEqual(message["level"], "INFO")

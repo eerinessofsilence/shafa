@@ -11,12 +11,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
 from telegram_accounts_api.dependencies import get_account_service
 from telegram_accounts_api.main import app
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.utils.storage import JsonListStorage
+from tests.asgi_client import SyncASGITestClient, async_dependency
 
 
 class _FakeRunningProcess:
@@ -70,9 +69,9 @@ class AccountsApiTest(unittest.TestCase):
             storage=JsonListStorage(self.accounts_file),
             accounts_dir=self.accounts_dir,
         )
-        app.dependency_overrides[get_account_service] = lambda: self.service
+        app.dependency_overrides[get_account_service] = async_dependency(self.service)
         self.addCleanup(app.dependency_overrides.clear)
-        self.client = TestClient(app)
+        self.client = SyncASGITestClient(app)
 
     def _write_accounts(self, payload: list[dict]) -> None:
         self.accounts_file.write_text(

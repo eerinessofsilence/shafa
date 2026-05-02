@@ -54,6 +54,7 @@ from data.db import (
     save_telegram_channels,
     save_telegram_product,
     size_id_exists,
+    telegram_products_exist,
 )
 from data.size_mapping import (
     SIZE_SYSTEM_EU,
@@ -61,9 +62,11 @@ from data.size_mapping import (
     SIZE_SYSTEM_UA,
     normalize_size_text,
 )
+from telegram_channels import extract_telegram_invite_hash
 from utils.logging import log
 from utils.progress import ProgressBar, verbose_photo_logs_enabled
 from telegram_subscription import get_telegram_channels, set_telegram_channels
+from telegram_subscription.sync import get_telegram_channel_records
 from telegram_subscription.client import create_telegram_client
 
 APP_MODE_ENV = "SHAFA_APP_MODE"
@@ -934,23 +937,80 @@ def _get_channel_ids() -> list[int]:
 
 
 def _get_channel_alias(channel_id: int) -> str:
-    for current_channel_id, _, alias in get_telegram_channels():
-        if current_channel_id == channel_id:
-            return alias or ""
+    for record in get_telegram_channel_records():
+        if int(record["channel_id"]) == channel_id:
+            return str(record.get("alias") or "")
     for row in load_telegram_channels():
         if row["channel_id"] == channel_id:
             return row.get("alias") or ""
     return ""
 
 
+def _get_channel_record(channel_id: int) -> dict | None:
+    for record in get_telegram_channel_records():
+        if int(record["channel_id"]) == channel_id:
+            return record
+    for row in load_telegram_channels():
+        if row["channel_id"] == channel_id:
+            return row
+    return None
+
+
+async def _resolve_invite_entity(client: TelegramClient, link: str) -> object | None:
+    invite_hash = extract_telegram_invite_hash(link)
+    if not invite_hash:
+        return None
+
+    from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+
+    try:
+        invite_info = await client(CheckChatInviteRequest(invite_hash))
+    except RPCError:
+        invite_info = None
+    else:
+        entity = getattr(invite_info, "chat", None)
+        if entity is not None:
+            return entity
+
+    try:
+        result = await client(ImportChatInviteRequest(invite_hash))
+    except RPCError as exc:
+        if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
+            return None
+        try:
+            invite_info = await client(CheckChatInviteRequest(invite_hash))
+        except RPCError:
+            return None
+        return getattr(invite_info, "chat", None)
+
+    chats = getattr(result, "chats", None) or []
+    if chats:
+        return chats[0]
+    return getattr(result, "chat", None)
+
+
+async def _resolve_channel_peer(client: TelegramClient, channel_id: int):
+    record = _get_channel_record(channel_id) or {}
+    source_link = str(record.get("source_link") or "").strip()
+    if source_link:
+        invite_entity = await _resolve_invite_entity(client, source_link)
+        if invite_entity is not None:
+            return invite_entity
+        try:
+            return await client.get_entity(source_link)
+        except (ValueError, RPCError):
+            pass
+    return channel_id
+
+
 async def _sync_channel_titles(client: TelegramClient, channel_ids: list[int]) -> None:
     runtime_rows = {
-        channel_id: {"channel_id": channel_id, "name": name, "alias": alias}
-        for channel_id, name, alias in get_telegram_channels()
+        int(record["channel_id"]): record
+        for record in get_telegram_channel_records()
     }
     db_rows = {row["channel_id"]: row for row in load_telegram_channels()}
     rows = runtime_rows or db_rows
-    updates: list[tuple[int, str, Optional[str]]] = []
+    updates: list[dict[str, object]] = []
     for channel_id in channel_ids:
         current = rows.get(channel_id) or {}
         name = str(current.get("name") or "").strip()
@@ -958,21 +1018,39 @@ async def _sync_channel_titles(client: TelegramClient, channel_ids: list[int]) -
         if name and name != str(channel_id):
             continue
         try:
-            entity = await client.get_entity(channel_id)
+            entity = await _resolve_channel_peer(client, channel_id)
+            if isinstance(entity, int):
+                entity = await client.get_entity(entity)
         except (ValueError, RPCError):
             continue
         title = getattr(entity, "title", None) or getattr(entity, "username", None)
         if title and title != name:
-            updates.append((channel_id, title, alias))
+            updates.append(
+                {
+                    "channel_id": channel_id,
+                    "name": title,
+                    "alias": alias,
+                    "source_link": current.get("source_link"),
+                }
+            )
     if updates:
         merged = {
-            channel_id: (channel_id, name, alias or "main")
-            for channel_id, name, alias in get_telegram_channels()
+            int(record["channel_id"]): record
+            for record in get_telegram_channel_records()
         }
-        for channel_id, title, alias in updates:
-            merged[channel_id] = (channel_id, title, alias or "main")
+        for record in updates:
+            merged[int(record["channel_id"])] = record
         set_telegram_channels(merged.values())
-        save_telegram_channels(updates)
+        save_telegram_channels(
+            [
+                (
+                    int(record["channel_id"]),
+                    str(record["name"]),
+                    record.get("alias"),
+                )
+                for record in updates
+            ]
+        )
 
 
 def normalize_message(message: str) -> str:
@@ -1661,7 +1739,7 @@ def get_runtime_mode() -> str:
 
 
 def should_run_first_fetch() -> bool:
-    return get_runtime_mode() == MODE_CLOTHES
+    return get_runtime_mode() == MODE_CLOTHES and not telegram_products_exist()
 
 
 def is_mode_allowed_parsed(parsed: dict) -> bool:
@@ -1731,7 +1809,8 @@ async def first_fetch() -> int:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
-            async for msg in client.iter_messages(channel_id, limit=1000):
+            peer = await _resolve_channel_peer(client, channel_id)
+            async for msg in client.iter_messages(peer, limit=1000):
                 if debug_fetch:
                     stats["total"] += 1
                 if not msg.media:
@@ -1839,7 +1918,8 @@ async def _fetch_messages(message_amount: int = 200) -> int:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
-            async for msg in client.iter_messages(channel_id, limit=message_amount):
+            peer = await _resolve_channel_peer(client, channel_id)
+            async for msg in client.iter_messages(peer, limit=message_amount):
                 if debug_fetch:
                     stats["total"] += 1
                 if not msg.media:
@@ -1902,14 +1982,14 @@ async def _fetch_messages(message_amount: int = 200) -> int:
 
 async def _collect_group_messages(
     client: TelegramClient,
-    channel_id: int,
+    channel_peer,
     message_id: int,
     grouped_id: int,
 ) -> list:
     min_id = max(1, message_id - 50)
     max_id = message_id + 50
     messages: list = []
-    async for msg in client.iter_messages(channel_id, min_id=min_id, max_id=max_id):
+    async for msg in client.iter_messages(channel_peer, min_id=min_id, max_id=max_id):
         if msg.grouped_id == grouped_id and _is_photo_message(msg):
             messages.append(msg)
     return messages
@@ -1917,6 +1997,7 @@ async def _collect_group_messages(
 
 async def _collect_discussion_photos(
     client: TelegramClient,
+    channel_peer,
     channel_id: int,
     message_id: int,
     message_ids: Optional[list[int]] = None,
@@ -1941,7 +2022,7 @@ async def _collect_discussion_photos(
     for candidate_id in candidate_ids:
         try:
             candidate_result = await client(
-                GetDiscussionMessageRequest(peer=channel_id, msg_id=candidate_id)
+                GetDiscussionMessageRequest(peer=channel_peer, msg_id=candidate_id)
             )
         except RPCError as exc:
             last_exc = exc
@@ -2105,6 +2186,7 @@ async def _download_message_photos(
         telegram_client_cls=TelegramClient,
     ) as client:
         await _sync_channel_titles(client, _get_channel_ids())
+        channel_peer = await _resolve_channel_peer(client, channel_id)
         verbose_photo_logs = verbose_photo_logs_enabled()
         if verbose_photo_logs:
             log(
@@ -2120,7 +2202,7 @@ async def _download_message_photos(
                     source_message_ids.append(candidate_id)
         messages: list = []
         for candidate_id in source_message_ids:
-            message = await client.get_messages(channel_id, ids=candidate_id)
+            message = await client.get_messages(channel_peer, ids=candidate_id)
             if not message or not _is_photo_message(message):
                 continue
             messages.append(message)
@@ -2135,7 +2217,7 @@ async def _download_message_photos(
                 grouped_seen.add(message.grouped_id)
                 grouped = await _collect_group_messages(
                     client,
-                    channel_id,
+                    channel_peer,
                     message.id,
                     message.grouped_id,
                 )
@@ -2150,6 +2232,7 @@ async def _download_message_photos(
                 discussion_message_ids.append(msg.id)
         extra = await _collect_discussion_photos(
             client,
+            channel_peer,
             channel_id,
             message_id,
             discussion_message_ids,

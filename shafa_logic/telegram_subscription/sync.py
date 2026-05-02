@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 from urllib.parse import urlparse
 
+from telegram_channels import extract_telegram_invite_hash, normalize_channel_link, parse_id_bot_response
+
 from .client import create_telegram_client
 
 if TYPE_CHECKING:
@@ -16,8 +18,6 @@ if TYPE_CHECKING:
 
 ID_BOT_USERNAME = "id_bot"
 RUNTIME_CONFIG_ENV = "SHAFA_TELEGRAM_CHANNEL_LINKS_FILE"
-ID_PATTERN = re.compile(r"(?im)(?:^|\n)\s*.*?\b(?:chat\s+)?id\b\s*:\s*(-?\d+)")
-TITLE_PATTERN = re.compile(r"(?im)(?:^|\n)\s*.*?\btitle\b\s*:\s*(.+)")
 USERNAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,}$")
 DEFAULT_CHANNEL_ALIAS = "main extra_photos"
 
@@ -43,8 +43,22 @@ def sync_channels_from_runtime_config() -> list[tuple[int, str, str]]:
     if not links:
         return []
 
+    existing_records = get_telegram_channel_records()
+    existing_by_source_link = {
+        _channel_link_key(record.get("source_link")): record
+        for record in existing_records
+        if _channel_link_key(record.get("source_link"))
+    }
+    missing_links = [
+        link for link in links if _channel_link_key(link) not in existing_by_source_link
+    ]
+
     try:
-        channels = asyncio.run(_resolve_channel_tuples(links))
+        resolved_records = (
+            asyncio.run(_resolve_channel_records(missing_links))
+            if missing_links
+            else []
+        )
     except RuntimeError as exc:
         fallback_channels = get_telegram_channels()
         if fallback_channels:
@@ -54,15 +68,26 @@ def sync_channels_from_runtime_config() -> list[tuple[int, str, str]]:
             )
             return fallback_channels
         raise
-    if not channels:
+    if not missing_links:
+        return get_telegram_channels()
+    if not resolved_records:
         _log("no channels resolved, runtime storage was not updated")
-        return []
-    set_telegram_channels(channels)
-    _log(f"synced {len(channels)} channel(s)")
-    return channels
+        return get_telegram_channels()
+
+    merged_records = {
+        int(record["channel_id"]): record for record in existing_records
+    }
+    for record in resolved_records:
+        merged_records[int(record["channel_id"])] = record
+    set_telegram_channels(merged_records.values())
+    _log(
+        f"synced {len(resolved_records)} new channel(s); "
+        f"total configured: {len(merged_records)}"
+    )
+    return get_telegram_channels()
 
 
-def get_telegram_channels(path: Path | None = None) -> list[tuple[int, str, str]]:
+def get_telegram_channel_records(path: Path | None = None) -> list[dict]:
     if path is None:
         path = _runtime_channels_path()
     if not path.exists():
@@ -72,42 +97,46 @@ def get_telegram_channels(path: Path | None = None) -> list[tuple[int, str, str]
     except (OSError, json.JSONDecodeError):
         return []
 
-    channels: list[tuple[int, str, str]] = []
+    records: list[dict] = []
     for item in payload:
-        if not isinstance(item, list) or len(item) != 3:
+        record = _normalize_channel_record(item)
+        if record is None:
             continue
-        channel_id, title, alias = item
-        try:
-            normalized_id = int(channel_id)
-        except (TypeError, ValueError):
-            continue
-        title_text = str(title).strip()
-        alias_text = _normalize_channel_alias(alias)
-        if not title_text:
-            continue
-        channels.append((normalized_id, title_text, alias_text))
-    return channels
+        records.append(record)
+    return records
+
+
+def get_telegram_channels(path: Path | None = None) -> list[tuple[int, str, str]]:
+    return [
+        (
+            int(record["channel_id"]),
+            str(record["name"]),
+            str(record["alias"]),
+        )
+        for record in get_telegram_channel_records(path=path)
+    ]
 
 
 def set_telegram_channels(
-    channels: Iterable[tuple[int, str, str]],
+    channels: Iterable[tuple[int, str, str] | tuple[int, str, str, str] | dict],
     path: Path | None = None,
 ) -> None:
     if path is None:
         path = _runtime_channels_path()
-    normalized: list[list[object]] = []
+    normalized: list[dict[str, object]] = []
     db_rows: list[tuple[int, str, str]] = []
-    for channel_id, title, alias in channels:
-        try:
-            normalized_id = int(channel_id)
-        except (TypeError, ValueError):
+    for item in channels:
+        record = _normalize_channel_record(item)
+        if record is None:
             continue
-        title_text = str(title).strip()
-        alias_text = _normalize_channel_alias(alias)
-        if not title_text:
-            continue
-        normalized.append([normalized_id, title_text, alias_text])
-        db_rows.append((normalized_id, title_text, alias_text))
+        normalized.append(record)
+        db_rows.append(
+            (
+                int(record["channel_id"]),
+                str(record["name"]),
+                str(record["alias"]),
+            )
+        )
 
     path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
     _mirror_channels_to_db(db_rows)
@@ -120,6 +149,18 @@ def load_channel_links(path: Path) -> list[str]:
 
 
 async def _resolve_channel_tuples(links: list[str]) -> list[tuple[int, str, str]]:
+    records = await _resolve_channel_records(links)
+    return [
+        (
+            int(record["channel_id"]),
+            str(record["name"]),
+            str(record["alias"]),
+        )
+        for record in records
+    ]
+
+
+async def _resolve_channel_records(links: list[str]) -> list[dict[str, object]]:
     api_id, api_hash = _require_telegram_credentials()
     telegram_client_cls = _get_telegram_client_cls()
     async with _connected_client(
@@ -135,12 +176,20 @@ async def _resolve_channel_tuples(links: list[str]) -> list[tuple[int, str, str]
             raise RuntimeError(
                 "Сессия Telegram отсутствует или не авторизована. Переподключи аккаунт в интерфейсе."
             )
-        channels: list[tuple[int, str, str]] = []
+        channels: list[dict[str, object]] = []
         for link in links:
             resolved = await _resolve_single_channel(client, link)
             if resolved is None:
                 continue
-            channels.append(resolved)
+            source_link = _normalize_source_link(link)
+            channels.append(
+                {
+                    "channel_id": int(resolved[0]),
+                    "name": str(resolved[1]),
+                    "alias": str(resolved[2]),
+                    "source_link": source_link,
+                }
+            )
         return channels
 
 
@@ -150,7 +199,7 @@ async def _resolve_single_channel(
 ) -> tuple[int, str, str] | None:
     try:
         _log(f"resolving channel: {link}")
-        entity = await _ensure_channel_membership(client, link)
+        entity = await _resolve_channel_entity(client, link)
         resolved_from_entity = _channel_tuple_from_entity(entity)
         if resolved_from_entity is not None:
             _log(f"resolved {link} directly via entity: id={resolved_from_entity[0]}, title={resolved_from_entity[1]!r}")
@@ -171,26 +220,58 @@ async def _fetch_id_bot_response(client: "TelegramClient", link: str) -> str:
     return response.raw_text
 
 
-def parse_id_bot_response(response_text: str) -> tuple[int, str]:
-    channel_id_match = ID_PATTERN.search(response_text)
-    title_match = TITLE_PATTERN.search(response_text)
-    if channel_id_match is None:
-        raise ValueError(
-            "Could not extract channel ID from @id_bot response. "
-            f"Raw response: {response_text!r}"
-        )
-    if title_match is None:
-        raise ValueError(
-            "Could not extract channel title from @id_bot response. "
-            f"Raw response: {response_text!r}"
-        )
-    title = title_match.group(1).strip().splitlines()[0].strip()
-    if not title:
-        raise ValueError(
-            "Could not extract channel title from @id_bot response. "
-            f"Raw response: {response_text!r}"
-        )
-    return int(channel_id_match.group(1)), title
+async def _resolve_channel_entity(client: "TelegramClient", link: str) -> object | None:
+    invite_hash = extract_telegram_invite_hash(link)
+    if invite_hash:
+        entity = await _resolve_invite_entity(client, invite_hash, link)
+        if entity is not None:
+            return entity
+    return await _ensure_channel_membership(client, link)
+
+
+async def _resolve_invite_entity(
+    client: "TelegramClient",
+    invite_hash: str,
+    link: str,
+) -> object | None:
+    from telethon.errors import RPCError
+    from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+
+    try:
+        invite_info = await client(CheckChatInviteRequest(invite_hash))
+    except RPCError as exc:
+        _log(f"invite check failed for {link}: {exc}")
+    else:
+        entity = getattr(invite_info, "chat", None)
+        if entity is not None:
+            _log(f"invite resolved without import for {link}")
+            return entity
+
+    try:
+        result = await client(ImportChatInviteRequest(invite_hash))
+    except RPCError as exc:
+        message = str(exc).upper()
+        if "USER_ALREADY_PARTICIPANT" not in message:
+            _log(f"invite import failed for {link}: {exc}")
+            return None
+        try:
+            invite_info = await client(CheckChatInviteRequest(invite_hash))
+        except RPCError as nested_exc:
+            _log(f"invite re-check failed for {link}: {nested_exc}")
+            return None
+        entity = getattr(invite_info, "chat", None)
+        if entity is not None:
+            _log(f"invite already joined for {link}")
+        return entity
+
+    chats = getattr(result, "chats", None) or []
+    if chats:
+        _log(f"joined invite channel for {link}")
+        return chats[0]
+    entity = getattr(result, "chat", None)
+    if entity is not None:
+        _log(f"joined invite channel for {link}")
+    return entity
 
 
 async def _ensure_channel_membership(client: "TelegramClient", link: str) -> None:
@@ -337,3 +418,47 @@ def _log(message: str) -> None:
         print(line)
     except UnicodeEncodeError:
         print(line.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+
+def _normalize_source_link(source_link: object) -> str | None:
+    text = str(source_link or "").strip()
+    if not text:
+        return None
+    try:
+        return normalize_channel_link(text)
+    except ValueError:
+        return text
+
+
+def _channel_link_key(source_link: object) -> str:
+    normalized = _normalize_source_link(source_link)
+    return normalized.casefold() if normalized else ""
+
+
+def _normalize_channel_record(
+    item: tuple[int, str, str] | tuple[int, str, str, str] | dict | object,
+) -> dict[str, object] | None:
+    if isinstance(item, dict):
+        channel_id = item.get("channel_id")
+        name = item.get("name", item.get("title"))
+        alias = item.get("alias")
+        source_link = item.get("source_link")
+    elif isinstance(item, (list, tuple)) and len(item) in {3, 4}:
+        channel_id, name, alias = item[:3]
+        source_link = item[3] if len(item) == 4 else None
+    else:
+        return None
+
+    try:
+        normalized_id = int(channel_id)
+    except (TypeError, ValueError):
+        return None
+    name_text = str(name or "").strip()
+    if not name_text:
+        return None
+    return {
+        "channel_id": normalized_id,
+        "name": name_text,
+        "alias": _normalize_channel_alias(alias),
+        "source_link": _normalize_source_link(source_link),
+    }

@@ -34,11 +34,11 @@ class JsonListStorage:
 
     async def read(self) -> list[dict[str, Any]]:
         async with self._lock:
-            return await asyncio.to_thread(self._read_sync)
+            return self._read_sync()
 
     async def write(self, payload: list[dict[str, Any]]) -> None:
         async with self._lock:
-            await asyncio.to_thread(self._write_sync, payload)
+            self._write_sync(payload)
 
     def _read_sync(self) -> list[dict[str, Any]]:
         return read_json_list_file(self.path)

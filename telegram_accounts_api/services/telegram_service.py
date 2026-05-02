@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from telegram_channels import parse_id_bot_response, sanitize_channel_links
+from telegram_channels import extract_telegram_invite_hash, parse_id_bot_response, sanitize_channel_links
 from shafa_logic.telegram_subscription.client import create_telegram_client
 from telegram_accounts_api.models.telegram import (
     SendMessageRequest,
@@ -183,6 +183,9 @@ class TelegramService:
         return await self._resolve_channel_via_id_bot(client, link)
 
     async def _resolve_channel_from_entity(self, client, link: str) -> ResolvedTelegramChannel | None:
+        invite_entity = await self._resolve_invite_entity(client, link)
+        if invite_entity is not None:
+            return _resolved_channel_from_entity(invite_entity)
         try:
             entity = await asyncio.wait_for(
                 client.get_entity(link),
@@ -191,6 +194,50 @@ class TelegramService:
         except Exception:
             return None
         return _resolved_channel_from_entity(entity)
+
+    async def _resolve_invite_entity(self, client, link: str) -> object | None:
+        invite_hash = extract_telegram_invite_hash(link)
+        if not invite_hash:
+            return None
+
+        from telethon.errors import RPCError
+        from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+
+        try:
+            invite_info = await asyncio.wait_for(
+                client(CheckChatInviteRequest(invite_hash)),
+                timeout=CHANNEL_ENTITY_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            invite_info = None
+        else:
+            entity = getattr(invite_info, "chat", None)
+            if entity is not None:
+                return entity
+
+        try:
+            result = await asyncio.wait_for(
+                client(ImportChatInviteRequest(invite_hash)),
+                timeout=CHANNEL_ENTITY_TIMEOUT_SECONDS,
+            )
+        except RPCError as exc:
+            if "USER_ALREADY_PARTICIPANT" not in str(exc).upper():
+                return None
+            try:
+                invite_info = await asyncio.wait_for(
+                    client(CheckChatInviteRequest(invite_hash)),
+                    timeout=CHANNEL_ENTITY_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                return None
+            return getattr(invite_info, "chat", None)
+        except Exception:
+            return None
+
+        chats = getattr(result, "chats", None) or []
+        if chats:
+            return chats[0]
+        return getattr(result, "chat", None)
 
     async def _resolve_channel_via_id_bot(self, client, link: str) -> ResolvedTelegramChannel:
         async with client.conversation("id_bot") as conversation:

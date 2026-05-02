@@ -6,14 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
 from shafa_control import AccountSessionStore
 from telegram_accounts_api.dependencies import get_account_service, get_auth_service
 from telegram_accounts_api.main import app
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.auth_service import AccountAuthService, _windows_gui_python
 from telegram_accounts_api.utils.storage import JsonListStorage
+from tests.asgi_client import SyncASGITestClient, async_dependency
 
 
 class ShafaBrowserLoginApiTest(unittest.TestCase):
@@ -64,17 +63,17 @@ class ShafaBrowserLoginApiTest(unittest.TestCase):
             store=store,
             shafa_login_launcher=launcher,
         )
-        app.dependency_overrides[get_account_service] = lambda: self.account_service
-        app.dependency_overrides[get_auth_service] = lambda: self.auth_service
+        app.dependency_overrides[get_account_service] = async_dependency(self.account_service)
+        app.dependency_overrides[get_auth_service] = async_dependency(self.auth_service)
         self.addCleanup(app.dependency_overrides.clear)
-        self.client = TestClient(app)
+        self.client = SyncASGITestClient(app)
 
     def test_browser_login_endpoint_starts_shafa_flow(self) -> None:
         response = self.client.post("/accounts/acc-1/auth/shafa/browser-login")
 
         self.assertEqual(response.status_code, 202)
         self.assertEqual(self.launched_commands, [("acc-1", ["main.py", "--login-shafa"])])
-        self.assertIn("started", response.json()["message"].lower())
+        self.assertIn("запущен", response.json()["message"].lower())
 
     def test_windows_gui_python_prefers_pythonw_when_adjacent(self) -> None:
         python_exe = self.base_dir / "venv" / "Scripts" / "python.exe"

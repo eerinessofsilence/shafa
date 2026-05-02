@@ -39,6 +39,7 @@ def test_clothes_mode_triggers_first_fetch(monkeypatch) -> None:
     monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
     monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
     monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
+    monkeypatch.setattr(dc, "telegram_products_exist", lambda: False)
 
     result = asyncio.run(
         dc.get_next_product_for_upload_async(
@@ -66,6 +67,7 @@ def test_sneakers_mode_does_not_trigger_first_fetch(monkeypatch) -> None:
     monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
     monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
     monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
+    monkeypatch.setattr(dc, "telegram_products_exist", lambda: False)
 
     result = asyncio.run(
         dc.get_next_product_for_upload_async(
@@ -91,3 +93,10 @@ def test_sneakers_mode_filters_non_sneaker_items(monkeypatch) -> None:
     assert dc.is_mode_allowed_parsed({"word_for_slack": "slack", "size": "40"}) is True
     assert dc.is_mode_allowed_parsed({"word_for_slack": "", "size": "40", "additional_sizes": []}) is True
     assert dc.is_mode_allowed_parsed({"word_for_slack": "", "size": "XS", "additional_sizes": []}) is False
+
+
+def test_clothes_mode_skips_first_fetch_when_shared_feed_exists(monkeypatch) -> None:
+    monkeypatch.setenv("SHAFA_APP_MODE", "clothes")
+    monkeypatch.setattr(dc, "telegram_products_exist", lambda: True)
+
+    assert dc.should_run_first_fetch() is False

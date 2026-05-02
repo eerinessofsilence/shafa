@@ -161,6 +161,10 @@ TELEGRAM_CHANNELS_RUNTIME_PATH = _get_env_path(
 )
 HEADLESS = False
 DB_PATH = _get_env_path("SHAFA_DB_PATH", PROJECT_DATA_DIR / "shafa.sqlite3")
+TELEGRAM_PRODUCTS_DB_PATH = _get_env_path(
+    "SHAFA_SHARED_TELEGRAM_DB_PATH",
+    PROJECT_DATA_DIR / "telegram_feed.sqlite3",
+)
 
 BRAND_NAME_TO_ID: dict[str, int] = {}
 

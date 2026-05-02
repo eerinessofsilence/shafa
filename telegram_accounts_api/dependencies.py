@@ -16,25 +16,37 @@ from telegram_accounts_api.utils.storage import JsonListStorage
 
 
 @lru_cache
-def get_account_service() -> AccountService:
+def _get_account_service_cached() -> AccountService:
     return AccountService(
         storage=JsonListStorage(settings.accounts_file),
         accounts_dir=settings.accounts_dir,
-        channel_template_service=get_channel_template_service(),
+        channel_template_service=_get_channel_template_service_cached(),
     )
 
 
+async def get_account_service() -> AccountService:
+    return _get_account_service_cached()
+
+
 @lru_cache
-def get_template_service() -> TemplateService:
+def _get_template_service_cached() -> TemplateService:
     return TemplateService(JsonListStorage(settings.templates_file))
 
 
+async def get_template_service() -> TemplateService:
+    return _get_template_service_cached()
+
+
 @lru_cache
-def get_channel_template_service() -> ChannelTemplateService:
+def _get_channel_template_service_cached() -> ChannelTemplateService:
     return ChannelTemplateService(
         storage=JsonListStorage(settings.channel_templates_file),
         account_service=_get_base_account_service(),
     )
+
+
+async def get_channel_template_service() -> ChannelTemplateService:
+    return _get_channel_template_service_cached()
 
 
 @lru_cache
@@ -46,35 +58,51 @@ def _get_base_account_service() -> AccountService:
 
 
 @lru_cache
-def get_telegram_service() -> TelegramService:
+def _get_telegram_service_cached() -> TelegramService:
     return TelegramService(
-        account_service=get_account_service(),
-        template_service=get_template_service(),
+        account_service=_get_account_service_cached(),
+        template_service=_get_template_service_cached(),
         base_dir=settings.base_dir,
     )
 
 
+async def get_telegram_service() -> TelegramService:
+    return _get_telegram_service_cached()
+
+
 @lru_cache
-def get_auth_service() -> AccountAuthService:
+def _get_auth_service_cached() -> AccountAuthService:
     store = AccountSessionStore(
         base_dir=settings.base_dir,
         accounts_dir=settings.accounts_dir,
         legacy_state_file=settings.accounts_file,
     )
     return AccountAuthService(
-        account_service=get_account_service(),
+        account_service=_get_account_service_cached(),
         store=store,
     )
 
 
+async def get_auth_service() -> AccountAuthService:
+    return _get_auth_service_cached()
+
+
 @lru_cache
-def get_account_log_store() -> AccountLogStore:
+def _get_account_log_store_cached() -> AccountLogStore:
     return get_shared_account_log_store()
 
 
+async def get_account_log_store() -> AccountLogStore:
+    return _get_account_log_store_cached()
+
+
 @lru_cache
-def get_dashboard_service() -> DashboardService:
+def _get_dashboard_service_cached() -> DashboardService:
     return DashboardService(
-        account_service=get_account_service(),
-        log_store=get_account_log_store(),
+        account_service=_get_account_service_cached(),
+        log_store=_get_account_log_store_cached(),
     )
+
+
+async def get_dashboard_service() -> DashboardService:
+    return _get_dashboard_service_cached()
