@@ -64,6 +64,7 @@ from data.size_mapping import (
 from utils.logging import log
 from utils.progress import ProgressBar, verbose_photo_logs_enabled
 from telegram_subscription import get_telegram_channels, set_telegram_channels
+from telegram_subscription.client import create_telegram_client
 
 APP_MODE_ENV = "SHAFA_APP_MODE"
 MODE_CLOTHES = "clothes"
@@ -1720,7 +1721,13 @@ async def first_fetch() -> int:
 
 
     api_id_value, api_hash_value = _require_telegram_credentials()
-    async with TelegramClient(str(TELEGRAM_SESSION_PATH), api_id_value, api_hash_value) as client:
+    async with create_telegram_client(
+        TELEGRAM_SESSION_PATH,
+        api_id_value,
+        api_hash_value,
+        save_entities=False,
+        telegram_client_cls=TelegramClient,
+    ) as client:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
@@ -1822,7 +1829,13 @@ async def _fetch_messages(message_amount: int = 200) -> int:
         verbose_count += 1
 
     api_id_value, api_hash_value = _require_telegram_credentials()
-    async with TelegramClient(str(TELEGRAM_SESSION_PATH), api_id_value, api_hash_value) as client:
+    async with create_telegram_client(
+        TELEGRAM_SESSION_PATH,
+        api_id_value,
+        api_hash_value,
+        save_entities=False,
+        telegram_client_cls=TelegramClient,
+    ) as client:
         channel_ids = _get_channel_ids()
         await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
@@ -2084,7 +2097,13 @@ async def _download_message_photos(
     message_ids: Optional[list[int]] = None,
 ) -> int:
     api_id_value, api_hash_value = _require_telegram_credentials()
-    async with TelegramClient(str(TELEGRAM_SESSION_PATH), api_id_value, api_hash_value) as client:
+    async with create_telegram_client(
+        TELEGRAM_SESSION_PATH,
+        api_id_value,
+        api_hash_value,
+        save_entities=False,
+        telegram_client_cls=TelegramClient,
+    ) as client:
         await _sync_channel_titles(client, _get_channel_ids())
         verbose_photo_logs = verbose_photo_logs_enabled()
         if verbose_photo_logs:

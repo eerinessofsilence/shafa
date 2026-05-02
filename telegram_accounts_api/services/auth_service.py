@@ -26,6 +26,7 @@ from shafa_control import (
     resolve_project_dir,
 )
 from shafa_logic.data.const import API_BATCH_URL, APP_PLATFORM, APP_VERSION, ORIGIN_URL
+from shafa_logic.telegram_subscription.client import create_telegram_client
 
 from telegram_accounts_api.models.auth import (
     ShafaAuthStatusResponse,
@@ -607,10 +608,12 @@ class AccountAuthService:
             return ""
 
         try:
-            client = TelegramClient(
-                str(self.store.telegram_session_file(account)),
+            client = create_telegram_client(
+                self.store.telegram_session_file(account),
                 int(api_id),
                 api_hash,
+                save_entities=False,
+                telegram_client_cls=TelegramClient,
             )
             await client.connect()
 
@@ -829,7 +832,13 @@ class AccountAuthService:
 
     async def _connect_direct_telegram_client(self, account: Account):
         telegram_client_cls, api_id, api_hash, session_file = self._telegram_client_config(account)
-        client = telegram_client_cls(str(session_file), api_id, api_hash)
+        client = create_telegram_client(
+            session_file,
+            api_id,
+            api_hash,
+            save_entities=True,
+            telegram_client_cls=telegram_client_cls,
+        )
         await client.connect()
         return client
 

@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 from urllib.parse import urlparse
 
+from .client import create_telegram_client
+
 if TYPE_CHECKING:
     from telethon import TelegramClient
 
@@ -120,7 +122,15 @@ def load_channel_links(path: Path) -> list[str]:
 async def _resolve_channel_tuples(links: list[str]) -> list[tuple[int, str, str]]:
     api_id, api_hash = _require_telegram_credentials()
     telegram_client_cls = _get_telegram_client_cls()
-    async with _connected_client(telegram_client_cls(str(_telegram_session_path()), api_id, api_hash)) as client:
+    async with _connected_client(
+        create_telegram_client(
+            _telegram_session_path(),
+            api_id,
+            api_hash,
+            save_entities=False,
+            telegram_client_cls=telegram_client_cls,
+        )
+    ) as client:
         if not await client.is_user_authorized():
             raise RuntimeError(
                 "Сессия Telegram отсутствует или не авторизована. Переподключи аккаунт в интерфейсе."

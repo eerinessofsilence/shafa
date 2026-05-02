@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from telegram_channels import parse_id_bot_response, sanitize_channel_links
+from shafa_logic.telegram_subscription.client import create_telegram_client
 from telegram_accounts_api.models.telegram import (
     SendMessageRequest,
     TelegramDialogResponse,
@@ -134,7 +135,13 @@ class TelegramService:
             raise TelegramOperationError("Telethon не установлен.") from exc
 
         api_id, api_hash, session_file = await self._resolve_credentials(account_id)
-        client = TelegramClient(str(session_file), api_id, api_hash)
+        client = create_telegram_client(
+            session_file,
+            api_id,
+            api_hash,
+            save_entities=False,
+            telegram_client_cls=TelegramClient,
+        )
         await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()

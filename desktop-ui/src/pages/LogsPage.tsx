@@ -404,13 +404,13 @@ function LogsPage({
                         </span>
                         <div
                           className={cx(
-                            'min-w-0',
+                            'min-w-0 overflow-hidden',
                             getAccountLogEventSurfaceClassName(entry),
                           )}
                         >
                           <p
                             className={cx(
-                              'min-w-0',
+                              'min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]',
                               getAccountLogMessageClassName(entry),
                             )}
                           >

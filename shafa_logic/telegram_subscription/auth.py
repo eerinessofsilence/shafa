@@ -12,6 +12,7 @@ from data.const import (
     TELEGRAM_LOGIN_STATE_PATH,
     TELEGRAM_SESSION_PATH,
 )
+from .client import create_telegram_client
 
 INIT = "INIT"
 WAIT_PHONE = "WAIT_PHONE"
@@ -89,7 +90,15 @@ async def _send_code(phone: str) -> None:
     api_id, api_hash = _require_telegram_credentials()
 
     try:
-        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
+        async with _connected_client(
+            create_telegram_client(
+                session_path,
+                api_id,
+                api_hash,
+                save_entities=True,
+                telegram_client_cls=telegram_client_cls,
+            )
+        ) as client:
             _log_step("Sending phone to Telethon")
             sent = await client.send_code_request(phone)
     except Exception as exc:
@@ -140,7 +149,15 @@ async def _complete_login(phone: str, code: str) -> None:
     api_id, api_hash = _require_telegram_credentials()
 
     try:
-        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
+        async with _connected_client(
+            create_telegram_client(
+                session_path,
+                api_id,
+                api_hash,
+                save_entities=True,
+                telegram_client_cls=telegram_client_cls,
+            )
+        ) as client:
             await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
     except Exception as exc:
         if _is_password_needed_error(exc):
@@ -225,7 +242,15 @@ async def _submit_password(password: str) -> None:
     api_id, api_hash = _require_telegram_credentials()
 
     try:
-        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
+        async with _connected_client(
+            create_telegram_client(
+                session_path,
+                api_id,
+                api_hash,
+                save_entities=True,
+                telegram_client_cls=telegram_client_cls,
+            )
+        ) as client:
             await client.sign_in(password=password)
     except Exception as exc:
         if _is_invalid_password_error(exc):
@@ -268,7 +293,15 @@ async def _session_status() -> bool:
     telegram_client_cls = _get_telegram_client_cls()
     api_id, api_hash = _require_telegram_credentials()
     try:
-        async with _connected_client(telegram_client_cls(str(session_path), api_id, api_hash)) as client:
+        async with _connected_client(
+            create_telegram_client(
+                session_path,
+                api_id,
+                api_hash,
+                save_entities=False,
+                telegram_client_cls=telegram_client_cls,
+            )
+        ) as client:
             authorized = await client.is_user_authorized()
     except Exception as exc:
         _log_step(f"Telegram session check failed: {_classify_auth_error(exc)}")
