@@ -27,6 +27,7 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_ACCOUNT_STATE_DIR"].endswith("accounts/acc-1")
     assert env["SHAFA_STORAGE_STATE_PATH"].endswith("accounts/acc-1/auth.json")
     assert env["SHAFA_DB_PATH"].endswith("accounts/acc-1/shafa.sqlite3")
+    assert env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-1/media")
     assert env["SHAFA_TELEGRAM_SESSION_PATH"].endswith("accounts/acc-1/telegram.session")
     assert env["SHAFA_TELEGRAM_API_ID"] == "777000"
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
@@ -89,6 +90,9 @@ def test_account_runtime_isolates_db_per_account_even_for_same_project(tmp_path:
     assert first_env["SHAFA_DB_PATH"].endswith("accounts/acc-1/shafa.sqlite3")
     assert second_env["SHAFA_DB_PATH"].endswith("accounts/acc-2/shafa.sqlite3")
     assert first_env["SHAFA_DB_PATH"] != second_env["SHAFA_DB_PATH"]
+    assert first_env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-1/media")
+    assert second_env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-2/media")
+    assert first_env["SHAFA_MEDIA_DIR_PATH"] != second_env["SHAFA_MEDIA_DIR_PATH"]
 
 
 def test_account_runtime_exports_channel_runtime_config(tmp_path: Path) -> None:

@@ -93,6 +93,7 @@ class AccountSessionStore:
             "telegram_credentials_path": str(self.telegram_credentials_file(account)),
             "telegram_credentials_configured": self.has_telegram_credentials(account),
             "telegram_channels_path": str(self.channels_file(account)),
+            "media_dir_path": str(self.media_dir(account)),
             "logs_path": str(self.account_log_file(account)),
         }
         manifest_path.write_text(
@@ -108,6 +109,9 @@ class AccountSessionStore:
 
     def auth_file(self, account: Account) -> Path:
         return self.account_dir(account) / "auth.json"
+
+    def media_dir(self, account: Account) -> Path:
+        return self.account_dir(account) / "media"
 
     @staticmethod
     def _preferred_project_dir(project_dir: Path) -> Path:
