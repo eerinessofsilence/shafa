@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ from telegram_accounts_api.services.template_service import TemplateService
 from telegram_accounts_api.utils.exceptions import TelegramOperationError
 
 LOGGER = logging.getLogger(__name__)
+CHANNEL_ENTITY_TIMEOUT_SECONDS = 10
+ID_BOT_RESPONSE_TIMEOUT_SECONDS = 6
 
 
 class TelegramService:
@@ -166,28 +169,58 @@ class TelegramService:
         return result
 
     async def _resolve_single_channel(self, client, link: str) -> ResolvedTelegramChannel:
-        try:
-            async with client.conversation("id_bot") as conversation:
-                await conversation.send_message(link)
-                response = await conversation.get_response()
-            channel_id, title = parse_id_bot_response(response.raw_text)
-            return ResolvedTelegramChannel(channel_id=channel_id, title=title, alias="main")
-        except Exception:
-            entity = await client.get_entity(link)
-            try:
-                from telethon.utils import get_peer_id
+        resolved_from_entity = await self._resolve_channel_from_entity(client, link)
+        if resolved_from_entity is not None:
+            return resolved_from_entity
 
-                channel_id = int(get_peer_id(entity))
-            except Exception:
-                channel_id = int(getattr(entity, "id"))
-            title = str(getattr(entity, "title", None) or getattr(entity, "username", None) or "").strip()
-            if not title:
-                raise TelegramOperationError(f"Не удалось определить Telegram-канал по ссылке '{link}'.")
-            return ResolvedTelegramChannel(
-                channel_id=channel_id,
-                title=title,
-                alias="main",
+        return await self._resolve_channel_via_id_bot(client, link)
+
+    async def _resolve_channel_from_entity(self, client, link: str) -> ResolvedTelegramChannel | None:
+        try:
+            entity = await asyncio.wait_for(
+                client.get_entity(link),
+                timeout=CHANNEL_ENTITY_TIMEOUT_SECONDS,
             )
+        except Exception:
+            return None
+        return _resolved_channel_from_entity(entity)
+
+    async def _resolve_channel_via_id_bot(self, client, link: str) -> ResolvedTelegramChannel:
+        async with client.conversation("id_bot") as conversation:
+            await conversation.send_message(link)
+            response = await asyncio.wait_for(
+                conversation.get_response(),
+                timeout=ID_BOT_RESPONSE_TIMEOUT_SECONDS,
+            )
+        channel_id, title = parse_id_bot_response(response.raw_text)
+        return ResolvedTelegramChannel(channel_id=channel_id, title=title, alias="main")
+
+
+def _resolved_channel_from_entity(entity: object | None) -> ResolvedTelegramChannel | None:
+    if entity is None:
+        return None
+
+    title = str(
+        getattr(entity, "title", None) or getattr(entity, "username", None) or ""
+    ).strip()
+    if not title:
+        return None
+
+    try:
+        channel_id = int(_get_peer_id(entity))
+    except Exception:
+        raw_id = getattr(entity, "id", None)
+        if not isinstance(raw_id, int):
+            return None
+        channel_id = raw_id
+
+    return ResolvedTelegramChannel(channel_id=channel_id, title=title, alias="main")
+
+
+def _get_peer_id(entity: object) -> int:
+    from telethon.utils import get_peer_id
+
+    return int(get_peer_id(entity))
 
 
 class _TelegramClientContext:
