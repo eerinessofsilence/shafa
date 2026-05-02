@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 from shafa_control import Account, AccountSessionStore
 
@@ -252,3 +253,27 @@ def test_session_store_uses_separate_db_per_account_for_same_project(tmp_path: P
     assert first_db != second_db
     assert first_db.parent.name == "acc-1"
     assert second_db.parent.name == "acc-2"
+
+
+def test_delete_shafa_session_keeps_db_when_cookie_store_is_locked(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    account = Account(id="acc-6", name="Locked DB", path="/tmp/project")
+    db_path = store.db_file(account)
+    db_path.write_text("placeholder", encoding="utf-8")
+    store.auth_file(account).write_text(
+        '{"cookies":[{"name":"csrftoken","value":"token","domain":".shafa.ua"}]}',
+        encoding="utf-8",
+    )
+
+    with patch(
+        "shafa_control.session_store.sqlite3.connect",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        store.delete_shafa_session(account)
+
+    assert store.auth_file(account).exists() is False
+    assert db_path.exists() is True

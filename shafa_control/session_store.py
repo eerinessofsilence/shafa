@@ -37,6 +37,13 @@ TELEGRAM_AUTH_STEP_ALIASES = {
     "SUCCESS": "SUCCESS",
     "FAILED": "FAILED",
 }
+_SQLITE_SESSION_TIMEOUT_SECONDS = 60.0
+_SQLITE_LOCK_ERROR_MARKERS = (
+    "database is locked",
+    "database schema is locked",
+    "database table is locked",
+    "database is busy",
+)
 
 
 class AccountSessionStore:
@@ -356,12 +363,20 @@ class AccountSessionStore:
     def _is_allowed_shafa_domain(domain: str) -> bool:
         return domain == "shafa.ua" or domain.endswith(".shafa.ua")
 
+    @staticmethod
+    def _is_transient_sqlite_lock_error(exc: sqlite3.Error) -> bool:
+        message = " ".join(str(exc).split()).lower()
+        return any(marker in message for marker in _SQLITE_LOCK_ERROR_MARKERS)
+
     def _clear_shafa_db_cookies(self, account: Account) -> None:
         path = self.db_file(account)
         if not path.exists():
             return
         try:
-            with sqlite3.connect(path) as conn:
+            with sqlite3.connect(path, timeout=_SQLITE_SESSION_TIMEOUT_SECONDS) as conn:
+                conn.execute(
+                    f"PRAGMA busy_timeout = {int(_SQLITE_SESSION_TIMEOUT_SECONDS * 1000)}"
+                )
                 cookies_table_exists = conn.execute(
                     """
                     SELECT 1
@@ -372,7 +387,9 @@ class AccountSessionStore:
                 if cookies_table_exists is None:
                     return
                 conn.execute("DELETE FROM cookies")
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            if self._is_transient_sqlite_lock_error(exc):
+                return
             path.unlink(missing_ok=True)
             Path(f"{path}-journal").unlink(missing_ok=True)
             Path(f"{path}-wal").unlink(missing_ok=True)

@@ -1,5 +1,7 @@
 import json
+import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -17,6 +19,95 @@ _SIZE_IDS_CATALOG_CACHE: Optional[dict[str, set[int]]] = None
 _SIZE_MAPPING_ROWS_CACHE: Optional[dict[str, list[dict]]] = None
 _BRAND_ID_BY_NAME_CACHE: Optional[dict[str, int]] = None
 _BRAND_NAMES_CACHE: Optional[list[str]] = None
+_DEFAULT_SQLITE_TIMEOUT_SECONDS = 60.0
+_DEFAULT_SQLITE_LOCK_RETRIES = 3
+_DEFAULT_SQLITE_LOCK_RETRY_DELAY_SECONDS = 0.25
+_SQLITE_LOCK_ERROR_MARKERS = (
+    "database is locked",
+    "database schema is locked",
+    "database table is locked",
+    "database is busy",
+)
+
+
+def _sqlite_timeout_seconds() -> float:
+    raw = os.getenv("SHAFA_DB_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_SQLITE_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SQLITE_TIMEOUT_SECONDS
+    return min(max(value, 1.0), 300.0)
+
+
+def _sqlite_busy_timeout_ms() -> int:
+    return int(_sqlite_timeout_seconds() * 1000)
+
+
+def _sqlite_lock_retries() -> int:
+    raw = os.getenv("SHAFA_DB_LOCK_RETRIES", "").strip()
+    if not raw:
+        return _DEFAULT_SQLITE_LOCK_RETRIES
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_SQLITE_LOCK_RETRIES
+    return min(max(value, 1), 10)
+
+
+def _sqlite_lock_retry_delay_seconds() -> float:
+    raw = os.getenv("SHAFA_DB_LOCK_RETRY_DELAY_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_SQLITE_LOCK_RETRY_DELAY_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SQLITE_LOCK_RETRY_DELAY_SECONDS
+    return min(max(value, 0.05), 5.0)
+
+
+def _is_sqlite_lock_error(exc: sqlite3.Error) -> bool:
+    message = " ".join(str(exc).split()).lower()
+    return any(marker in message for marker in _SQLITE_LOCK_ERROR_MARKERS)
+
+
+def _run_with_lock_retry(action, *, rollback=None):
+    retries = _sqlite_lock_retries()
+    for attempt in range(retries):
+        try:
+            return action()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_lock_error(exc):
+                raise
+            if rollback is not None:
+                try:
+                    rollback()
+                except sqlite3.Error:
+                    pass
+            if attempt + 1 >= retries:
+                raise
+            time.sleep(_sqlite_lock_retry_delay_seconds() * (attempt + 1))
+
+
+class _RetryingConnection(sqlite3.Connection):
+    def execute(self, *args, **kwargs):
+        return _run_with_lock_retry(
+            lambda: sqlite3.Connection.execute(self, *args, **kwargs),
+            rollback=lambda: sqlite3.Connection.rollback(self),
+        )
+
+    def executemany(self, *args, **kwargs):
+        return _run_with_lock_retry(
+            lambda: sqlite3.Connection.executemany(self, *args, **kwargs),
+            rollback=lambda: sqlite3.Connection.rollback(self),
+        )
+
+    def executescript(self, *args, **kwargs):
+        return _run_with_lock_retry(
+            lambda: sqlite3.Connection.executescript(self, *args, **kwargs),
+            rollback=lambda: sqlite3.Connection.rollback(self),
+        )
 
 
 def _normalize_telegram_channel_alias(alias: Optional[str]) -> str:
@@ -32,8 +123,15 @@ def _normalize_telegram_channel_alias(alias: Optional[str]) -> str:
 
 
 def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(
+        db_path,
+        timeout=_sqlite_timeout_seconds(),
+        factory=_RetryingConnection,
+    )
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {_sqlite_busy_timeout_ms()}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 

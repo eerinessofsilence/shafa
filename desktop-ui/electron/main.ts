@@ -194,6 +194,7 @@ function resolveBackendEnvironment({
   return {
     ...env,
     PYTHONUNBUFFERED: "1",
+    PYTHONIOENCODING: "utf-8",
     SHAFA_BACKEND_HOST: host,
     SHAFA_BACKEND_PORT: String(port),
     SHAFA_DESKTOP_DATA_DIR: userDataDir,

@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 import argparse
 
+from utils.stdio import install_safe_stdio
+
+install_safe_stdio()
+
 from telegram_subscription import complete_login, send_code, session_status, submit_password, sync_channels_from_runtime_config
 
 _ADD_CHANNEL = object()
