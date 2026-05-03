@@ -1770,7 +1770,22 @@ def _find_best_brand_in_text(text: str) -> str:
 def _canonicalize_name_brand(name: object, brand: object) -> str:
     text = str(name or "")
     brand_text = str(brand or "").strip()
-    if not text or not brand_text or " " in brand_text:
+    if not text or not brand_text:
+        return text
+    brand_tokens = [token for token in brand_text.split() if token]
+    if len(brand_tokens) > 1:
+        name_tokens = [token for token in text.split() if token]
+        max_overlap = min(len(brand_tokens), len(name_tokens))
+        for overlap in range(max_overlap, 0, -1):
+            brand_suffix = brand_tokens[-overlap:]
+            name_prefix = name_tokens[:overlap]
+            if not all(
+                _brand_token_matches_name_token(brand_token, name_token)
+                for brand_token, name_token in zip(brand_suffix, name_prefix)
+            ):
+                continue
+            remaining_tokens = name_tokens[overlap:]
+            return " ".join([brand_text, *remaining_tokens]).strip()
         return text
     normalized_brand = _normalize_masked_brand_token(brand_text)
     if not normalized_brand or not normalized_brand.isalnum():
@@ -1799,6 +1814,20 @@ def _canonicalize_name_brand(name: object, brand: object) -> str:
         return text
     parts.append(text[last_end:])
     return "".join(parts)
+
+
+def _brand_token_matches_name_token(brand_token: str, name_token: str) -> bool:
+    _, brand_core, _ = _split_masked_brand_token(brand_token)
+    _, name_core, _ = _split_masked_brand_token(name_token)
+    normalized_brand = _normalize_masked_brand_token(brand_core)
+    normalized_name = _normalize_masked_brand_token(name_core)
+    if not normalized_brand or not normalized_name:
+        return False
+    if normalized_brand == normalized_name:
+        return True
+    if _is_masked_brand_token(name_core):
+        return _matches_masked_brand_token(normalized_name, normalized_brand)
+    return False
 
 
 def _fallback_brand_from_name(name: str) -> str:
