@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 from urllib.parse import urlparse
 
-from telegram_channels import extract_telegram_invite_hash, normalize_channel_link, parse_id_bot_response
+from .telegram_channels import (
+    extract_telegram_invite_hash,
+    normalize_channel_link,
+    parse_id_bot_response,
+)
 
 from .client import create_telegram_client
 
