@@ -60,6 +60,30 @@ class CategoryBySizeTests(unittest.TestCase):
 
         self.assertEqual(brand, "Asics")
 
+    @patch("controller.data_controller._resolve_brand_id", return_value=104)
+    @patch("controller.data_controller._parse_price", return_value=1600)
+    @patch("controller.data_controller._resolve_size_id", return_value=33)
+    def test_build_product_raw_data_replaces_masked_brand_in_name(
+        self,
+        _resolve_size_id,
+        _parse_price,
+        _resolve_brand_id,
+    ):
+        product_raw_data = dc._build_product_raw_data(
+            {
+                "word_for_slack": "",
+                "name": "N*ke Shox Black Grey",
+                "description": "desc",
+                "size": "36",
+                "additional_sizes": [],
+                "price": "1600",
+                "color": "black",
+                "brand": "Nike",
+            }
+        )
+
+        self.assertEqual(product_raw_data["name"], "Nike Shox Black Grey")
+
     def test_women_category_for_sizes_36_to_41(self):
         category = dc._resolve_catalog_slug("36", ["37", "40", "41"], "")
         self.assertEqual(category, dc.WOMEN_SNEAKERS_CATEGORY)

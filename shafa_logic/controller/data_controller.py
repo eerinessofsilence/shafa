@@ -1684,6 +1684,16 @@ def _trim_masked_brand_token(raw_token: str) -> tuple[str, int]:
     return raw_token.strip(strip_chars), leading
 
 
+def _split_masked_brand_token(raw_token: str) -> tuple[str, str, str]:
+    strip_chars = ".,;:()[]{}<>\"'"
+    leading_len = len(raw_token) - len(raw_token.lstrip(strip_chars))
+    trailing_len = len(raw_token) - len(raw_token.rstrip(strip_chars))
+    leading = raw_token[:leading_len]
+    trailing = raw_token[len(raw_token) - trailing_len :] if trailing_len else ""
+    core = raw_token[leading_len : len(raw_token) - trailing_len if trailing_len else len(raw_token)]
+    return leading, core, trailing
+
+
 def _is_masked_brand_token(token: str) -> bool:
     if len(token) < 3:
         return False
@@ -1755,6 +1765,40 @@ def _find_best_brand_in_text(text: str) -> str:
     if not candidates:
         return ""
     return min(candidates)[3]
+
+
+def _canonicalize_name_brand(name: object, brand: object) -> str:
+    text = str(name or "")
+    brand_text = str(brand or "").strip()
+    if not text or not brand_text or " " in brand_text:
+        return text
+    normalized_brand = _normalize_masked_brand_token(brand_text)
+    if not normalized_brand or not normalized_brand.isalnum():
+        return text
+
+    parts: list[str] = []
+    last_end = 0
+    replaced = False
+    for token_match in re.finditer(r"[^\s|,/]+", text):
+        raw_token = token_match.group(0)
+        leading, core, trailing = _split_masked_brand_token(raw_token)
+        if (
+            not replaced
+            and _is_masked_brand_token(core)
+            and _matches_masked_brand_token(
+                _normalize_masked_brand_token(core),
+                normalized_brand,
+            )
+        ):
+            replacement = f"{leading}{brand_text}{trailing}"
+            parts.append(text[last_end : token_match.start()])
+            parts.append(replacement)
+            last_end = token_match.end()
+            replaced = True
+    if not replaced:
+        return text
+    parts.append(text[last_end:])
+    return "".join(parts)
 
 
 def _fallback_brand_from_name(name: str) -> str:
@@ -3075,9 +3119,14 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
                 if size_id != resolved_size
             ]
 
+    normalized_name = _canonicalize_name_brand(
+        parsed.get("name", ""),
+        parsed.get("brand"),
+    )
+
     product_raw_data: dict = {
         "word_for_slack": parsed.get("word_for_slack", ""),
-        "name": parsed.get("name", ""),
+        "name": normalized_name,
         "description": description,
         "category": catalog_slug,
         "brand": (

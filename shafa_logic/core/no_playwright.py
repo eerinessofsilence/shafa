@@ -727,7 +727,7 @@ def main() -> None:
     parsed_data = product_data.get("parsed_data") or {}
     message_id = product_data["message_id"]
     photo_message_ids = get_product_photo_message_ids(product_data)
-    product_name = parsed_data.get("name") or product_raw_data.get("name") or "—"
+    product_name = product_raw_data.get("name") or parsed_data.get("name") or "—"
     log("INFO", f"Товар для создания: {product_name}.")
 
     cookies = _load_shafa_cookies()

@@ -9,6 +9,35 @@ from data.const import MAX_UPLOAD_BYTES
 
 
 class NoPlaywrightPhotoRetryTests(unittest.TestCase):
+    @patch("core.no_playwright.log")
+    @patch("core.no_playwright._load_shafa_cookies")
+    @patch("core.no_playwright.get_next_product_for_upload")
+    @patch("core.no_playwright.init_db")
+    def test_prefers_normalized_product_name_in_prepare_log(
+        self,
+        _init_db,
+        get_next_product_for_upload,
+        load_cookies,
+        log_mock,
+    ):
+        get_next_product_for_upload.return_value = {
+            "channel_id": 9,
+            "message_id": 11543,
+            "parsed_data": {"name": "N*ke Shox Black Grey", "price": "2500", "size": "41"},
+            "product_raw_data": {
+                "name": "Nike Shox Black Grey",
+                "price": 2500,
+                "size": 41,
+                "brand": 77,
+                "category": "obuv/krossovki",
+            },
+        }
+        load_cookies.return_value = []
+
+        no_playwright.main()
+
+        log_mock.assert_any_call("INFO", "Товар для создания: Nike Shox Black Grey.")
+
     @patch("core.no_playwright.save_uploaded_product")
     @patch("core.no_playwright.mark_product_created")
     @patch("core.no_playwright.create_product")
