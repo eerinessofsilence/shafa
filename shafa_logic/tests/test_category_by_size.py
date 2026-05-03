@@ -1,4 +1,5 @@
 import _test_path  # noqa: F401
+import re
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +15,50 @@ class CategoryBySizeTests(unittest.TestCase):
     def test_extract_brand_keeps_multiword_brand_at_name_start(self):
         brand = dc.extract_brand([], "New Balance 574")
         self.assertEqual(brand, "New Balance")
+
+    def test_extract_brand_matches_masked_nike_token(self):
+        with (
+            patch("controller.data_controller._load_brand_patterns", return_value=[]),
+            patch(
+                "controller.data_controller._load_masked_brand_index",
+                return_value={4: [("Nike", "nike")]},
+            ),
+        ):
+            brand = dc.extract_brand([], "N*ke Shox Black Grey")
+
+        self.assertEqual(brand, "Nike")
+
+    def test_extract_brand_matches_masked_puma_token(self):
+        with (
+            patch("controller.data_controller._load_brand_patterns", return_value=[]),
+            patch(
+                "controller.data_controller._load_masked_brand_index",
+                return_value={4: [("Puma", "puma")]},
+            ),
+        ):
+            brand = dc.extract_brand([], "Pum@ Speedcat Mesh Grey")
+
+        self.assertEqual(brand, "Puma")
+
+    def test_extract_brand_prefers_earliest_masked_brand_match_in_name(self):
+        with (
+            patch(
+                "controller.data_controller._load_brand_patterns",
+                return_value=[
+                    (
+                        "Onitsuka Tiger",
+                        re.compile(r"(?i)(?<!\w)Onitsuka\ Tiger(?!\w)"),
+                    )
+                ],
+            ),
+            patch(
+                "controller.data_controller._load_masked_brand_index",
+                return_value={5: [("Asics", "asics")]},
+            ),
+        ):
+            brand = dc.extract_brand([], "As*cs Onitsuka Tiger Mexico 66 Cream Pink Floral")
+
+        self.assertEqual(brand, "Asics")
 
     def test_women_category_for_sizes_36_to_41(self):
         category = dc._resolve_catalog_slug("36", ["37", "40", "41"], "")

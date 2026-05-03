@@ -387,6 +387,7 @@ _PRICE_EXCLUDE_HINTS = (
     "catalog",
 )
 _BRAND_PATTERNS: Optional[list[tuple[str, re.Pattern]]] = None
+_MASKED_BRAND_INDEX: Optional[dict[int, list[tuple[str, str]]]] = None
 _SIZE_EXCLUDE_HINTS = (
     "артикул",
     "код",
@@ -1155,6 +1156,10 @@ def _normalize_token(token: str) -> str:
     return re.sub(r"[^\w]+", "", token, flags=re.UNICODE).casefold()
 
 
+def _normalize_masked_brand_token(token: str) -> str:
+    return unicodedata.normalize("NFKC", token).casefold()
+
+
 def _strip_name_prefix(text: str) -> str:
     tokens = text.split()
     if not tokens:
@@ -1631,19 +1636,125 @@ def _load_brand_patterns() -> list[tuple[str, re.Pattern]]:
     return patterns
 
 
-def _find_brand_in_text(text: str) -> str:
-    if not text:
-        return ""
-    best_match: tuple[int, int, str] | None = None
+def _load_masked_brand_index() -> dict[int, list[tuple[str, str]]]:
+    global _MASKED_BRAND_INDEX
+    if _MASKED_BRAND_INDEX is not None:
+        return _MASKED_BRAND_INDEX
+    index: dict[int, list[tuple[str, str]]] = {}
+    seen: set[str] = set()
+    for raw_name in list_brand_names():
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        normalized = _normalize_masked_brand_token(name)
+        if not normalized or not normalized.isalnum():
+            continue
+        if " " in normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        index.setdefault(len(normalized), []).append((name, normalized))
+    _MASKED_BRAND_INDEX = index
+    return index
+
+
+def _find_exact_brand_match_in_text(
+    text: str,
+) -> tuple[int, int, int, str] | None:
+    best_match: tuple[int, int, int, str] | None = None
     for name, pattern in _load_brand_patterns():
         match = pattern.search(text)
         if not match:
             continue
-        start = match.start()
-        candidate = (start, -len(name), name)
+        candidate = (match.start(), 0, -len(name), name)
         if best_match is None or candidate < best_match:
             best_match = candidate
-    return best_match[2] if best_match else ""
+    return best_match
+
+
+def _find_brand_in_text(text: str) -> str:
+    if not text:
+        return ""
+    match = _find_exact_brand_match_in_text(text)
+    return match[3] if match else ""
+
+
+def _trim_masked_brand_token(raw_token: str) -> tuple[str, int]:
+    strip_chars = ".,;:()[]{}<>\"'"
+    leading = len(raw_token) - len(raw_token.lstrip(strip_chars))
+    return raw_token.strip(strip_chars), leading
+
+
+def _is_masked_brand_token(token: str) -> bool:
+    if len(token) < 3:
+        return False
+    visible_count = sum(ch.isalnum() for ch in token)
+    wildcard_count = len(token) - visible_count
+    if visible_count < 2 or wildcard_count == 0 or wildcard_count > 2:
+        return False
+    if not any(ch.isalpha() for ch in token):
+        return False
+    return True
+
+
+def _matches_masked_brand_token(masked_token: str, candidate: str) -> bool:
+    if len(masked_token) != len(candidate):
+        return False
+    for masked_char, candidate_char in zip(masked_token, candidate):
+        if masked_char.isalnum() and masked_char != candidate_char:
+            return False
+    return True
+
+
+def _find_masked_brand_match_in_text(
+    text: str,
+) -> tuple[int, int, int, str] | None:
+    if not text:
+        return None
+    best_match: tuple[int, int, int, str] | None = None
+    masked_brand_index = _load_masked_brand_index()
+    for token_match in re.finditer(r"[^\s|,/]+", text):
+        raw_token = token_match.group(0)
+        token, leading_trim = _trim_masked_brand_token(raw_token)
+        if not _is_masked_brand_token(token):
+            continue
+        normalized_token = _normalize_masked_brand_token(token)
+        candidates = [
+            display_name
+            for display_name, normalized_brand in masked_brand_index.get(
+                len(normalized_token),
+                [],
+            )
+            if _matches_masked_brand_token(normalized_token, normalized_brand)
+        ]
+        unique_candidates = list(dict.fromkeys(candidates))
+        if len(unique_candidates) != 1:
+            continue
+        display_name = unique_candidates[0]
+        candidate = (
+            token_match.start() + leading_trim,
+            1,
+            -len(display_name),
+            display_name,
+        )
+        if best_match is None or candidate < best_match:
+            best_match = candidate
+    return best_match
+
+
+def _find_best_brand_in_text(text: str) -> str:
+    if not text:
+        return ""
+    candidates = [
+        candidate
+        for candidate in (
+            _find_exact_brand_match_in_text(text),
+            _find_masked_brand_match_in_text(text),
+        )
+        if candidate is not None
+    ]
+    if not candidates:
+        return ""
+    return min(candidates)[3]
 
 
 def _fallback_brand_from_name(name: str) -> str:
@@ -1680,15 +1791,18 @@ def extract_brand(lines: list[str], name: str) -> str:
             value = match.group(1)
             value = re.split(r"[|,/]", value)[0].strip()
             if value:
+                brand = _find_best_brand_in_text(value)
+                if brand:
+                    return brand
                 normalized = _normalize_token(value)
                 if normalized and normalized not in _GENERIC_NAME_TOKENS:
                     return value
     cleaned_name = _strip_name_prefix(name)
-    brand = _find_brand_in_text(cleaned_name)
+    brand = _find_best_brand_in_text(cleaned_name)
     if brand:
         return brand
     for line in lines:
-        brand = _find_brand_in_text(line)
+        brand = _find_best_brand_in_text(line)
         if brand:
             return brand
     return _fallback_brand_from_name(cleaned_name or name)
