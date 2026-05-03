@@ -1000,7 +1000,54 @@ async def _resolve_channel_peer(client: TelegramClient, channel_id: int):
             return await client.get_entity(source_link)
         except (ValueError, RPCError):
             pass
+    dialog_entity = await _find_channel_peer_in_dialogs(client, channel_id)
+    if dialog_entity is not None:
+        return dialog_entity
     return channel_id
+
+
+async def _find_channel_peer_in_dialogs(
+    client: TelegramClient,
+    channel_id: int,
+) -> object | None:
+    try:
+        async for dialog in client.iter_dialogs():
+            entity = getattr(dialog, "entity", None)
+            if entity is not None and _peer_matches_channel_id(entity, channel_id):
+                return entity
+    except Exception:
+        return None
+    return None
+
+
+def _peer_matches_channel_id(entity: object, channel_id: int) -> bool:
+    try:
+        return int(get_peer_id(entity)) == int(channel_id)
+    except Exception:
+        raw_id = getattr(entity, "id", None)
+        if not isinstance(raw_id, int):
+            return False
+        return raw_id in _channel_id_variants(channel_id)
+
+
+def _channel_id_variants(channel_id: int) -> set[int]:
+    normalized = int(channel_id)
+    variants = {normalized}
+    if normalized > 0:
+        variants.add(int(f"-100{normalized}"))
+        return variants
+
+    raw_text = str(abs(normalized))
+    if raw_text.startswith("100") and len(raw_text) > 3:
+        variants.add(int(raw_text[3:]))
+    return variants
+
+
+def _chat_entity_from_result(chats: list[object], channel_id: int) -> object | None:
+    for chat in chats:
+        if _peer_matches_channel_id(chat, channel_id):
+            return chat
+    return None
 
 
 async def _sync_channel_titles(client: TelegramClient, channel_ids: list[int]) -> None:
@@ -2017,6 +2064,7 @@ async def _collect_discussion_photos(
             candidate_ids = [message_id]
     result = None
     discussion_chat_id: Optional[int] = None
+    discussion_peer = None
     root = None
     last_exc: Optional[Exception] = None
     for candidate_id in candidate_ids:
@@ -2029,6 +2077,7 @@ async def _collect_discussion_photos(
             continue
         if not candidate_result or not candidate_result.messages:
             continue
+        chats = list(getattr(candidate_result, "chats", None) or [])
         candidate_discussion_chat_id: Optional[int] = None
         for msg in candidate_result.messages:
             chat_id = getattr(msg, "chat_id", None)
@@ -2036,11 +2085,17 @@ async def _collect_discussion_photos(
                 candidate_discussion_chat_id = chat_id
                 break
         if candidate_discussion_chat_id is None:
-            for chat in candidate_result.chats:
+            for chat in chats:
                 chat_id = get_peer_id(chat)
                 if chat_id != channel_id:
                     candidate_discussion_chat_id = chat_id
+                    discussion_peer = chat
                     break
+        elif discussion_peer is None:
+            discussion_peer = _chat_entity_from_result(
+                chats,
+                candidate_discussion_chat_id,
+            )
         if not candidate_discussion_chat_id:
             result = candidate_result
             continue
@@ -2071,6 +2126,18 @@ async def _collect_discussion_photos(
                 + f"error={last_exc}.",
             )
         return []
+    if discussion_peer is None:
+        discussion_peer = _chat_entity_from_result(
+            list(getattr(result, "chats", None) or []),
+            discussion_chat_id,
+        )
+    if discussion_peer is None:
+        log(
+            "WARN",
+            "Не удалось восстановить peer для чата обсуждения: "
+            f"channel_id={channel_id} discussion_chat_id={discussion_chat_id}.",
+        )
+        return []
     messages: list = []
     grouped_seen: set[int] = set()
 
@@ -2083,7 +2150,7 @@ async def _collect_discussion_photos(
             grouped_seen.add(reply.grouped_id)
             grouped = await _collect_group_messages(
                 client,
-                discussion_chat_id,
+                discussion_peer,
                 reply.id,
                 reply.grouped_id,
             )
@@ -2097,7 +2164,7 @@ async def _collect_discussion_photos(
         return []
     root_date = getattr(root, "date", None)
     try:
-        async for reply in client.iter_messages(discussion_chat_id, reply_to=root_id):
+        async for reply in client.iter_messages(discussion_peer, reply_to=root_id):
             await add_reply(reply)
     except RPCError as exc:
         if verbose_photo_logs_enabled():
@@ -2114,7 +2181,7 @@ async def _collect_discussion_photos(
     window_seconds = window_minutes * 60 if window_minutes > 0 else 0
     try:
         async for reply in client.iter_messages(
-            discussion_chat_id, limit=fallback_limit
+            discussion_peer, limit=fallback_limit
         ):
             header = getattr(reply, "reply_to", None)
             if header:
@@ -2149,7 +2216,7 @@ async def _collect_discussion_photos(
     aggressive_limit = _extra_photos_aggressive_limit()
     try:
         async for reply in client.iter_messages(
-            discussion_chat_id,
+            discussion_peer,
             min_id=root_id,
             limit=aggressive_limit,
             reverse=True,

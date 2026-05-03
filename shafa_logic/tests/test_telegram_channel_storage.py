@@ -24,14 +24,28 @@ class TelegramChannelStorageTests(unittest.TestCase):
                 data_db.save_telegram_channels([(-1001, "Channel One", "main")])
                 self.assertEqual(
                     data_db.load_telegram_channels(),
-                    [{"channel_id": -1001, "name": "Channel One", "alias": "main extra_photos"}],
+                    [
+                        {
+                            "channel_id": -1001,
+                            "name": "Channel One",
+                            "alias": "main extra_photos",
+                            "source_link": None,
+                        }
+                    ],
                 )
 
                 self.assertTrue(data_db.rename_telegram_channel(-1001, "Renamed"))
                 self.assertTrue(data_db.update_telegram_channel_alias(-1001, "extra_photos"))
                 self.assertEqual(
                     data_db.load_telegram_channels(),
-                    [{"channel_id": -1001, "name": "Renamed", "alias": "main extra_photos"}],
+                    [
+                        {
+                            "channel_id": -1001,
+                            "name": "Renamed",
+                            "alias": "main extra_photos",
+                            "source_link": None,
+                        }
+                    ],
                 )
 
                 data_db.delete_telegram_channel(-1001)
