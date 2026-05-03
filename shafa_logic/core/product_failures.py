@@ -1,6 +1,6 @@
 from typing import Optional
 
-from controller.data_controller import register_product_failure
+from controller.data_controller import mark_product_created, register_product_failure
 from data.const import MAX_PRODUCT_CREATE_ATTEMPTS
 from utils.logging import log
 
@@ -72,3 +72,25 @@ def handle_retryable_product_failure(
         f"Причина: {failure_reason}.",
     )
     return attempts, False
+
+
+def handle_non_retryable_product_failure(
+    *,
+    message_id: int,
+    channel_id: Optional[int],
+    failure_reason: str,
+    detail_message: str,
+    detail_level: str = "WARN",
+    created_product_id: Optional[str] = None,
+) -> None:
+    log(detail_level, detail_message)
+    mark_product_created(
+        message_id,
+        created_product_id=created_product_id or f"SKIPPED_{failure_reason}",
+        channel_id=channel_id,
+    )
+    log(
+        "WARN",
+        "Пропускаю товар без ретраев. "
+        f"message_id={message_id}. Причина: {failure_reason}.",
+    )

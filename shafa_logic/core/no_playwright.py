@@ -23,6 +23,7 @@ from controller.data_controller import (
     should_run_first_fetch,
 )
 from core.product_failures import (
+    handle_non_retryable_product_failure,
     handle_retryable_product_failure,
     summarize_exception,
     summarize_graph_errors,
@@ -757,12 +758,12 @@ def main() -> None:
         if parsed_data:
             product_raw_data = build_product_raw_data(parsed_data)
         if product_raw_data.get("brand") is None:
-            handle_retryable_product_failure(
+            handle_non_retryable_product_failure(
                 message_id=message_id,
                 channel_id=channel_id,
                 failure_reason="BRAND_NOT_RESOLVED",
                 detail_message=(
-                    "Не удалось определить бренд. Запусти Bootstrap sizes/brands."
+                    "Не удалось распознать бренд. Запусти Bootstrap sizes/brands."
                 ),
             )
             return

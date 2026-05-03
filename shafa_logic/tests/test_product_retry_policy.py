@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import controller.data_controller as dc
+from core.product_failures import handle_non_retryable_product_failure
 
 
 class ProductRetryPolicyTests(unittest.TestCase):
@@ -48,4 +49,25 @@ class ProductRetryPolicyTests(unittest.TestCase):
             9,
             11543,
             created_product_id=dc.SKIPPED_CREATE_RETRY_LIMIT,
+        )
+
+    @patch("core.product_failures.register_product_failure")
+    @patch("core.product_failures.mark_product_created")
+    def test_non_retryable_failure_skips_product_immediately(
+        self,
+        mark_created,
+        register_failure,
+    ):
+        handle_non_retryable_product_failure(
+            message_id=11543,
+            channel_id=9,
+            failure_reason="BRAND_NOT_RESOLVED",
+            detail_message="Не удалось распознать бренд. Запусти Bootstrap sizes/brands.",
+        )
+
+        register_failure.assert_not_called()
+        mark_created.assert_called_once_with(
+            11543,
+            created_product_id="SKIPPED_BRAND_NOT_RESOLVED",
+            channel_id=9,
         )

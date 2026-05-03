@@ -79,6 +79,63 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         create_product.assert_called_once()
         handle_failure.assert_not_called()
 
+    @patch("core.no_playwright.handle_retryable_product_failure")
+    @patch("core.no_playwright.handle_non_retryable_product_failure")
+    @patch("core.no_playwright._refresh_brands")
+    @patch("core.no_playwright.build_product_raw_data")
+    @patch("core.no_playwright._get_csrftoken_from_cookies")
+    @patch("core.no_playwright._load_shafa_cookies")
+    @patch("core.no_playwright.get_next_product_for_upload")
+    @patch("core.no_playwright.init_db")
+    def test_brand_not_resolved_is_skipped_without_retries(
+        self,
+        _init_db,
+        get_next_product_for_upload,
+        load_cookies,
+        get_csrftoken,
+        build_product_raw_data,
+        refresh_brands,
+        handle_non_retryable_failure,
+        handle_retryable_failure,
+    ):
+        parsed_data = {"name": "Unknown Pink premium", "price": "1600", "size": "36"}
+        get_next_product_for_upload.return_value = {
+            "channel_id": 9,
+            "message_id": 11543,
+            "parsed_data": parsed_data,
+            "product_raw_data": {
+                "name": "Unknown Pink premium",
+                "price": 1600,
+                "size": 33,
+                "brand": None,
+                "category": "zhenskaya-obuv/krossovki",
+            },
+        }
+        load_cookies.return_value = [{"name": "csrftoken", "value": "token"}]
+        get_csrftoken.return_value = "token"
+        build_product_raw_data.return_value = {
+            "name": "Unknown Pink premium",
+            "price": 1600,
+            "size": 33,
+            "brand": None,
+            "category": "zhenskaya-obuv/krossovki",
+        }
+
+        no_playwright.main()
+
+        refresh_brands.assert_called_once_with(
+            "token",
+            [{"name": "csrftoken", "value": "token"}],
+            catalog_slug="zhenskaya-obuv/krossovki",
+        )
+        handle_non_retryable_failure.assert_called_once_with(
+            message_id=11543,
+            channel_id=9,
+            failure_reason="BRAND_NOT_RESOLVED",
+            detail_message="Не удалось распознать бренд. Запусти Bootstrap sizes/brands.",
+        )
+        handle_retryable_failure.assert_not_called()
+
     @patch("core.no_playwright.save_uploaded_product")
     @patch("core.no_playwright.mark_product_created")
     @patch("core.no_playwright.create_product")
