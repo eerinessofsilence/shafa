@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -174,6 +175,16 @@ def init_db(db_path: Path = DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_telegram_products_channel
                 ON telegram_products(channel_id);
 
+            CREATE TABLE IF NOT EXISTS telegram_fetch_state (
+                scope TEXT PRIMARY KEY,
+                last_fetch_at REAL,
+                lease_expires_at REAL,
+                lease_token TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_telegram_fetch_state_updated
+                ON telegram_fetch_state(updated_at);
+
             CREATE TABLE IF NOT EXISTS size_catalogs (
                 catalog_slug TEXT NOT NULL,
                 size_id INTEGER NOT NULL,
@@ -228,6 +239,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         )
         _ensure_uploaded_products_schema(conn)
         _ensure_telegram_products_schema(conn)
+        _ensure_telegram_fetch_state_schema(conn)
         _drop_legacy_telegram_channels_table(conn)
         _ensure_size_catalogs_schema(conn)
     _DB_INITIALIZED_PATHS.add(db_path)
@@ -413,6 +425,40 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
         )
     if "last_create_error" not in columns:
         conn.execute("ALTER TABLE telegram_products ADD COLUMN last_create_error TEXT")
+
+
+def _ensure_telegram_fetch_state_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS telegram_fetch_state (
+            scope TEXT PRIMARY KEY,
+            last_fetch_at REAL,
+            lease_expires_at REAL,
+            lease_token TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_fetch_state_updated "
+        "ON telegram_fetch_state(updated_at)"
+    )
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(telegram_fetch_state)").fetchall()
+    }
+    if "last_fetch_at" not in columns:
+        conn.execute("ALTER TABLE telegram_fetch_state ADD COLUMN last_fetch_at REAL")
+    if "lease_expires_at" not in columns:
+        conn.execute("ALTER TABLE telegram_fetch_state ADD COLUMN lease_expires_at REAL")
+    if "lease_token" not in columns:
+        conn.execute("ALTER TABLE telegram_fetch_state ADD COLUMN lease_token TEXT")
+    if "updated_at" not in columns:
+        conn.execute("ALTER TABLE telegram_fetch_state ADD COLUMN updated_at TEXT")
+        conn.execute(
+            "UPDATE telegram_fetch_state SET updated_at = datetime('now') "
+            "WHERE updated_at IS NULL"
+        )
 
 
 def _drop_legacy_telegram_channels_table(conn: sqlite3.Connection) -> None:
@@ -1074,6 +1120,109 @@ def telegram_products_exist() -> bool:
             """
         ).fetchone()
     return row is not None
+
+
+def _normalize_telegram_fetch_scope(scope: str) -> str:
+    text = str(scope or "").strip().casefold()
+    return text or "default"
+
+
+def claim_telegram_fetch(
+    scope: str,
+    min_interval_seconds: float,
+    lease_seconds: float,
+    *,
+    now_ts: Optional[float] = None,
+) -> tuple[str, Optional[str]]:
+    normalized_scope = _normalize_telegram_fetch_scope(scope)
+    interval_seconds = max(float(min_interval_seconds), 0.0)
+    lease_duration_seconds = max(float(lease_seconds), 1.0)
+    current_ts = float(now_ts if now_ts is not None else time.time())
+    due_before_ts = current_ts - interval_seconds
+    lease_expires_at = current_ts + lease_duration_seconds
+    lease_token = uuid.uuid4().hex
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_fetch_state (scope, updated_at)
+            VALUES (?, datetime('now'))
+            ON CONFLICT(scope) DO NOTHING
+            """,
+            (normalized_scope,),
+        )
+        cursor = conn.execute(
+            """
+            UPDATE telegram_fetch_state
+            SET lease_expires_at = ?,
+                lease_token = ?,
+                updated_at = datetime('now')
+            WHERE scope = ?
+              AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+              AND (last_fetch_at IS NULL OR last_fetch_at <= ?)
+            """,
+            (
+                lease_expires_at,
+                lease_token,
+                normalized_scope,
+                current_ts,
+                due_before_ts,
+            ),
+        )
+        if cursor.rowcount == 1:
+            return "acquired", lease_token
+        row = conn.execute(
+            """
+            SELECT last_fetch_at, lease_expires_at
+            FROM telegram_fetch_state
+            WHERE scope = ?
+            """,
+            (normalized_scope,),
+        ).fetchone()
+    if row and row["lease_expires_at"] is not None and float(row["lease_expires_at"]) > current_ts:
+        return "in_progress", None
+    return "not_due", None
+
+
+def finish_telegram_fetch(
+    scope: str,
+    lease_token: str,
+    *,
+    success: bool,
+    finished_at_ts: Optional[float] = None,
+) -> None:
+    normalized_scope = _normalize_telegram_fetch_scope(scope)
+    token = str(lease_token or "").strip()
+    if not token:
+        return
+    finished_ts = float(finished_at_ts if finished_at_ts is not None else time.time())
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        if success:
+            conn.execute(
+                """
+                UPDATE telegram_fetch_state
+                SET last_fetch_at = ?,
+                    lease_expires_at = NULL,
+                    lease_token = NULL,
+                    updated_at = datetime('now')
+                WHERE scope = ? AND lease_token = ?
+                """,
+                (finished_ts, normalized_scope, token),
+            )
+            return
+        conn.execute(
+            """
+            UPDATE telegram_fetch_state
+            SET lease_expires_at = NULL,
+                lease_token = NULL,
+                updated_at = datetime('now')
+            WHERE scope = ? AND lease_token = ?
+            """,
+            (normalized_scope, token),
+        )
 
 
 def save_cookies(cookies: list[dict]) -> None:

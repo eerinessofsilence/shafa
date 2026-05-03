@@ -43,7 +43,9 @@ from data.const import (
     TELEGRAM_SESSION_PATH,
 )
 from data.db import (
+    claim_telegram_fetch,
     find_size_mapping_candidates,
+    finish_telegram_fetch,
     get_brand_id_by_name,
     get_next_uncreated_telegram_product,
     get_size_id_by_name,
@@ -72,6 +74,9 @@ from telegram_subscription.client import create_telegram_client
 APP_MODE_ENV = "SHAFA_APP_MODE"
 MODE_CLOTHES = "clothes"
 MODE_SNEAKERS = "sneakers"
+DEFAULT_TELEGRAM_FETCH_COOLDOWN_SECONDS = 90
+DEFAULT_TELEGRAM_FETCH_LEASE_SECONDS = 180
+DEFAULT_TELEGRAM_FETCH_WAIT_SECONDS = 3.0
 
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
@@ -1976,6 +1981,64 @@ def should_run_first_fetch() -> bool:
     return get_runtime_mode() == MODE_CLOTHES and not telegram_products_exist()
 
 
+def _telegram_fetch_scope() -> str:
+    return f"telegram_feed:{get_runtime_mode()}"
+
+
+def _telegram_fetch_cooldown_seconds() -> int:
+    raw = os.getenv("SHAFA_TELEGRAM_FETCH_COOLDOWN_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_TELEGRAM_FETCH_COOLDOWN_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_TELEGRAM_FETCH_COOLDOWN_SECONDS
+    return min(max(value, 0), 3600)
+
+
+def _telegram_fetch_lease_seconds(cooldown_seconds: Optional[int] = None) -> int:
+    raw = os.getenv("SHAFA_TELEGRAM_FETCH_LEASE_SECONDS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = DEFAULT_TELEGRAM_FETCH_LEASE_SECONDS
+        return min(max(value, 10), 7200)
+    if cooldown_seconds is None:
+        cooldown_seconds = _telegram_fetch_cooldown_seconds()
+    return max(DEFAULT_TELEGRAM_FETCH_LEASE_SECONDS, cooldown_seconds * 2 or 10)
+
+
+def _telegram_fetch_wait_seconds() -> float:
+    raw = os.getenv("SHAFA_TELEGRAM_FETCH_WAIT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_TELEGRAM_FETCH_WAIT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_TELEGRAM_FETCH_WAIT_SECONDS
+    return min(max(value, 0.0), 30.0)
+
+
+def _claim_shared_telegram_fetch() -> tuple[str, Optional[str]]:
+    cooldown_seconds = _telegram_fetch_cooldown_seconds()
+    return claim_telegram_fetch(
+        _telegram_fetch_scope(),
+        min_interval_seconds=cooldown_seconds,
+        lease_seconds=_telegram_fetch_lease_seconds(cooldown_seconds),
+    )
+
+
+def _finish_shared_telegram_fetch(lease_token: Optional[str], *, success: bool) -> None:
+    if not lease_token:
+        return
+    finish_telegram_fetch(
+        _telegram_fetch_scope(),
+        lease_token,
+        success=success,
+    )
+
+
 def is_mode_allowed_parsed(parsed: dict) -> bool:
     if get_runtime_mode() != MODE_SNEAKERS:
         return True
@@ -3284,14 +3347,27 @@ async def get_next_product_for_upload_async(
     message_amount: int = 200,
     first_fetch_check: bool | None = None,
 ) -> Optional[dict]:
-    if first_fetch_check:
-        log("INFO", "Запускаю первичную загрузку товаров из Telegram...")
-        inserted = await first_fetch()
-        log("INFO", f"Первичная загрузка Telegram завершена. Новых товаров: {inserted}.")
-    else:
-        log("INFO", f"Проверяю новые сообщения в Telegram (limit={message_amount})...")
-        inserted = await _fetch_messages(message_amount=message_amount)
-        log("INFO", f"Проверка Telegram завершена. Новых товаров: {inserted}.")
+    fetch_status, lease_token = _claim_shared_telegram_fetch()
+    if fetch_status == "acquired":
+        fetch_completed = False
+        try:
+            if first_fetch_check:
+                log("INFO", "Запускаю первичную загрузку товаров из Telegram...")
+                inserted = await first_fetch()
+                log("INFO", f"Первичная загрузка Telegram завершена. Новых товаров: {inserted}.")
+            else:
+                log("INFO", f"Проверяю новые сообщения в Telegram (limit={message_amount})...")
+                inserted = await _fetch_messages(message_amount=message_amount)
+                log("INFO", f"Проверка Telegram завершена. Новых товаров: {inserted}.")
+            fetch_completed = True
+        finally:
+            _finish_shared_telegram_fetch(lease_token, success=fetch_completed)
+    product = _pick_next_product_for_upload()
+    if product is not None or fetch_status != "in_progress":
+        return product
+    wait_seconds = _telegram_fetch_wait_seconds()
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
     return _pick_next_product_for_upload()
 
 

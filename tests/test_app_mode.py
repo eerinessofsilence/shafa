@@ -39,6 +39,8 @@ def test_clothes_mode_triggers_first_fetch(monkeypatch) -> None:
     monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
     monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
     monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
+    monkeypatch.setattr(dc, "_claim_shared_telegram_fetch", lambda: ("acquired", "lease-1"))
+    monkeypatch.setattr(dc, "_finish_shared_telegram_fetch", lambda token, success: calls.append(f"finish:{token}:{success}"))
     monkeypatch.setattr(dc, "telegram_products_exist", lambda: False)
 
     result = asyncio.run(
@@ -49,7 +51,7 @@ def test_clothes_mode_triggers_first_fetch(monkeypatch) -> None:
     )
 
     assert result == {"ok": True}
-    assert calls == ["first_fetch"]
+    assert calls == ["first_fetch", "finish:lease-1:True"]
 
 
 def test_sneakers_mode_does_not_trigger_first_fetch(monkeypatch) -> None:
@@ -67,6 +69,8 @@ def test_sneakers_mode_does_not_trigger_first_fetch(monkeypatch) -> None:
     monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
     monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
     monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
+    monkeypatch.setattr(dc, "_claim_shared_telegram_fetch", lambda: ("acquired", "lease-2"))
+    monkeypatch.setattr(dc, "_finish_shared_telegram_fetch", lambda token, success: calls.append(f"finish:{token}:{success}"))
     monkeypatch.setattr(dc, "telegram_products_exist", lambda: False)
 
     result = asyncio.run(
@@ -77,7 +81,7 @@ def test_sneakers_mode_does_not_trigger_first_fetch(monkeypatch) -> None:
     )
 
     assert result == {"ok": True}
-    assert calls == ["fetch:50"]
+    assert calls == ["fetch:50", "finish:lease-2:True"]
 
 
 def test_runtime_mode_is_globally_accessible(monkeypatch) -> None:
@@ -100,3 +104,31 @@ def test_clothes_mode_skips_first_fetch_when_shared_feed_exists(monkeypatch) -> 
     monkeypatch.setattr(dc, "telegram_products_exist", lambda: True)
 
     assert dc.should_run_first_fetch() is False
+
+
+def test_shared_fetch_skip_uses_existing_queue_without_new_poll(monkeypatch) -> None:
+    monkeypatch.setenv("SHAFA_APP_MODE", "clothes")
+    calls: list[str] = []
+
+    async def fake_first_fetch() -> int:
+        calls.append("first_fetch")
+        return 1
+
+    async def fake_fetch_messages(message_amount: int = 200) -> int:
+        calls.append(f"fetch:{message_amount}")
+        return 0
+
+    monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
+    monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
+    monkeypatch.setattr(dc, "_claim_shared_telegram_fetch", lambda: ("not_due", None))
+    monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
+
+    result = asyncio.run(
+        dc.get_next_product_for_upload_async(
+            message_amount=50,
+            first_fetch_check=False,
+        )
+    )
+
+    assert result == {"ok": True}
+    assert calls == []

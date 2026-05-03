@@ -25,7 +25,7 @@ def test_run_with_lock_retry_retries_locked_operational_error(monkeypatch) -> No
 
 def test_connect_configures_busy_timeout_and_wal(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "shafa.sqlite3"
-    monkeypatch.setattr(db, "_DB_INITIALIZED", False)
+    db._DB_INITIALIZED_PATHS.discard(db_path)
 
     db.init_db(db_path=db_path)
 
