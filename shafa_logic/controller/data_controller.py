@@ -484,6 +484,88 @@ _COLOR_SYNONYMS = {
     "молочный": "cream",
     "молочний": "cream",
 }
+_COLOR_NAME_TOKENS = frozenset(
+    set(_COLOR_SYNONYMS)
+    | {
+        "blacks",
+        "whites",
+        "greys",
+        "grays",
+        "чорні",
+        "чорна",
+        "чорне",
+        "черные",
+        "чёрные",
+        "черная",
+        "чёрная",
+        "черное",
+        "чёрное",
+        "білі",
+        "біла",
+        "біле",
+        "белые",
+        "белая",
+        "белое",
+        "сірі",
+        "сіра",
+        "сіре",
+        "серые",
+        "серая",
+        "серое",
+        "рожеві",
+        "рожева",
+        "рожеве",
+        "розовые",
+        "розовая",
+        "розовое",
+        "бежеві",
+        "бежева",
+        "бежеве",
+        "бежевые",
+        "бежевая",
+        "бежевое",
+        "кремові",
+        "кремова",
+        "кремове",
+        "кремовые",
+        "кремовая",
+        "кремовое",
+        "молочні",
+        "молочна",
+        "молочное",
+        "молочные",
+        "сині",
+        "синя",
+        "синє",
+        "синие",
+        "синяя",
+        "синее",
+        "зелені",
+        "зелена",
+        "зелене",
+        "зеленые",
+        "зеленая",
+        "зеленое",
+        "червоні",
+        "червона",
+        "червоне",
+        "красные",
+        "красная",
+        "красное",
+        "коричневі",
+        "коричнева",
+        "коричневе",
+        "коричневые",
+        "коричневая",
+        "коричневое",
+        "жовті",
+        "жовта",
+        "жовте",
+        "желтые",
+        "желтая",
+        "желтое",
+    }
+)
 _COLOR_MODIFIERS = {
     "dark": "dark",
     "light": "light",
@@ -1157,6 +1239,91 @@ def _clean_name(value: str) -> str:
     return text.strip()
 
 
+def _looks_like_article_line(line: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?i)арт(?:\.|икул)?\s*[:№#-]?\s*[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9/_-]*",
+            line.strip(),
+        )
+    )
+
+
+def _is_garbage_name_line(line: str) -> bool:
+    text = line.strip()
+    if not text:
+        return True
+    lower = text.casefold()
+    compact = re.sub(r"[\s()]+", "", lower)
+    if re.fullmatch(r"\d+", compact):
+        return True
+    if re.fullmatch(r"\d{2}(?:[.,]\d+)?[-–]\d{2}(?:[.,]\d+)?", compact):
+        return True
+    if re.search(
+        r"(?<![A-Za-zА-Яа-яІіЇїЄєҐґ])пар(?:и)?(?![A-Za-zА-Яа-яІіЇїЄєҐґ])",
+        lower,
+    ):
+        return True
+    return False
+
+
+def _format_model_name(text: str) -> str:
+    parts: list[str] = []
+    for token in text.split():
+        if token.islower() and any(ch.isalpha() for ch in token):
+            parts.append(token[:1].upper() + token[1:])
+        else:
+            parts.append(token)
+    return " ".join(parts)
+
+
+def _clean_model_name(value: str) -> str:
+    text = _clean_name(value)
+    text = re.sub(
+        r"\([^)]*\b(?:унісекс|унисекс|unisex)\b[^)]*\)",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"[^\w\s.\-/]+", " ", text, flags=re.UNICODE)
+    tokens: list[str] = []
+    for raw_token in text.split():
+        normalized = _normalize_token(raw_token)
+        if not normalized:
+            continue
+        if normalized in _GENERIC_NAME_TOKENS:
+            continue
+        if normalized in _COLOR_NAME_TOKENS:
+            continue
+        if normalized in _COLOR_MODIFIERS:
+            continue
+        tokens.append(raw_token.strip(".,;:()[]{}"))
+    cleaned = " ".join(token for token in tokens if token)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" \t-–—|:;")
+    return _format_model_name(cleaned)
+
+
+def _is_valid_model_name(name: str, *, strict: bool = False) -> bool:
+    if _is_garbage_name_line(name):
+        return False
+    words = [word for word in name.split() if word]
+    if strict and len(words) < 2:
+        return False
+    if not any(any(ch.isalpha() for ch in word) for word in words):
+        return False
+    return True
+
+
+def _extract_article_name(lines: list[str]) -> str:
+    for idx, line in enumerate(lines[:-1]):
+        if not _looks_like_article_line(line):
+            continue
+        candidate = _clean_model_name(lines[idx + 1])
+        if _is_valid_model_name(candidate, strict=True):
+            return candidate
+        return ""
+    return ""
+
+
 def _normalize_token(token: str) -> str:
     return re.sub(r"[^\w]+", "", token, flags=re.UNICODE).casefold()
 
@@ -1204,6 +1371,8 @@ def _strip_name_prefix(text: str) -> str:
 
 
 def _looks_like_name(line: str) -> bool:
+    if _is_garbage_name_line(line):
+        return False
     if len(line) < 3 or len(line) > 120:
         return False
     lower = line.casefold()
@@ -1325,6 +1494,10 @@ def capitalise_first_word(s: str) -> str:
     return s[0].upper() + s[1:]
 
 def extract_name(lines: list[str]) -> str:
+    article_name = _extract_article_name(lines)
+    if article_name or any(_looks_like_article_line(line) for line in lines):
+        return article_name, _infer_word_for_slack(lines, article_name)
+
     mod_number = ""
     best_candidate = None
     fallback_candidate = None
@@ -1400,6 +1573,15 @@ def extract_name(lines: list[str]) -> str:
             best = candidate
             best_score = score       
     return best, word_for_slack or ""
+
+
+def _infer_word_for_slack(lines: list[str], name: str) -> str:
+    for source in ([name] if name else []) + list(lines):
+        for word in source.casefold().split():
+            word_found = find_word(word)
+            if word_found:
+                return word_found
+    return ""
 
 
 def _normalize_number(value: str) -> str:
