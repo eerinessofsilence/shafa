@@ -25,9 +25,9 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
             "1600"
         )
 
-        self.assertEqual(parsed["name"], "Nike Air Force 1 Pixel")
+        self.assertEqual(parsed["name"], "Жіночі кросівки Nike Air Force 1 pixel чорні")
 
-    def test_removes_parenthesized_unisex_and_color_from_article_name(self):
+    def test_keeps_human_article_name_details(self):
         parsed = dc.parse_message(
             "Арт XT6\n"
             "🔥Кросівки Salomon XT 6 білі (унісекс)🔥\n"
@@ -35,7 +35,7 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
             "1800"
         )
 
-        self.assertEqual(parsed["name"], "Salomon XT 6")
+        self.assertEqual(parsed["name"], "Кросівки Salomon XT 6 білі (унісекс)")
 
     def test_rejects_size_range_after_article_as_name(self):
         parsed = dc.parse_message(
@@ -78,3 +78,33 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
         self.assertEqual(parsed["brand"], "Nike")
         self.assertEqual(parsed["price"], "2400")
         self.assertEqual(parsed["size"], "36")
+
+    def test_falls_back_to_article_line_when_shirt_line_is_forbidden(self):
+        parsed = dc.parse_message(
+            "👕 Пакування: брендова коробка та папір\n"
+            "Арт 1300\n"
+            "🔥Жіночі кросівки Nike Air Force 1 pixel чорні 🔥\n"
+            "37-41\n"
+            "1600"
+        )
+
+        self.assertEqual(parsed["name"], "Жіночі кросівки Nike Air Force 1 pixel чорні")
+
+    def test_does_not_use_arbitrary_line_without_allowed_source(self):
+        parsed = dc.parse_message(
+            "Nike W Dunk Low Pink - Metallic Gold\n"
+            "Дроп ціна: 2400 грн\n"
+            "Розміри: 36-41"
+        )
+
+        self.assertEqual(parsed["name"], "")
+
+    def test_does_not_skip_past_invalid_article_next_line(self):
+        parsed = dc.parse_message(
+            "Арт NK900\n"
+            "Пакування: брендова коробка та папір, смаколики\n"
+            "Nike W Dunk Low Pink - Metallic Gold\n"
+            "2400"
+        )
+
+        self.assertEqual(parsed["name"], "")

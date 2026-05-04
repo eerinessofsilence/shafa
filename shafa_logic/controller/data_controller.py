@@ -383,6 +383,24 @@ _NAME_EXCLUDE_HINTS = (
     "опис",
     "характеристик",
 )
+_FORBIDDEN_NAME_HINTS = (
+    "пакування",
+    "коробка",
+    "папір",
+    "папир",
+    "шнурки",
+    "смаколики",
+    "розмір",
+    "розміри",
+    "размер",
+    "размеры",
+    "матеріал",
+    "материал",
+    "виробник",
+    "производитель",
+    "дроп ціна",
+    "дроп цена",
+)
 _PRICE_EXCLUDE_HINTS = (
     "артикул",
     "код",
@@ -1206,6 +1224,9 @@ def normalize_message(message: str) -> str:
             continue
         if ch in {"\u200d", "\ufe0f", "\ufe0e"}:
             continue
+        if ch == "👕":
+            cleaned.append(ch)
+            continue
         cat = unicodedata.category(ch)
         if cat in {"Cc", "Cf"}:
             continue
@@ -1313,26 +1334,61 @@ def _is_valid_model_name(name: str, *, strict: bool = False) -> bool:
     return True
 
 
+def _clean_selected_name(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    cleaned: list[str] = []
+    for ch in text:
+        if ch == "\t":
+            cleaned.append(" ")
+            continue
+        if ch in {"\u200d", "\ufe0f", "\ufe0e"}:
+            continue
+        cat = unicodedata.category(ch)
+        if cat in {"Cc", "Cf", "So", "Sk"}:
+            continue
+        cleaned.append(ch)
+    text = "".join(cleaned)
+    text = re.sub(r"^[•*#>\-–—\s]+", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip(" \t-–—|:;")
+
+
+def _has_forbidden_name_hint(name: str) -> bool:
+    return _contains_any(name.casefold(), _FORBIDDEN_NAME_HINTS)
+
+
+def _is_valid_selected_name(name: str) -> bool:
+    text = name.strip()
+    if not text:
+        return False
+    if _is_garbage_name_line(text):
+        return False
+    if _has_forbidden_name_hint(text):
+        return False
+    if _line_has_url(text) or "@" in text:
+        return False
+    if not any(ch.isalpha() for ch in text):
+        return False
+    return True
+
+
+def _extract_shirt_name(lines: list[str]) -> str:
+    for line in lines:
+        if not line.lstrip().startswith("👕"):
+            continue
+        candidate = _clean_selected_name(line)
+        if _is_valid_selected_name(candidate):
+            return candidate
+    return ""
+
+
 def _extract_article_name(lines: list[str]) -> str:
-    for idx, line in enumerate(lines):
+    for idx, line in enumerate(lines[:-1]):
         if not _looks_like_article_line(line):
             continue
-        if idx + 1 < len(lines):
-            next_line = lines[idx + 1]
-            candidate = _clean_model_name(next_line)
-            if _looks_like_name(next_line) and _is_valid_model_name(
-                candidate,
-                strict=True,
-            ):
-                return candidate
-
-        for previous_line in reversed(lines[:idx]):
-            if not _looks_like_name(previous_line):
-                continue
-            candidate = _clean_name(previous_line)
-            if _is_valid_model_name(candidate, strict=True):
-                return candidate
-        return ""
+        candidate = _clean_selected_name(lines[idx + 1])
+        if _is_valid_selected_name(candidate):
+            return candidate
     return ""
 
 
@@ -1388,8 +1444,10 @@ def _looks_like_name(line: str) -> bool:
     if len(line) < 3 or len(line) > 120:
         return False
     lower = line.casefold()
-    if _contains_any(lower, _NON_NAME_HINTS) or _contains_any(
-        lower, _NAME_EXCLUDE_HINTS
+    if (
+        _contains_any(lower, _NON_NAME_HINTS)
+        or _contains_any(lower, _NAME_EXCLUDE_HINTS)
+        or _contains_any(lower, _FORBIDDEN_NAME_HINTS)
     ):
         return False
     if _line_has_url(line) or "@" in line:
@@ -1505,86 +1563,16 @@ def capitalise_first_word(s: str) -> str:
         return s
     return s[0].upper() + s[1:]
 
-def extract_name(lines: list[str]) -> str:
+def extract_name(lines: list[str]) -> tuple[str, str]:
+    shirt_name = _extract_shirt_name(lines)
+    if shirt_name:
+        return shirt_name, _infer_word_for_slack(lines, shirt_name)
+
     article_name = _extract_article_name(lines)
-    if article_name or any(_looks_like_article_line(line) for line in lines):
+    if article_name:
         return article_name, _infer_word_for_slack(lines, article_name)
 
-    mod_number = ""
-    best_candidate = None
-    fallback_candidate = None
-    word_for_slack = ""
-
-    for line in lines:
-        lower_words = line.casefold().split()
-        if any(bad in lower_words for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
-            continue
-        for word in lower_words:
-            word_found = find_word(word)
-            if word_found:
-                word_for_slack = word_found
-                if len(lower_words) > 3 and best_candidate is None:
-                    best_candidate = line
-                    if "." in best_candidate:
-                        best_candidate = best_candidate.split(".")[0].strip().split(",")[0].strip()
-                elif fallback_candidate is None:
-                    fallback_candidate = line
-
-    result = best_candidate or fallback_candidate or ""
-    if result:
-        result = clean_line_name(result)
-        if mod_number:
-            result = f"{result}"
-        result = capitalise_first_word(result)
-        return result, word_for_slack or ""
-            
-
-    for line in lines:
-        match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
-        if match:
-            candidate = _clean_name(match.group(1))
-            if candidate and not _looks_like_article(candidate):
-                return candidate, word_for_slack or ""
-    for line in lines:
-        match = re.search(
-            r"(?i)^(?:отримали|получили|поступили|поступление|завезли)\s+(?:новинк\w*\s+)?(.+)$",
-            line,
-        )
-        if match:
-            candidate = _clean_name(match.group(1))
-            if candidate:
-                return candidate, word_for_slack or ""
-    for line in lines:
-        match = re.search(
-            r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line
-        )
-        if match:
-            candidate = _clean_name(match.group(1))
-            if candidate:
-                return candidate, word_for_slack or ""
-    for line in lines[:3]:
-        if not _looks_like_name(line):
-            continue
-        candidate = _clean_name(line)
-        if candidate and (
-            len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate)
-        ):
-            return candidate, word_for_slack or ""
-    best = ""
-    best_score = 0.0
-    for idx, line in enumerate(lines):
-        if not _looks_like_name(line):
-            continue
-        candidate = _clean_name(line)
-        if not candidate:
-            continue
-        score = _score_name_line(candidate) - min(idx, 10) * 0.02
-        if candidate.endswith(".") and len(candidate.split()) > 4:
-            score -= 0.2
-        if score > best_score:
-            best = candidate
-            best_score = score       
-    return best, word_for_slack or ""
+    return "", _infer_word_for_slack(lines, "")
 
 
 def _infer_word_for_slack(lines: list[str], name: str) -> str:
@@ -3517,11 +3505,11 @@ def _pick_next_product_for_upload() -> Optional[dict]:
                 created_product_id="SKIPPED_BY_MODE",
             )
             continue
-        if not parsed.get("price") or not parsed.get("size"):
+        if not parsed.get("name") or not parsed.get("price") or not parsed.get("size"):
             log(
                 "WARN",
                 f"Пропускаю сообщение channel_id={row['channel_id']} "
-                + f"message_id={row['message_id']}: нет цены/размера.",
+                + f"message_id={row['message_id']}: нет названия/цены/размера.",
             )
             mark_telegram_product_created(
                 row["channel_id"],
