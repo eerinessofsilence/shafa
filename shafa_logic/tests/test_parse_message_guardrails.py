@@ -58,3 +58,23 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
                 )
 
                 self.assertEqual(parsed["name"], "")
+
+    def test_prefers_brand_model_line_before_article_over_packaging_field(self):
+        parsed = dc.parse_message(
+            "📌🤎🤎🤎🤎🤎🤎🤎\n"
+            "\n"
+            "👕 Nike W Dunk Low Pink - Metallic Gold\n"
+            "\n"
+            "➖Дроп ціна: 2400 грн\n"
+            "\n"
+            "⏺Виробник: Вʼєтнам\n"
+            "⏺Розміри: 36-41\n"
+            "⏺Матеріал: шкіра, замша\n"
+            "⏺Артикул: NK900\n"
+            "⏺Пакування: брендова коробка та папір, додаткові шнурки, смаколики"
+        )
+
+        self.assertEqual(parsed["name"], "Nike W Dunk Low Pink - Metallic Gold")
+        self.assertEqual(parsed["brand"], "Nike")
+        self.assertEqual(parsed["price"], "2400")
+        self.assertEqual(parsed["size"], "36")

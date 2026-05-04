@@ -1314,12 +1314,24 @@ def _is_valid_model_name(name: str, *, strict: bool = False) -> bool:
 
 
 def _extract_article_name(lines: list[str]) -> str:
-    for idx, line in enumerate(lines[:-1]):
+    for idx, line in enumerate(lines):
         if not _looks_like_article_line(line):
             continue
-        candidate = _clean_model_name(lines[idx + 1])
-        if _is_valid_model_name(candidate, strict=True):
-            return candidate
+        if idx + 1 < len(lines):
+            next_line = lines[idx + 1]
+            candidate = _clean_model_name(next_line)
+            if _looks_like_name(next_line) and _is_valid_model_name(
+                candidate,
+                strict=True,
+            ):
+                return candidate
+
+        for previous_line in reversed(lines[:idx]):
+            if not _looks_like_name(previous_line):
+                continue
+            candidate = _clean_name(previous_line)
+            if _is_valid_model_name(candidate, strict=True):
+                return candidate
         return ""
     return ""
 
