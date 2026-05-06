@@ -384,6 +384,7 @@ _NAME_EXCLUDE_HINTS = (
     "характеристик",
 )
 <<<<<<< HEAD
+<<<<<<< HEAD
 _FORBIDDEN_NAME_HINTS = (
     "пакування",
     "коробка",
@@ -402,6 +403,8 @@ _FORBIDDEN_NAME_HINTS = (
     "дроп ціна",
     "дроп цена",
 =======
+=======
+>>>>>>> fb61016 (feat: delete async telegram sessions)
 _SERVICE_MESSAGE_HINTS = (
     "security error while unpacking a received message",
     "server replied with a wrong session id",
@@ -415,6 +418,9 @@ _SERVICE_MESSAGE_HINTS = (
     "message_ids=",
     "root_id=",
     "error=",
+<<<<<<< HEAD
+>>>>>>> fb61016 (feat: delete async telegram sessions)
+=======
 >>>>>>> fb61016 (feat: delete async telegram sessions)
 )
 _PRICE_EXCLUDE_HINTS = (

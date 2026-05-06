@@ -15,6 +15,7 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
         self.assertEqual(parsed["price"], "1600")
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     def test_extracts_name_from_line_after_article_only(self):
         parsed = dc.parse_message(
             "Новинка\n"
@@ -109,6 +110,8 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
         )
 
 =======
+=======
+>>>>>>> fb61016 (feat: delete async telegram sessions)
     def test_ignores_telegram_service_error_lines(self):
         parsed = dc.parse_message(
             "Куртка Nike Air\n"
@@ -129,5 +132,8 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
             "Security error while unpacking a received message: "
             "Server replied with a wrong session ID (see FAQ for details)"
         )
+<<<<<<< HEAD
+>>>>>>> fb61016 (feat: delete async telegram sessions)
+=======
 >>>>>>> fb61016 (feat: delete async telegram sessions)
         self.assertEqual(parsed["name"], "")
