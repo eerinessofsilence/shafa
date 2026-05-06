@@ -6,7 +6,10 @@ import os
 from pathlib import Path
 
 from telegram_channels import extract_telegram_invite_hash, parse_id_bot_response, sanitize_channel_links
-from shafa_logic.telegram_subscription.client import create_telegram_client
+from shafa_logic.telegram_subscription.client import (
+    TelegramSessionInUseError,
+    create_telegram_client,
+)
 from telegram_accounts_api.models.telegram import (
     SendMessageRequest,
     TelegramDialogResponse,
@@ -142,7 +145,10 @@ class TelegramService:
             save_entities=False,
             telegram_client_cls=TelegramClient,
         )
-        await client.connect()
+        try:
+            await client.connect()
+        except TelegramSessionInUseError as exc:
+            raise TelegramOperationError(str(exc), status_code=409) from exc
         if not await client.is_user_authorized():
             await client.disconnect()
             raise TelegramOperationError(

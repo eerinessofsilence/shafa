@@ -14,6 +14,7 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
         parsed = dc.parse_message("Puma 180 Grey White\n1600")
         self.assertEqual(parsed["price"], "1600")
 
+<<<<<<< HEAD
     def test_extracts_name_from_line_after_article_only(self):
         parsed = dc.parse_message(
             "Новинка\n"
@@ -107,4 +108,26 @@ class ParseMessageGuardrailsTests(unittest.TestCase):
             "2400"
         )
 
+=======
+    def test_ignores_telegram_service_error_lines(self):
+        parsed = dc.parse_message(
+            "Куртка Nike Air\n"
+            "Ціна: 1800 грн\n"
+            "Розмір: M\n"
+            "Не удалось получить обсуждение для сообщения: channel_id=-1001296785640\n"
+            "Security error while unpacking a received message: "
+            "Server replied with a wrong session ID (see FAQ for details)\n"
+            "error=Server replied with a wrong session ID."
+        )
+        self.assertEqual(parsed["name"], "Куртка Nike Air")
+        self.assertEqual(parsed["price"], "1800")
+        self.assertEqual(parsed["size"], "M")
+
+    def test_service_error_message_does_not_become_product_name(self):
+        parsed = dc.parse_message(
+            "Не удалось получить обсуждение для сообщения: channel_id=-1001296785640\n"
+            "Security error while unpacking a received message: "
+            "Server replied with a wrong session ID (see FAQ for details)"
+        )
+>>>>>>> fb61016 (feat: delete async telegram sessions)
         self.assertEqual(parsed["name"], "")

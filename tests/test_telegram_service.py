@@ -5,6 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
+from shafa_logic.telegram_subscription.client import TelegramSessionInUseError
+from telegram_accounts_api.utils.exceptions import TelegramOperationError
 from telegram_accounts_api.services.telegram_service import TelegramService
 
 
@@ -104,3 +108,23 @@ def test_resolve_single_channel_limits_id_bot_wait_time() -> None:
             pass
         else:
             raise AssertionError("id_bot response wait should be limited")
+
+
+def test_get_client_returns_conflict_when_session_is_busy() -> None:
+    service = _service()
+
+    class _BusyClient:
+        async def connect(self):
+            raise TelegramSessionInUseError("session is busy")
+
+    service._resolve_credentials = AsyncMock(return_value=(777000, "hash", Path("telegram.session")))  # type: ignore[method-assign]
+
+    with patch(
+        "telegram_accounts_api.services.telegram_service.create_telegram_client",
+        return_value=_BusyClient(),
+    ):
+        with pytest.raises(TelegramOperationError) as exc_info:
+            asyncio.run(service._get_client("acc-1"))
+
+    assert exc_info.value.status_code == 409
+    assert "session is busy" in exc_info.value.message

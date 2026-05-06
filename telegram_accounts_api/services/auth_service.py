@@ -26,7 +26,10 @@ from shafa_control import (
     resolve_project_dir,
 )
 from shafa_logic.data.const import API_BATCH_URL, APP_PLATFORM, APP_VERSION, ORIGIN_URL
-from shafa_logic.telegram_subscription.client import create_telegram_client
+from shafa_logic.telegram_subscription.client import (
+    TelegramSessionInUseError,
+    create_telegram_client,
+)
 
 from telegram_accounts_api.models.auth import (
     ShafaAuthStatusResponse,
@@ -844,7 +847,10 @@ class AccountAuthService:
             save_entities=True,
             telegram_client_cls=telegram_client_cls,
         )
-        await client.connect()
+        try:
+            await client.connect()
+        except TelegramSessionInUseError as exc:
+            raise TelegramOperationError(str(exc), status_code=409) from exc
         return client
 
     async def _direct_request_telegram_code(self, account: Account, phone: str) -> None:

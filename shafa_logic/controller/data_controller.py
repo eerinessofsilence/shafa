@@ -383,6 +383,7 @@ _NAME_EXCLUDE_HINTS = (
     "опис",
     "характеристик",
 )
+<<<<<<< HEAD
 _FORBIDDEN_NAME_HINTS = (
     "пакування",
     "коробка",
@@ -400,6 +401,21 @@ _FORBIDDEN_NAME_HINTS = (
     "производитель",
     "дроп ціна",
     "дроп цена",
+=======
+_SERVICE_MESSAGE_HINTS = (
+    "security error while unpacking a received message",
+    "server replied with a wrong session id",
+    "see faq for details",
+    "не удалось получить обсуждение",
+    "не удалось прочитать обсуждение",
+    "не удалось получить ответы из обсуждения",
+    "не удалось восстановить peer",
+    "discussion_chat_id=",
+    "channel_id=",
+    "message_ids=",
+    "root_id=",
+    "error=",
+>>>>>>> fb61016 (feat: delete async telegram sessions)
 )
 _PRICE_EXCLUDE_HINTS = (
     "артикул",
@@ -1241,8 +1257,15 @@ def normalize_message(message: str) -> str:
             continue
         line = re.sub(r"^[•*#>\-–—\s]+", "", line)
         line = re.sub(r"\s{2,}", " ", line)
+        if _is_service_message_line(line):
+            continue
         lines.append(line)
     return "\n".join(lines)
+
+
+def _is_service_message_line(line: str) -> bool:
+    lowered = line.casefold()
+    return any(hint in lowered for hint in _SERVICE_MESSAGE_HINTS)
 
 
 def _clean_name(value: str) -> str:
