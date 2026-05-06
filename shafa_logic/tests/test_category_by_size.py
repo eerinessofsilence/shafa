@@ -251,6 +251,23 @@ class CategoryBySizeTests(unittest.TestCase):
         self.assertEqual(parsed["name"], "Костюм")
         self.assertEqual(parsed["word_for_slack"], "костюм")
 
+    @patch("controller.data_controller.find_slug_by_word", return_value="sport-otdyh/sportivnyye-kostyumy")
+    def test_build_product_raw_data_hyphenates_compound_clothes_name(self, _find_slug_by_word):
+        product_raw_data = dc._build_product_raw_data(
+            {
+                "word_for_slack": "комплект",
+                "name": "Комплект сорочкасукня",
+                "description": "desc",
+                "size": "",
+                "additional_sizes": [],
+                "price": "500",
+                "color": "",
+                "brand": None,
+            }
+        )
+
+        self.assertEqual(product_raw_data["name"], "Комплект сорочка-сукня")
+
     def test_build_product_raw_data_uses_clothing_size_ids_for_sport_pants(self):
         parsed = {
             "word_for_slack": "штани",

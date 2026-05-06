@@ -1417,6 +1417,19 @@ def _normalize_token(token: str) -> str:
     return re.sub(r"[^\w]+", "", token, flags=re.UNICODE).casefold()
 
 
+_COMPOUND_CLOTHES_NAME_TOKENS = tuple(
+    sorted(
+        {
+            _normalize_token(token)
+            for token in _CLOTHES_NAME_HINTS
+            if _normalize_token(token) and " " not in token and "-" not in token
+        },
+        key=len,
+        reverse=True,
+    )
+)
+
+
 def _normalize_masked_brand_token(token: str) -> str:
     return unicodedata.normalize("NFKC", token).casefold()
 
@@ -2063,6 +2076,37 @@ def _canonicalize_name_brand(name: object, brand: object) -> str:
             replaced = True
     if not replaced:
         return text
+    parts.append(text[last_end:])
+    return "".join(parts)
+
+
+def _split_compound_clothes_token(token: str) -> str:
+    normalized_token = _normalize_token(token)
+    if not normalized_token or "-" in token or len(normalized_token) < 6:
+        return token
+    for left in _COMPOUND_CLOTHES_NAME_TOKENS:
+        if not normalized_token.startswith(left):
+            continue
+        right = normalized_token[len(left) :]
+        if not right or right not in _COMPOUND_CLOTHES_NAME_TOKENS:
+            continue
+        split_at = len(left)
+        if split_at <= 0 or split_at >= len(token):
+            continue
+        return f"{token[:split_at]}-{token[split_at:]}"
+    return token
+
+
+def _normalize_clothes_product_name(name: object) -> str:
+    text = str(name or "")
+    if not text:
+        return text
+    parts: list[str] = []
+    last_end = 0
+    for token_match in re.finditer(r"[^\s]+", text):
+        parts.append(text[last_end : token_match.start()])
+        parts.append(_split_compound_clothes_token(token_match.group(0)))
+        last_end = token_match.end()
     parts.append(text[last_end:])
     return "".join(parts)
 
@@ -3461,6 +3505,8 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
         parsed.get("name", ""),
         parsed.get("brand"),
     )
+    if catalog_slug in CLOTHES_SLUGS:
+        normalized_name = _normalize_clothes_product_name(normalized_name)
 
     product_raw_data: dict = {
         "word_for_slack": parsed.get("word_for_slack", ""),
