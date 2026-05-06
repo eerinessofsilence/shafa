@@ -1464,6 +1464,8 @@ def _looks_like_name(line: str) -> bool:
         return False
     if len(line) < 3 or len(line) > 120:
         return False
+    if re.match(r"(?i)^(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b", line.strip()):
+        return False
     lower = line.casefold()
     if (
         _contains_any(lower, _NON_NAME_HINTS)
@@ -1621,7 +1623,7 @@ def extract_name(lines: list[str]) -> tuple[str, str]:
         )
         if match:
             candidate = _clean_name(match.group(1))
-            if candidate:
+            if candidate and _is_strong_name_candidate(candidate, word_for_slack):
                 return candidate, word_for_slack or ""
     for line in lines:
         match = re.search(
@@ -1629,7 +1631,7 @@ def extract_name(lines: list[str]) -> tuple[str, str]:
         )
         if match:
             candidate = _clean_name(match.group(1))
-            if candidate:
+            if candidate and _is_strong_name_candidate(candidate, word_for_slack):
                 return candidate, word_for_slack or ""
     for line in lines[:3]:
         if not _looks_like_name(line):

@@ -240,6 +240,17 @@ class CategoryBySizeTests(unittest.TestCase):
         self.assertEqual(parsed["size"], "42")
         self.assertEqual(parsed["additional_sizes"], ["44", "46"])
 
+    def test_parse_message_prefers_product_name_over_marketing_novinka_line(self):
+        parsed = dc.parse_message(
+            "Товар создан успешно: «весняна!», ID 208172605, фото 1.\n"
+            "Новинка весняна!\n"
+            "\n"
+            "Костюм\n"
+        )
+
+        self.assertEqual(parsed["name"], "Костюм")
+        self.assertEqual(parsed["word_for_slack"], "костюм")
+
     def test_build_product_raw_data_uses_clothing_size_ids_for_sport_pants(self):
         parsed = {
             "word_for_slack": "штани",
