@@ -124,3 +124,43 @@ def test_create_telegram_client_blocks_parallel_usage_of_copied_session(
 
     asyncio.run(second.connect())
     asyncio.run(second.disconnect())
+
+
+def test_create_telegram_client_waits_for_busy_session_instead_of_failing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.session"
+    copied = tmp_path / "copied.session"
+    _write_telegram_session(source, b"auth-key-3")
+    shutil.copy2(source, copied)
+    monkeypatch.setenv("SHAFA_TELEGRAM_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.delenv("SHAFA_TELEGRAM_SESSION_LOCK_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setattr(
+        "telegram_subscription.client.BusyTimeoutSQLiteSession",
+        lambda *_args, **_kwargs: "session",
+    )
+
+    first = create_telegram_client(
+        source,
+        777000,
+        "hash",
+        telegram_client_cls=_FakeTelethonClient,
+    )
+    second = create_telegram_client(
+        copied,
+        777000,
+        "hash",
+        telegram_client_cls=_FakeTelethonClient,
+    )
+
+    async def _exercise_queue() -> None:
+        await first.connect()
+        waiter = asyncio.create_task(second.connect())
+        await asyncio.sleep(0.2)
+        assert not waiter.done()
+        await first.disconnect()
+        await asyncio.wait_for(waiter, timeout=1.0)
+        await second.disconnect()
+
+    asyncio.run(_exercise_queue())

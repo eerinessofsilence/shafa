@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_SQLITE_TIMEOUT_SECONDS = 30.0
-DEFAULT_SESSION_LOCK_TIMEOUT_SECONDS = 15.0
 _SESSION_LOCK_RETRY_INTERVAL_SECONDS = 0.1
 _SESSION_LOCKS: dict[str, threading.Lock] = {}
 _SESSION_LOCKS_GUARD = threading.Lock()
@@ -62,14 +61,14 @@ def telegram_session_in_use_message(session_path: str | Path) -> str:
     )
 
 
-def _session_lock_timeout_seconds() -> float:
+def _session_lock_timeout_seconds() -> float | None:
     raw = os.getenv("SHAFA_TELEGRAM_SESSION_LOCK_TIMEOUT_SECONDS", "").strip()
     if not raw:
-        return DEFAULT_SESSION_LOCK_TIMEOUT_SECONDS
+        return None
     try:
         value = float(raw)
     except ValueError:
-        return DEFAULT_SESSION_LOCK_TIMEOUT_SECONDS
+        return None
     return max(value, 0.0)
 
 
@@ -284,12 +283,14 @@ class LockedTelegramClient:
     async def _ensure_lock(self) -> None:
         if self._lock_acquired:
             return
-        deadline = time.monotonic() + self._lock_timeout_seconds
+        deadline = None
+        if self._lock_timeout_seconds is not None:
+            deadline = time.monotonic() + self._lock_timeout_seconds
         while True:
             if self._lock.try_acquire():
                 self._lock_acquired = True
                 return
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TelegramSessionInUseError(
                     telegram_session_in_use_message(self._lock.session_path)
                 )
