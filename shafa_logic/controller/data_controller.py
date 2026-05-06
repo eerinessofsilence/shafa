@@ -383,8 +383,6 @@ _NAME_EXCLUDE_HINTS = (
     "опис",
     "характеристик",
 )
-<<<<<<< HEAD
-<<<<<<< HEAD
 _FORBIDDEN_NAME_HINTS = (
     "пакування",
     "коробка",
@@ -402,9 +400,7 @@ _FORBIDDEN_NAME_HINTS = (
     "производитель",
     "дроп ціна",
     "дроп цена",
-=======
-=======
->>>>>>> fb61016 (feat: delete async telegram sessions)
+)
 _SERVICE_MESSAGE_HINTS = (
     "security error while unpacking a received message",
     "server replied with a wrong session id",
@@ -418,10 +414,6 @@ _SERVICE_MESSAGE_HINTS = (
     "message_ids=",
     "root_id=",
     "error=",
-<<<<<<< HEAD
->>>>>>> fb61016 (feat: delete async telegram sessions)
-=======
->>>>>>> fb61016 (feat: delete async telegram sessions)
 )
 _PRICE_EXCLUDE_HINTS = (
     "артикул",
@@ -1582,36 +1574,17 @@ def capitalise_first_word(s: str) -> str:
         return s
     return s[0].upper() + s[1:]
 
-<<<<<<< HEAD
-def extract_name(lines: list[str]) -> tuple[str, str]:
-    shirt_name = _extract_shirt_name(lines)
-    if shirt_name:
-        return shirt_name, _infer_word_for_slack(lines, shirt_name)
-
-    article_name = _extract_article_name(lines)
-    if article_name:
-        return article_name, _infer_word_for_slack(lines, article_name)
-
-    return "", _infer_word_for_slack(lines, "")
-
-
-def _infer_word_for_slack(lines: list[str], name: str) -> str:
-    for source in ([name] if name else []) + list(lines):
-        for word in source.casefold().split():
-=======
-def _extract_word_for_slack(lines: list[str]) -> str:
-    for line in lines:
-        lower_words = line.casefold().split()
+def _extract_word_for_slack(lines: list[str], name: str = "") -> str:
+    sources = ([name] if name else []) + list(lines)
+    for source in sources:
+        lower_words = source.casefold().split()
         if any(bad in lower_words for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
             continue
         for word in lower_words:
->>>>>>> fab2548 (feat: fix name resolving)
             word_found = find_word(word)
             if word_found:
                 return word_found
     return ""
-<<<<<<< HEAD
-=======
 
 
 def _is_strong_name_candidate(candidate: str, word_for_slack: str) -> bool:
@@ -1624,7 +1597,15 @@ def _is_strong_name_candidate(candidate: str, word_for_slack: str) -> bool:
     return bool(word_for_slack) and candidate.casefold() == word_for_slack.casefold()
 
 
-def extract_name(lines: list[str]) -> str:
+def extract_name(lines: list[str]) -> tuple[str, str]:
+    shirt_name = _extract_shirt_name(lines)
+    if shirt_name:
+        return shirt_name, _extract_word_for_slack(lines, shirt_name)
+
+    article_name = _extract_article_name(lines)
+    if article_name:
+        return article_name, _extract_word_for_slack(lines, article_name)
+
     word_for_slack = _extract_word_for_slack(lines)
 
     for line in lines:
@@ -1663,7 +1644,6 @@ def extract_name(lines: list[str]) -> str:
         if _is_strong_name_candidate(candidate, word_for_slack):
             return candidate, word_for_slack or ""
     return "", word_for_slack or ""
->>>>>>> fab2548 (feat: fix name resolving)
 
 
 def _normalize_number(value: str) -> str:
