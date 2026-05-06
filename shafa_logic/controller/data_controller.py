@@ -1492,16 +1492,6 @@ def _looks_like_name(line: str) -> bool:
     return True
 
 
-def _score_name_line(line: str) -> float:
-    letters = sum(ch.isalpha() for ch in line)
-    words = len(line.split())
-    score = min(letters / max(len(line), 1), 1.0) * 0.6
-    if 2 <= words <= 8:
-        score += 0.25
-    if any(ch.isdigit() for ch in line):
-        score += 0.05
-    return score
-
 def _looks_like_article(text: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9\-]{3,}", text))
 
@@ -1592,6 +1582,7 @@ def capitalise_first_word(s: str) -> str:
         return s
     return s[0].upper() + s[1:]
 
+<<<<<<< HEAD
 def extract_name(lines: list[str]) -> tuple[str, str]:
     shirt_name = _extract_shirt_name(lines)
     if shirt_name:
@@ -1607,10 +1598,72 @@ def extract_name(lines: list[str]) -> tuple[str, str]:
 def _infer_word_for_slack(lines: list[str], name: str) -> str:
     for source in ([name] if name else []) + list(lines):
         for word in source.casefold().split():
+=======
+def _extract_word_for_slack(lines: list[str]) -> str:
+    for line in lines:
+        lower_words = line.casefold().split()
+        if any(bad in lower_words for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
+            continue
+        for word in lower_words:
+>>>>>>> fab2548 (feat: fix name resolving)
             word_found = find_word(word)
             if word_found:
                 return word_found
     return ""
+<<<<<<< HEAD
+=======
+
+
+def _is_strong_name_candidate(candidate: str, word_for_slack: str) -> bool:
+    if not candidate:
+        return False
+    if len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate):
+        return True
+    if _find_best_brand_in_text(candidate):
+        return True
+    return bool(word_for_slack) and candidate.casefold() == word_for_slack.casefold()
+
+
+def extract_name(lines: list[str]) -> str:
+    word_for_slack = _extract_word_for_slack(lines)
+
+    for line in lines:
+        match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and not _looks_like_article(candidate):
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)^(?:отримали|получили|поступили|поступление|завезли)\s+(?:новинк\w*\s+)?(.+)$",
+            line,
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate:
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate:
+                return candidate, word_for_slack or ""
+    for line in lines[:3]:
+        if not _looks_like_name(line):
+            continue
+        candidate = capitalise_first_word(clean_line_name(line))
+        if _is_strong_name_candidate(candidate, word_for_slack):
+            return candidate, word_for_slack or ""
+    for line in lines:
+        if not _looks_like_name(line):
+            continue
+        candidate = capitalise_first_word(clean_line_name(line))
+        if _is_strong_name_candidate(candidate, word_for_slack):
+            return candidate, word_for_slack or ""
+    return "", word_for_slack or ""
+>>>>>>> fab2548 (feat: fix name resolving)
 
 
 def _normalize_number(value: str) -> str:
