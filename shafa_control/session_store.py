@@ -99,7 +99,7 @@ class AccountSessionStore:
             "telegram_login_pending": self.has_pending_telegram_code(account),
             "telegram_credentials_path": str(self.telegram_credentials_file(account)),
             "telegram_credentials_configured": self.has_telegram_credentials(account),
-            "telegram_channels_path": str(self.shared_telegram_channels_file()),
+            "telegram_channels_path": str(self.channels_file(account)),
             "media_dir_path": str(self.media_dir(account)),
             "logs_path": str(self.account_log_file(account)),
         }

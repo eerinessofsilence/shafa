@@ -158,6 +158,7 @@ class AccountRuntimeService:
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        env["SHAFA_ACCOUNT_ID"] = account.id
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
         env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
@@ -165,7 +166,7 @@ class AccountRuntimeService:
         env["SHAFA_MEDIA_DIR_PATH"] = str(self.store.media_dir(account))
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
-        env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.shared_telegram_channels_file())
+        env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
         if account.markup_amount is None:
             env.pop("SHAFA_PRICE_MARKUP", None)
         else:

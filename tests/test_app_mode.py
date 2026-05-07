@@ -24,24 +24,11 @@ def test_invalid_mode_falls_back_to_clothes_on_load(tmp_path) -> None:
     assert loaded.mode == "clothes"
 
 
-def test_clothes_mode_triggers_first_fetch(monkeypatch) -> None:
+def test_clothes_mode_uses_db_queue_without_direct_fetch(monkeypatch) -> None:
     monkeypatch.setenv("SHAFA_APP_MODE", "clothes")
     calls: list[str] = []
-
-    async def fake_first_fetch() -> int:
-        calls.append("first_fetch")
-        return 1
-
-    async def fake_fetch_messages(message_amount: int = 200) -> int:
-        calls.append(f"fetch:{message_amount}")
-        return 0
-
-    monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
-    monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
     monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
-    monkeypatch.setattr(dc, "_claim_shared_telegram_fetch", lambda: ("acquired", "lease-1"))
-    monkeypatch.setattr(dc, "_finish_shared_telegram_fetch", lambda token, success: calls.append(f"finish:{token}:{success}"))
-    monkeypatch.setattr(dc, "telegram_products_exist", lambda: False)
+    monkeypatch.setattr(dc, "telegram_products_exist", lambda **kwargs: False)
 
     result = asyncio.run(
         dc.get_next_product_for_upload_async(
@@ -51,27 +38,14 @@ def test_clothes_mode_triggers_first_fetch(monkeypatch) -> None:
     )
 
     assert result == {"ok": True}
-    assert calls == ["first_fetch", "finish:lease-1:True"]
+    assert calls == []
 
 
-def test_sneakers_mode_does_not_trigger_first_fetch(monkeypatch) -> None:
+def test_sneakers_mode_uses_db_queue_without_direct_fetch(monkeypatch) -> None:
     monkeypatch.setenv("SHAFA_APP_MODE", "sneakers")
     calls: list[str] = []
-
-    async def fake_first_fetch() -> int:
-        calls.append("first_fetch")
-        return 1
-
-    async def fake_fetch_messages(message_amount: int = 200) -> int:
-        calls.append(f"fetch:{message_amount}")
-        return 0
-
-    monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
-    monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
     monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
-    monkeypatch.setattr(dc, "_claim_shared_telegram_fetch", lambda: ("acquired", "lease-2"))
-    monkeypatch.setattr(dc, "_finish_shared_telegram_fetch", lambda token, success: calls.append(f"finish:{token}:{success}"))
-    monkeypatch.setattr(dc, "telegram_products_exist", lambda: False)
+    monkeypatch.setattr(dc, "telegram_products_exist", lambda **kwargs: False)
 
     result = asyncio.run(
         dc.get_next_product_for_upload_async(
@@ -81,7 +55,7 @@ def test_sneakers_mode_does_not_trigger_first_fetch(monkeypatch) -> None:
     )
 
     assert result == {"ok": True}
-    assert calls == ["fetch:50", "finish:lease-2:True"]
+    assert calls == []
 
 
 def test_runtime_mode_is_globally_accessible(monkeypatch) -> None:
@@ -101,7 +75,7 @@ def test_sneakers_mode_filters_non_sneaker_items(monkeypatch) -> None:
 
 def test_clothes_mode_skips_first_fetch_when_shared_feed_exists(monkeypatch) -> None:
     monkeypatch.setenv("SHAFA_APP_MODE", "clothes")
-    monkeypatch.setattr(dc, "telegram_products_exist", lambda: True)
+    monkeypatch.setattr(dc, "telegram_products_exist", lambda **kwargs: True)
 
     assert dc.should_run_first_fetch() is False
 
@@ -109,18 +83,6 @@ def test_clothes_mode_skips_first_fetch_when_shared_feed_exists(monkeypatch) -> 
 def test_shared_fetch_skip_uses_existing_queue_without_new_poll(monkeypatch) -> None:
     monkeypatch.setenv("SHAFA_APP_MODE", "clothes")
     calls: list[str] = []
-
-    async def fake_first_fetch() -> int:
-        calls.append("first_fetch")
-        return 1
-
-    async def fake_fetch_messages(message_amount: int = 200) -> int:
-        calls.append(f"fetch:{message_amount}")
-        return 0
-
-    monkeypatch.setattr(dc, "first_fetch", fake_first_fetch)
-    monkeypatch.setattr(dc, "_fetch_messages", fake_fetch_messages)
-    monkeypatch.setattr(dc, "_claim_shared_telegram_fetch", lambda: ("not_due", None))
     monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
 
     result = asyncio.run(

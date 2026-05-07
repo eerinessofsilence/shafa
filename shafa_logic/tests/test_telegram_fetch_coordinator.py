@@ -85,3 +85,27 @@ def test_failed_telegram_fetch_releases_slot_without_cooldown(tmp_path, monkeypa
 
     assert status == "acquired"
     assert next_token
+
+
+def test_fetch_state_isolated_by_account_scoped_scope(tmp_path, monkeypatch) -> None:
+    telegram_db_path = tmp_path / "telegram.sqlite3"
+    monkeypatch.setattr(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path))
+
+    status_1, lease_token_1 = db.claim_telegram_fetch(
+        "telegram_feed:acc-1:clothes",
+        min_interval_seconds=60,
+        lease_seconds=30,
+        now_ts=3000,
+    )
+    status_2, lease_token_2 = db.claim_telegram_fetch(
+        "telegram_feed:acc-2:clothes",
+        min_interval_seconds=60,
+        lease_seconds=30,
+        now_ts=3001,
+    )
+
+    assert status_1 == "acquired"
+    assert lease_token_1
+    assert status_2 == "acquired"
+    assert lease_token_2
+    assert lease_token_1 != lease_token_2

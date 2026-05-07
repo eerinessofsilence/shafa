@@ -1,4 +1,5 @@
 import _test_path
+import os
 import unittest
 from unittest.mock import patch
 
@@ -16,16 +17,23 @@ class ProductRetryPolicyTests(unittest.TestCase):
         increment_attempt,
         mark_created,
     ):
-        get_channel_ids.return_value = [1]
-        increment_attempt.return_value = 1
+        with patch.dict(os.environ, {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False):
+            get_channel_ids.return_value = [1]
+            increment_attempt.return_value = 1
 
-        attempts, skipped = dc.register_product_failure(
-            11543,
-            failure_reason="NO_UPLOADABLE_PHOTOS",
-        )
+            attempts, skipped = dc.register_product_failure(
+                11543,
+                failure_reason="NO_UPLOADABLE_PHOTOS",
+            )
 
         self.assertEqual(attempts, 1)
         self.assertFalse(skipped)
+        increment_attempt.assert_called_once_with(
+            1,
+            11543,
+            failure_reason="NO_UPLOADABLE_PHOTOS",
+            account_id="acc-1",
+        )
         mark_created.assert_not_called()
 
     @patch("controller.data_controller.mark_telegram_product_created")
@@ -35,20 +43,28 @@ class ProductRetryPolicyTests(unittest.TestCase):
         increment_attempt,
         mark_created,
     ):
-        increment_attempt.return_value = dc.MAX_PRODUCT_CREATE_ATTEMPTS
+        with patch.dict(os.environ, {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False):
+            increment_attempt.return_value = dc.MAX_PRODUCT_CREATE_ATTEMPTS
 
-        attempts, skipped = dc.register_product_failure(
-            11543,
-            failure_reason="NO_UPLOADABLE_PHOTOS",
-            channel_id=9,
-        )
+            attempts, skipped = dc.register_product_failure(
+                11543,
+                failure_reason="NO_UPLOADABLE_PHOTOS",
+                channel_id=9,
+            )
 
         self.assertEqual(attempts, dc.MAX_PRODUCT_CREATE_ATTEMPTS)
         self.assertTrue(skipped)
+        increment_attempt.assert_called_once_with(
+            9,
+            11543,
+            failure_reason="NO_UPLOADABLE_PHOTOS",
+            account_id="acc-1",
+        )
         mark_created.assert_called_once_with(
             9,
             11543,
             created_product_id=dc.SKIPPED_CREATE_RETRY_LIMIT,
+            account_id="acc-1",
         )
 
     @patch("core.product_failures.register_product_failure")

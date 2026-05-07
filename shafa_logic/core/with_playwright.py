@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -52,6 +53,7 @@ def main() -> None:
     product_data = get_next_product_for_upload(
         message_amount=DEFAULT_MESSAGE_PARSE_LIMIT,
         first_fetch_check=should_run_first_fetch(),
+        scan_before_pick=False,
     )
     if not product_data:
         log("INFO", "Нет новых товаров для создания.")

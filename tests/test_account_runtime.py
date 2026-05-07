@@ -35,7 +35,8 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_SHARED_TELEGRAM_DB_PATH"].endswith("telegram_shared/telegram_feed.sqlite3")
     assert env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-1/media")
     assert env["SHAFA_TELEGRAM_SESSION_PATH"].endswith("accounts/acc-1/telegram.session")
-    assert env["SHAFA_TELEGRAM_CHANNELS_PATH"].endswith("telegram_shared/shafa_telegram_channels.json")
+    assert env["SHAFA_TELEGRAM_CHANNELS_PATH"].endswith("accounts/acc-1/shafa_telegram_channels.json")
+    assert env["SHAFA_ACCOUNT_ID"] == "acc-1"
     assert env["SHAFA_TELEGRAM_API_ID"] == "777000"
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
 
@@ -99,7 +100,9 @@ def test_account_runtime_isolates_db_per_account_even_for_same_project(tmp_path:
     assert second_env["SHAFA_DB_PATH"].endswith("accounts/acc-2/shafa.sqlite3")
     assert first_env["SHAFA_DB_PATH"] != second_env["SHAFA_DB_PATH"]
     assert first_env["SHAFA_SHARED_TELEGRAM_DB_PATH"] == second_env["SHAFA_SHARED_TELEGRAM_DB_PATH"]
-    assert first_env["SHAFA_TELEGRAM_CHANNELS_PATH"] == second_env["SHAFA_TELEGRAM_CHANNELS_PATH"]
+    assert first_env["SHAFA_TELEGRAM_CHANNELS_PATH"].endswith("accounts/acc-1/shafa_telegram_channels.json")
+    assert second_env["SHAFA_TELEGRAM_CHANNELS_PATH"].endswith("accounts/acc-2/shafa_telegram_channels.json")
+    assert first_env["SHAFA_TELEGRAM_CHANNELS_PATH"] != second_env["SHAFA_TELEGRAM_CHANNELS_PATH"]
     assert first_env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-1/media")
     assert second_env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-2/media")
     assert first_env["SHAFA_MEDIA_DIR_PATH"] != second_env["SHAFA_MEDIA_DIR_PATH"]

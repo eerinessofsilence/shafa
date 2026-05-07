@@ -1,4 +1,6 @@
 import _test_path  # noqa: F401
+import json
+import os
 import re
 import unittest
 from unittest.mock import patch
@@ -8,6 +10,88 @@ from data.db import get_size_id_by_name
 
 
 class CategoryBySizeTests(unittest.TestCase):
+    def test_is_valid_product_name_accepts_brand_from_database(self):
+        with (
+            patch(
+                "controller.data_controller._load_brand_patterns",
+                return_value=[("Nike", re.compile(r"(?i)(?<!\w)Nike(?!\w)"))],
+            ),
+            patch(
+                "controller.data_controller._load_masked_brand_index",
+                return_value={},
+            ),
+        ):
+            self.assertTrue(dc.is_valid_product_name("Nike air force 1"))
+
+    def test_is_valid_product_name_accepts_clothes_keyword(self):
+        with patch(
+            "controller.data_controller._load_brand_patterns",
+            return_value=[],
+        ):
+            self.assertTrue(dc.is_valid_product_name("Жіноча сукня міді"))
+
+    def test_is_valid_product_name_rejects_name_without_brand_or_clothes_keyword(self):
+        with (
+            patch("controller.data_controller._load_brand_patterns", return_value=[]),
+            patch(
+                "controller.data_controller._load_masked_brand_index",
+                return_value={},
+            ),
+        ):
+            self.assertFalse(dc.is_valid_product_name("Модель 123 premium"))
+
+    @patch("controller.data_controller._build_product_raw_data", return_value={"name": "valid"})
+    @patch("controller.data_controller.mark_telegram_product_created")
+    @patch("controller.data_controller.claim_next_telegram_product_for_creation")
+    def test_pick_next_product_skips_invalid_name(
+        self,
+        claim_next_telegram_product_for_creation,
+        mark_telegram_product_created,
+        _build_product_raw_data,
+    ):
+        with patch.dict(os.environ, {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False):
+            invalid_row = {
+                "channel_id": 101,
+                "message_id": 2,
+                "created_at": "2026-05-07 10:00:00",
+                "parsed_data": json.dumps(
+                    {
+                        "name": "Модель 123 premium",
+                        "price": "1000",
+                        "size": "38",
+                        "brand": "",
+                        "word_for_slack": "",
+                    }
+                ),
+                "raw_message": "",
+            }
+            valid_row = {
+                "channel_id": 101,
+                "message_id": 1,
+                "created_at": "2026-05-07 09:00:00",
+                "parsed_data": json.dumps(
+                    {
+                        "name": "Жіноча сукня міді",
+                        "price": "1200",
+                        "size": "38",
+                        "brand": "",
+                        "word_for_slack": "сукня",
+                    }
+                ),
+                "raw_message": "",
+            }
+            claim_next_telegram_product_for_creation.side_effect = [invalid_row, valid_row]
+
+            result = dc._pick_next_product_for_upload()
+
+        self.assertEqual(result["message_id"], 1)
+        mark_telegram_product_created.assert_called_once_with(
+            101,
+            2,
+            created_product_id="SKIPPED_INVALID_NAME",
+            account_id="acc-1",
+        )
+
     def test_extract_brand_prefers_earliest_brand_match_in_name(self):
         brand = dc.extract_brand([], "Nike air force")
         self.assertEqual(brand, "Nike")

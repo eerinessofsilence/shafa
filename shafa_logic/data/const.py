@@ -108,6 +108,7 @@ def _get_env_path(name: str, default: Path) -> Path:
 
 TELEGRAM_API_ID = _get_env_int("SHAFA_TELEGRAM_API_ID")
 TELEGRAM_API_HASH = _get_env_str("SHAFA_TELEGRAM_API_HASH")
+ACCOUNT_ID = _get_env_str("SHAFA_ACCOUNT_ID") or "default"
 TELEGRAM_CHANNELS: list[tuple[int, str, str]] = [
     (-1001160944182, 'INNA Риночна 1541', 'main'),
 ]

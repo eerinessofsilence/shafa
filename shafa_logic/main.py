@@ -2,6 +2,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -185,6 +186,55 @@ def _choose_yes_no(question: str, default: bool = True) -> Optional[bool]:
     if not answers:
         return None
     return bool(answers.get("confirm"))
+
+
+def _background_scan_interval_seconds() -> int:
+    raw = os.getenv("SHAFA_BACKGROUND_TELEGRAM_SCAN_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return 60
+    try:
+        value = int(raw)
+    except ValueError:
+        return 60
+    return min(max(value, 10), 3600)
+
+
+def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thread]:
+    from controller.data_controller import (
+        DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+        scan_account_telegram_channels,
+    )
+
+    stop_event = threading.Event()
+    interval_seconds = _background_scan_interval_seconds()
+
+    def _worker() -> None:
+        while not stop_event.is_set():
+            started_at = time.time()
+            try:
+                result = scan_account_telegram_channels(
+                    batch_size=DEFAULT_TELEGRAM_SCAN_BATCH_SIZE
+                )
+                inserted = int(result.get("inserted") or 0)
+                duplicates = int(result.get("duplicates") or 0)
+                print(
+                    "[INFO] Фоновое сканирование Telegram завершено. "
+                    f"Новых товаров: {inserted}. Дубликатов: {duplicates}."
+                )
+            except Exception as exc:
+                print(f"[ERROR] Фоновое сканирование Telegram не выполнено: {exc}")
+            elapsed = time.time() - started_at
+            wait_seconds = max(1.0, interval_seconds - elapsed)
+            if stop_event.wait(wait_seconds):
+                return
+
+    thread = threading.Thread(
+        target=_worker,
+        name="telegram-background-scanner",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
 
 
 def run_periodic(action: Callable[[], None], label: str, shafa: bool | None = None) -> None:
@@ -638,11 +688,39 @@ def _deactivate_product() -> None:
         print("Деактивация не удалась.")
 
 
+def _auto_deactivate_invalid_products() -> None:
+    from core.requests import deactivate_product
+
+    result = deactivate_product.deactivate_invalid_uploaded_products()
+    invalid = result.get("invalid") or []
+    deactivated = result.get("deactivated") or []
+    errors = result.get("errors") or []
+
+    if not invalid:
+        print("Невалидные активные товары не найдены.")
+        return
+
+    print(f"Найдено невалидных товаров: {len(invalid)}.")
+    if deactivated:
+        print(f"Автоматически деактивировано: {len(deactivated)}.")
+        accounts = sorted({str(item.get("account") or "default") for item in deactivated})
+        print(f"Аккаунты: {', '.join(accounts)}.")
+    if errors:
+        print(f"Ошибок деактивации: {len(errors)}.")
+        for item in errors:
+            account = item.get("account") or "default"
+            product_id = item.get("product_id") or "нет данных"
+            name = item.get("name") or "нет данных"
+            reason = item.get("reason") or "неизвестно"
+            print(f"- {account} | {name} | {product_id} | {reason}")
+
+
 def _product_management_menu() -> None:
     actions = [
         ("Создать товар", _create_product),
         ("Автосоздание товара", _auto_create_product),
         ("Деактивировать товары", _deactivate_product),
+        ("Автоудалить невалидные товары", _auto_deactivate_invalid_products),
         ("Список товаров", _print_products),
     ]
     while True:
@@ -710,7 +788,13 @@ def main(
         return
     if shafa:
         sync_channels_from_runtime_config()
-        _auto_create_product(shafa=shafa)
+        os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
+        stop_event, scanner_thread = _start_background_telegram_scanner()
+        try:
+            _auto_create_product(shafa=shafa)
+        finally:
+            stop_event.set()
+            scanner_thread.join(timeout=5)
         return
 
     _print_ascii_banner()
