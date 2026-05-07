@@ -149,6 +149,83 @@ class LegacyTelegramMigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(db.count_legacy_telegram_products(), 1)
 
+    def test_new_account_does_not_enqueue_product_that_exists_in_legacy_db(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            with sqlite3.connect(telegram_db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE telegram_products (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        channel_id INTEGER NOT NULL,
+                        message_id INTEGER NOT NULL,
+                        raw_message TEXT,
+                        parsed_data TEXT,
+                        created INTEGER NOT NULL DEFAULT 0,
+                        created_product_id TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO telegram_products (
+                        channel_id, message_id, raw_message, parsed_data, created, created_product_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        11,
+                        501,
+                        "legacy-created",
+                        json.dumps({"name": "Sneakers", "price": "1600", "size": "41"}),
+                        1,
+                        "legacy-product-1",
+                        "2026-05-01 10:00:00",
+                        "2026-05-01 10:00:00",
+                    ),
+                )
+
+            with (
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch.dict(os.environ, {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+            ):
+                db.init_db(telegram_db_path)
+
+                inserted_existing = db.save_telegram_product(
+                    11,
+                    501,
+                    "legacy-created",
+                    {"name": "Sneakers", "price": "1600", "size": "41"},
+                    account_id="acc-1",
+                )
+                inserted_new = db.save_telegram_product(
+                    11,
+                    502,
+                    "fresh",
+                    {"name": "Sneakers", "price": "1700", "size": "42"},
+                    account_id="acc-1",
+                )
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT account_id, message_id, status, created_product_id
+                        FROM telegram_products
+                        ORDER BY account_id, message_id
+                        """
+                    ).fetchall()
+
+            self.assertFalse(inserted_existing)
+            self.assertTrue(inserted_new)
+            self.assertEqual(
+                [(row[0], row[1], row[2], row[3]) for row in rows],
+                [
+                    ("__legacy_unassigned__", 501, "created", "legacy-product-1"),
+                    ("acc-1", 502, "queued", None),
+                ],
+            )
+
     def test_legacy_fetch_state_is_archived_and_removed_from_active_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"

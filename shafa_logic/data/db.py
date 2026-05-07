@@ -1398,6 +1398,24 @@ def save_telegram_product(
     telegram_db_path = _telegram_products_db_path()
     _ensure_db_initialized(telegram_db_path)
     with _connect(telegram_db_path) as conn:
+        if normalized_account_id != LEGACY_TELEGRAM_ACCOUNT_ID:
+            legacy_row = conn.execute(
+                """
+                SELECT 1
+                FROM telegram_products
+                WHERE account_id = ?
+                  AND channel_id = ?
+                  AND message_id = ?
+                LIMIT 1
+                """,
+                (
+                    LEGACY_TELEGRAM_ACCOUNT_ID,
+                    channel_id,
+                    message_id,
+                ),
+            ).fetchone()
+            if legacy_row is not None:
+                return False
         cursor = conn.execute(
             """
             INSERT INTO telegram_products

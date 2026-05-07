@@ -307,6 +307,79 @@ class AccountTelegramScannerTests(unittest.TestCase):
         self.assertEqual(client.calls[0]["limit"], 150)
         self.assertTrue(client.calls[0]["reverse"])
 
+    def test_scanner_skips_legacy_product_and_still_advances_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            client = _FakeTelegramClient({"peer-11": [_message(101, "valid-101")]})
+            parsed = {"valid-101": {"name": "One", "price": "1600", "size": "41"}}
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
+                patch(
+                    "controller.data_controller._sync_channel_titles",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "controller.data_controller._resolve_channel_peer",
+                    new=AsyncMock(return_value="peer-11"),
+                ),
+                patch(
+                    "controller.data_controller._require_telegram_credentials",
+                    return_value=(1, "hash"),
+                ),
+                patch(
+                    "controller.data_controller.create_telegram_client",
+                    return_value=_FakeTelegramContext(client),
+                ),
+                patch(
+                    "controller.data_controller._is_photo_message",
+                    return_value=True,
+                ),
+                patch(
+                    "controller.data_controller.parse_message",
+                    side_effect=lambda text: parsed[text],
+                ),
+            ):
+                db.save_telegram_product(
+                    11,
+                    101,
+                    "valid-101",
+                    parsed["valid-101"],
+                    account_id=db.LEGACY_TELEGRAM_ACCOUNT_ID,
+                )
+                db.mark_telegram_product_created(
+                    11,
+                    101,
+                    created_product_id="legacy-product-1",
+                    account_id=db.LEGACY_TELEGRAM_ACCOUNT_ID,
+                )
+                db.finish_telegram_scan(
+                    11,
+                    last_checked_message_id=100,
+                    account_id="acc-1",
+                )
+
+                result = dc.scan_account_telegram_channels(batch_size=150)
+                cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT account_id, message_id
+                        FROM telegram_products
+                        ORDER BY account_id, message_id
+                        """
+                    ).fetchall()
+
+        self.assertEqual(result["inserted"], 0)
+        self.assertEqual(result["duplicates"], 1)
+        self.assertEqual(cursor["last_checked_message_id"], 101)
+        self.assertEqual(
+            [(row[0], row[1]) for row in rows],
+            [(db.LEGACY_TELEGRAM_ACCOUNT_ID, 101)],
+        )
+
     def test_scanner_keeps_accounts_independent_for_same_message_and_cursor(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
