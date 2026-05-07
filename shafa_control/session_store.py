@@ -14,6 +14,7 @@ PENDING_TELEGRAM_AUTH_STEPS = {
     "WAIT_CODE",
     "WAIT_PASSWORD",
 }
+NEW_ACCOUNT_TELEGRAM_QUEUE_SEED_MARKER = "seed_existing_telegram_products.pending"
 
 TELEGRAM_AUTH_STEP_ALIASES = {
     "": "INIT",
@@ -100,6 +101,8 @@ class AccountSessionStore:
             "telegram_credentials_path": str(self.telegram_credentials_file(account)),
             "telegram_credentials_configured": self.has_telegram_credentials(account),
             "telegram_channels_path": str(self.channels_file(account)),
+            "telegram_queue_seed_marker_path": str(self.telegram_queue_seed_marker_file(account)),
+            "telegram_queue_seed_pending": self.has_pending_telegram_queue_seed(account),
             "media_dir_path": str(self.media_dir(account)),
             "logs_path": str(self.account_log_file(account)),
         }
@@ -151,6 +154,23 @@ class AccountSessionStore:
 
     def channel_templates_file(self, account: Account) -> Path:
         return self.account_dir(account) / "channel_templates.json"
+
+    def telegram_queue_seed_marker_file(self, account: Account) -> Path:
+        return self.account_dir(account) / NEW_ACCOUNT_TELEGRAM_QUEUE_SEED_MARKER
+
+    def mark_pending_telegram_queue_seed(self, account: Account) -> Path:
+        path = self.telegram_queue_seed_marker_file(account)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        self.write_account_manifest(account)
+        return path
+
+    def clear_pending_telegram_queue_seed(self, account: Account) -> None:
+        self.telegram_queue_seed_marker_file(account).unlink(missing_ok=True)
+        self.write_account_manifest(account)
+
+    def has_pending_telegram_queue_seed(self, account: Account) -> bool:
+        return self.telegram_queue_seed_marker_file(account).exists()
 
     def shared_telegram_dir(self) -> Path:
         path = self.base_dir / "telegram_shared"

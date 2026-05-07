@@ -33,7 +33,38 @@ def test_session_store_writes_index_and_account_manifest(tmp_path: Path) -> None
     assert manifest_payload["browser_session_path"].endswith("Shuffa/acc-1/auth.json")
     assert manifest_payload["telegram_credentials_path"].endswith("Shuffa/acc-1/.env")
     assert manifest_payload["telegram_credentials_configured"] is False
+    assert manifest_payload["telegram_queue_seed_marker_path"].endswith(
+        "Shuffa/acc-1/seed_existing_telegram_products.pending"
+    )
+    assert manifest_payload["telegram_queue_seed_pending"] is False
     assert str(store.channel_templates_file(account)).endswith("Shuffa/acc-1/channel_templates.json")
+
+
+def test_session_store_marks_and_clears_new_account_queue_seed_marker(tmp_path: Path) -> None:
+    store = AccountSessionStore(
+        base_dir=tmp_path,
+        accounts_dir=tmp_path / "Shuffa",
+        legacy_state_file=tmp_path / "accounts_state.json",
+    )
+    account = Account(id="acc-seed", name="Seed", path="/tmp/project")
+
+    marker_path = store.mark_pending_telegram_queue_seed(account)
+    manifest_after_mark = json.loads(
+        (tmp_path / "Shuffa" / "acc-seed" / "account.json").read_text(encoding="utf-8")
+    )
+
+    assert marker_path.exists() is True
+    assert store.has_pending_telegram_queue_seed(account) is True
+    assert manifest_after_mark["telegram_queue_seed_pending"] is True
+
+    store.clear_pending_telegram_queue_seed(account)
+    manifest_after_clear = json.loads(
+        (tmp_path / "Shuffa" / "acc-seed" / "account.json").read_text(encoding="utf-8")
+    )
+
+    assert marker_path.exists() is False
+    assert store.has_pending_telegram_queue_seed(account) is False
+    assert manifest_after_clear["telegram_queue_seed_pending"] is False
 
 
 def test_session_store_reads_legacy_file_when_index_missing(tmp_path: Path) -> None:

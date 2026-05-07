@@ -249,6 +249,8 @@ class AccountsApiTest(unittest.TestCase):
         )
         self.assertEqual(created_account["path"], str(self.base_dir))
         self.assertNotIn("open_browser", created_account)
+        marker_path = self.accounts_dir / payload["id"] / "seed_existing_telegram_products.pending"
+        self.assertTrue(marker_path.exists())
 
     def test_delete_accounts_concurrently_removes_all_records(self) -> None:
         self._write_accounts(

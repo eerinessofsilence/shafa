@@ -172,9 +172,13 @@ def _create_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
             account_id TEXT NOT NULL,
             channel_id INTEGER NOT NULL,
             last_checked_message_id INTEGER,
+            backfill_before_message_id INTEGER,
             last_scan_started_at TEXT,
             last_scan_finished_at TEXT,
             last_scan_error TEXT,
+            backfill_scan_started_at TEXT,
+            backfill_scan_finished_at TEXT,
+            backfill_scan_error TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY(account_id, channel_id)
         )
@@ -852,6 +856,11 @@ def _rebuild_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
     last_checked_expr = (
         "last_checked_message_id" if "last_checked_message_id" in columns else "NULL"
     )
+    backfill_before_expr = (
+        "backfill_before_message_id"
+        if "backfill_before_message_id" in columns
+        else "NULL"
+    )
     last_started_expr = (
         "last_scan_started_at" if "last_scan_started_at" in columns else "NULL"
     )
@@ -859,6 +868,15 @@ def _rebuild_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
         "last_scan_finished_at" if "last_scan_finished_at" in columns else "NULL"
     )
     last_error_expr = "last_scan_error" if "last_scan_error" in columns else "NULL"
+    backfill_started_expr = (
+        "backfill_scan_started_at" if "backfill_scan_started_at" in columns else "NULL"
+    )
+    backfill_finished_expr = (
+        "backfill_scan_finished_at" if "backfill_scan_finished_at" in columns else "NULL"
+    )
+    backfill_error_expr = (
+        "backfill_scan_error" if "backfill_scan_error" in columns else "NULL"
+    )
     updated_at_expr = "updated_at" if "updated_at" in columns else "NULL"
     conn.execute("ALTER TABLE telegram_scan_cursors RENAME TO telegram_scan_cursors_legacy")
     _create_telegram_scan_cursors_table(conn)
@@ -868,18 +886,26 @@ def _rebuild_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
             account_id,
             channel_id,
             last_checked_message_id,
+            backfill_before_message_id,
             last_scan_started_at,
             last_scan_finished_at,
             last_scan_error,
+            backfill_scan_started_at,
+            backfill_scan_finished_at,
+            backfill_scan_error,
             updated_at
         )
         SELECT
             {account_id_expr},
             {channel_id_expr},
             {last_checked_expr},
+            {backfill_before_expr},
             {last_started_expr},
             {last_finished_expr},
             {last_error_expr},
+            {backfill_started_expr},
+            {backfill_finished_expr},
+            {backfill_error_expr},
             COALESCE({updated_at_expr}, datetime('now'))
         FROM telegram_scan_cursors_legacy
         """,
@@ -925,6 +951,10 @@ def _ensure_telegram_scan_cursors_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE telegram_scan_cursors ADD COLUMN last_checked_message_id INTEGER"
         )
+    if "backfill_before_message_id" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_scan_cursors ADD COLUMN backfill_before_message_id INTEGER"
+        )
     if "last_scan_started_at" not in columns:
         conn.execute(
             "ALTER TABLE telegram_scan_cursors ADD COLUMN last_scan_started_at TEXT"
@@ -935,6 +965,18 @@ def _ensure_telegram_scan_cursors_schema(conn: sqlite3.Connection) -> None:
         )
     if "last_scan_error" not in columns:
         conn.execute("ALTER TABLE telegram_scan_cursors ADD COLUMN last_scan_error TEXT")
+    if "backfill_scan_started_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_scan_cursors ADD COLUMN backfill_scan_started_at TEXT"
+        )
+    if "backfill_scan_finished_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_scan_cursors ADD COLUMN backfill_scan_finished_at TEXT"
+        )
+    if "backfill_scan_error" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_scan_cursors ADD COLUMN backfill_scan_error TEXT"
+        )
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE telegram_scan_cursors ADD COLUMN updated_at TEXT")
         conn.execute(
@@ -1535,7 +1577,178 @@ def seed_account_telegram_products_from_legacy(
                 *source_statuses,
             ),
         )
-    return int(cursor.rowcount or 0)
+        inserted = int(cursor.rowcount or 0)
+    seed_telegram_scan_cursors_from_existing_products(account_id)
+    return inserted
+
+
+def get_max_telegram_product_message_id(
+    channel_id: int,
+    *,
+    account_id: Optional[str] = None,
+) -> Optional[int]:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(message_id) AS max_message_id
+            FROM telegram_products
+            WHERE account_id = ? AND channel_id = ?
+            """,
+            (normalized_account_id, channel_id),
+        ).fetchone()
+    if row is None or row["max_message_id"] is None:
+        return None
+    return int(row["max_message_id"])
+
+
+def seed_telegram_scan_cursors_from_existing_products(
+    account_id: str,
+    *,
+    channel_id: Optional[int] = None,
+) -> int:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    params: tuple[object, ...]
+    where_clause = "account_id = ?"
+    params = (normalized_account_id,)
+    if channel_id is not None:
+        where_clause += " AND channel_id = ?"
+        params = (normalized_account_id, channel_id)
+    with _connect(telegram_db_path) as conn:
+        changes_before = conn.total_changes
+        conn.execute(
+            f"""
+            INSERT INTO telegram_scan_cursors (
+                account_id,
+                channel_id,
+                last_checked_message_id,
+                backfill_before_message_id,
+                last_scan_finished_at,
+                last_scan_error,
+                backfill_scan_finished_at,
+                backfill_scan_error,
+                updated_at
+            )
+            SELECT
+                account_id,
+                channel_id,
+                MAX(message_id),
+                MAX(message_id),
+                datetime('now'),
+                NULL,
+                datetime('now'),
+                NULL,
+                datetime('now')
+            FROM telegram_products
+            WHERE {where_clause}
+            GROUP BY account_id, channel_id
+            ON CONFLICT(account_id, channel_id) DO UPDATE SET
+                last_checked_message_id = CASE
+                    WHEN telegram_scan_cursors.last_checked_message_id IS NULL
+                        OR excluded.last_checked_message_id > telegram_scan_cursors.last_checked_message_id
+                    THEN excluded.last_checked_message_id
+                    ELSE telegram_scan_cursors.last_checked_message_id
+                END,
+                backfill_before_message_id = CASE
+                    WHEN telegram_scan_cursors.backfill_before_message_id IS NULL
+                        THEN excluded.backfill_before_message_id
+                    WHEN excluded.backfill_before_message_id IS NULL
+                        THEN telegram_scan_cursors.backfill_before_message_id
+                    WHEN excluded.backfill_before_message_id < telegram_scan_cursors.backfill_before_message_id
+                        THEN excluded.backfill_before_message_id
+                    ELSE telegram_scan_cursors.backfill_before_message_id
+                END,
+                last_scan_error = NULL,
+                backfill_scan_error = NULL,
+                updated_at = datetime('now')
+            """,
+            params,
+        )
+        return int(conn.total_changes - changes_before)
+
+
+def seed_account_telegram_products_from_existing_db(
+    account_id: str,
+    *,
+    include_created: bool = True,
+    include_failed: bool = True,
+    include_processing: bool = True,
+    db_path: Optional[Path] = None,
+) -> int:
+    target_account_id = str(account_id).strip()
+    if not target_account_id:
+        raise ValueError("account_id is required")
+    if target_account_id == LEGACY_TELEGRAM_ACCOUNT_ID:
+        raise ValueError("target account_id cannot be the legacy account")
+    source_statuses = [TELEGRAM_PRODUCT_STATUS_QUEUED]
+    if include_created:
+        source_statuses.append(TELEGRAM_PRODUCT_STATUS_CREATED)
+    if include_failed:
+        source_statuses.append(TELEGRAM_PRODUCT_STATUS_FAILED)
+    if include_processing:
+        source_statuses.append(TELEGRAM_PRODUCT_STATUS_PROCESSING)
+    telegram_db_path = Path(db_path) if db_path is not None else _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    status_placeholders = ",".join(["?"] * len(source_statuses))
+    with _connect(telegram_db_path) as conn:
+        changes_before = conn.total_changes
+        conn.execute(
+            f"""
+            WITH seed_source AS (
+                SELECT MIN(id) AS source_id
+                FROM telegram_products
+                WHERE account_id != ?
+                  AND status IN ({status_placeholders})
+                GROUP BY channel_id, message_id
+            )
+            INSERT INTO telegram_products (
+                account_id,
+                channel_id,
+                message_id,
+                raw_message,
+                parsed_data,
+                status,
+                created,
+                created_product_id,
+                created_at,
+                updated_at,
+                status_updated_at,
+                create_attempts,
+                last_create_error
+            )
+            SELECT
+                ?,
+                source.channel_id,
+                source.message_id,
+                source.raw_message,
+                source.parsed_data,
+                ?,
+                0,
+                NULL,
+                source.created_at,
+                datetime('now'),
+                datetime('now'),
+                0,
+                NULL
+            FROM telegram_products AS source
+            JOIN seed_source
+              ON seed_source.source_id = source.id
+            ON CONFLICT(account_id, channel_id, message_id) DO NOTHING
+            """,
+            (
+                target_account_id,
+                *source_statuses,
+                target_account_id,
+                TELEGRAM_PRODUCT_STATUS_QUEUED,
+            ),
+        )
+        inserted = int(conn.total_changes - changes_before)
+    seed_telegram_scan_cursors_from_existing_products(target_account_id)
+    return inserted
 
 
 def claim_next_telegram_product_for_creation(
@@ -1944,9 +2157,13 @@ def get_telegram_scan_cursor(
                 account_id,
                 channel_id,
                 last_checked_message_id,
+                backfill_before_message_id,
                 last_scan_started_at,
                 last_scan_finished_at,
                 last_scan_error,
+                backfill_scan_started_at,
+                backfill_scan_finished_at,
+                backfill_scan_error,
                 updated_at
             FROM telegram_scan_cursors
             WHERE account_id = ? AND channel_id = ?
@@ -1961,9 +2178,21 @@ def get_telegram_scan_cursor(
             if row and row["last_checked_message_id"] is not None
             else None
         ),
+        "backfill_before_message_id": (
+            int(row["backfill_before_message_id"])
+            if row and row["backfill_before_message_id"] is not None
+            else None
+        ),
         "last_scan_started_at": row["last_scan_started_at"] if row else None,
         "last_scan_finished_at": row["last_scan_finished_at"] if row else None,
         "last_scan_error": row["last_scan_error"] if row else None,
+        "backfill_scan_started_at": (
+            row["backfill_scan_started_at"] if row else None
+        ),
+        "backfill_scan_finished_at": (
+            row["backfill_scan_finished_at"] if row else None
+        ),
+        "backfill_scan_error": row["backfill_scan_error"] if row else None,
         "updated_at": row["updated_at"] if row else None,
     }
 
@@ -1990,6 +2219,34 @@ def mark_telegram_scan_started(
             ON CONFLICT(account_id, channel_id) DO UPDATE SET
                 last_scan_started_at = datetime('now'),
                 last_scan_error = NULL,
+                updated_at = datetime('now')
+            """,
+            (normalized_account_id, channel_id),
+        )
+
+
+def mark_telegram_backfill_started(
+    channel_id: int,
+    *,
+    account_id: Optional[str] = None,
+) -> None:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_scan_cursors (
+                account_id,
+                channel_id,
+                backfill_scan_started_at,
+                backfill_scan_error,
+                updated_at
+            )
+            VALUES (?, ?, datetime('now'), NULL, datetime('now'))
+            ON CONFLICT(account_id, channel_id) DO UPDATE SET
+                backfill_scan_started_at = datetime('now'),
+                backfill_scan_error = NULL,
                 updated_at = datetime('now')
             """,
             (normalized_account_id, channel_id),
@@ -2046,6 +2303,61 @@ def finish_telegram_scan(
                 normalized_account_id,
                 channel_id,
                 next_last_checked,
+                str(error_message).strip() or None,
+            ),
+        )
+
+
+def finish_telegram_backfill(
+    channel_id: int,
+    *,
+    backfill_before_message_id: Optional[int],
+    account_id: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        existing = conn.execute(
+            """
+            SELECT backfill_before_message_id
+            FROM telegram_scan_cursors
+            WHERE account_id = ? AND channel_id = ?
+            """,
+            (normalized_account_id, channel_id),
+        ).fetchone()
+        current_backfill_before = (
+            int(existing["backfill_before_message_id"])
+            if existing and existing["backfill_before_message_id"] is not None
+            else None
+        )
+        next_backfill_before = current_backfill_before
+        if backfill_before_message_id is not None:
+            processed_message_id = int(backfill_before_message_id)
+            if next_backfill_before is None or processed_message_id < next_backfill_before:
+                next_backfill_before = processed_message_id
+        conn.execute(
+            """
+            INSERT INTO telegram_scan_cursors (
+                account_id,
+                channel_id,
+                backfill_before_message_id,
+                backfill_scan_finished_at,
+                backfill_scan_error,
+                updated_at
+            )
+            VALUES (?, ?, ?, datetime('now'), ?, datetime('now'))
+            ON CONFLICT(account_id, channel_id) DO UPDATE SET
+                backfill_before_message_id = excluded.backfill_before_message_id,
+                backfill_scan_finished_at = datetime('now'),
+                backfill_scan_error = excluded.backfill_scan_error,
+                updated_at = datetime('now')
+            """,
+            (
+                normalized_account_id,
+                channel_id,
+                next_backfill_before,
                 str(error_message).strip() or None,
             ),
         )

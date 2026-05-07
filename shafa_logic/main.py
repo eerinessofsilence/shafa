@@ -199,6 +199,33 @@ def _background_scan_interval_seconds() -> int:
     return min(max(value, 10), 3600)
 
 
+def _bootstrap_new_account_telegram_queue_if_needed() -> int:
+    marker_value = os.getenv("SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH", "").strip()
+    if not marker_value:
+        return 0
+    marker_path = Path(marker_value)
+    if not marker_path.exists():
+        return 0
+    account_id = str(os.getenv("SHAFA_ACCOUNT_ID") or "").strip()
+    if not account_id:
+        raise RuntimeError("Не задан SHAFA_ACCOUNT_ID для bootstrap очереди нового аккаунта.")
+    from data.db import seed_account_telegram_products_from_existing_db
+
+    seeded = seed_account_telegram_products_from_existing_db(account_id)
+    try:
+        marker_path.unlink(missing_ok=True)
+    except OSError as exc:
+        print(
+            "Не удалось удалить marker bootstrap очереди "
+            + f"для аккаунта {account_id}: {exc}"
+        )
+    print(
+        f"Bootstrap очереди Telegram для нового аккаунта {account_id}: "
+        + f"добавлено {seeded} товар(ов)."
+    )
+    return seeded
+
+
 def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thread]:
     from controller.data_controller import (
         DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
@@ -787,6 +814,7 @@ def main(
         print("Вход в Telegram завершён.")
         return
     if shafa:
+        _bootstrap_new_account_telegram_queue_if_needed()
         sync_channels_from_runtime_config()
         os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
         stop_event, scanner_thread = _start_background_telegram_scanner()

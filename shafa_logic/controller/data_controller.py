@@ -47,13 +47,16 @@ from data.db import (
     claim_next_telegram_product_for_creation,
     claim_telegram_fetch,
     find_size_mapping_candidates,
+    finish_telegram_backfill,
     finish_telegram_fetch,
     get_brand_id_by_name,
+    get_max_telegram_product_message_id,
     get_size_id_by_name,
     get_telegram_scan_cursor,
     increment_telegram_product_attempt,
     list_brand_names,
     load_telegram_channels,
+    mark_telegram_backfill_started,
     mark_telegram_scan_started,
     mark_telegram_product_created,
     finish_telegram_scan,
@@ -2458,6 +2461,61 @@ def _classify_product_message(msg) -> tuple[Optional[dict], Optional[str]]:
     return parsed, None
 
 
+def _scan_batch_result() -> dict[str, Optional[int] | str]:
+    return {
+        "inserted": 0,
+        "duplicates": 0,
+        "last_processed_message_id": None,
+        "error_message": None,
+    }
+
+
+def _process_scanned_messages(
+    messages: list,
+    *,
+    channel_id: int,
+    account_id: str,
+    stats: dict[str, int],
+) -> dict[str, Optional[int] | str]:
+    result = _scan_batch_result()
+    for msg in messages:
+        message_id = getattr(msg, "id", None)
+        if not isinstance(message_id, int):
+            result["error_message"] = (
+                f"Сообщение без корректного id в канале {channel_id}."
+            )
+            break
+        try:
+            parsed, skip_reason = _classify_product_message(msg)
+        except Exception as exc:
+            result["error_message"] = _scan_error_message(channel_id, message_id, exc)
+            log("ERROR", str(result["error_message"]))
+            break
+
+        stats["processed"] += 1
+        if parsed is None:
+            if skip_reason:
+                stats[skip_reason] = stats.get(skip_reason, 0) + 1
+            result["last_processed_message_id"] = message_id
+            continue
+
+        stats["parsed_ok"] += 1
+        if save_telegram_product(
+            channel_id,
+            message_id,
+            getattr(msg, "message", "") or "",
+            parsed,
+            account_id=account_id,
+        ):
+            result["inserted"] = int(result["inserted"] or 0) + 1
+            stats["saved"] += 1
+        else:
+            result["duplicates"] = int(result["duplicates"] or 0) + 1
+            stats["duplicate"] += 1
+        result["last_processed_message_id"] = message_id
+    return result
+
+
 async def _load_messages_for_scan(
     client: TelegramClient,
     channel_peer,
@@ -2466,15 +2524,7 @@ async def _load_messages_for_scan(
     batch_size: int,
 ) -> list:
     if last_checked_message_id is None:
-        newest_batch = [
-            msg
-            async for msg in client.iter_messages(
-                channel_peer,
-                limit=batch_size,
-            )
-        ]
-        newest_batch.reverse()
-        return newest_batch
+        return []
 
     messages: list = []
     async for msg in client.iter_messages(
@@ -2488,6 +2538,82 @@ async def _load_messages_for_scan(
             continue
         messages.append(msg)
     return messages
+
+
+async def _load_messages_for_backfill(
+    client: TelegramClient,
+    channel_peer,
+    *,
+    backfill_before_message_id: Optional[int],
+    batch_size: int,
+) -> list:
+    if backfill_before_message_id is None or backfill_before_message_id <= 1:
+        return []
+
+    messages: list = []
+    async for msg in client.iter_messages(
+        channel_peer,
+        max_id=backfill_before_message_id,
+        limit=batch_size,
+    ):
+        message_id = getattr(msg, "id", None)
+        if (
+            not isinstance(message_id, int)
+            or message_id >= backfill_before_message_id
+        ):
+            continue
+        messages.append(msg)
+    return messages
+
+
+async def _load_latest_message_id_for_scan(
+    client: TelegramClient,
+    channel_peer,
+) -> Optional[int]:
+    async for msg in client.iter_messages(channel_peer, limit=1):
+        message_id = getattr(msg, "id", None)
+        if isinstance(message_id, int):
+            return message_id
+    return None
+
+
+async def _resolve_live_scan_floor_message_id(
+    client: TelegramClient,
+    channel_peer,
+    channel_id: int,
+    *,
+    account_id: str,
+    last_checked_message_id: Optional[int],
+) -> Optional[int]:
+    if last_checked_message_id is not None:
+        return int(last_checked_message_id)
+    known_max_message_id = get_max_telegram_product_message_id(
+        channel_id,
+        account_id=account_id,
+    )
+    if known_max_message_id is not None:
+        return int(known_max_message_id)
+    return await _load_latest_message_id_for_scan(client, channel_peer)
+
+
+def _resolve_backfill_floor_message_id(
+    channel_id: int,
+    *,
+    account_id: str,
+    backfill_before_message_id: Optional[int],
+    live_scan_floor_message_id: Optional[int],
+) -> Optional[int]:
+    if backfill_before_message_id is not None:
+        return int(backfill_before_message_id)
+    if live_scan_floor_message_id is not None:
+        return int(live_scan_floor_message_id)
+    known_max_message_id = get_max_telegram_product_message_id(
+        channel_id,
+        account_id=account_id,
+    )
+    if known_max_message_id is not None:
+        return int(known_max_message_id)
+    return None
 
 
 def _scan_error_message(channel_id: int, message_id: Optional[int], exc: Exception) -> str:
@@ -2513,63 +2639,103 @@ async def _scan_single_channel(
     inserted = 0
     duplicates = 0
     last_processed_message_id: Optional[int] = None
+    live_scan_floor_message_id: Optional[int] = None
+    backfill_before_message_id: Optional[int] = None
+    backfill_last_processed_message_id: Optional[int] = None
+    backfill_error_message: Optional[str] = None
+    backfill_attempted = False
+    live_messages_fetched = 0
+    backfill_messages_fetched = 0
     error_message: Optional[str] = None
 
     cursor = get_telegram_scan_cursor(channel_id, account_id=account_id)
     last_checked_message_id = cursor.get("last_checked_message_id")
+    backfill_before_message_id = cursor.get("backfill_before_message_id")
     mark_telegram_scan_started(channel_id, account_id=account_id)
 
     try:
         channel_peer = await _resolve_channel_peer(client, channel_id)
+        live_scan_floor_message_id = await _resolve_live_scan_floor_message_id(
+            client,
+            channel_peer,
+            channel_id,
+            account_id=account_id,
+            last_checked_message_id=last_checked_message_id,
+        )
         messages = await _load_messages_for_scan(
             client,
             channel_peer,
-            last_checked_message_id=last_checked_message_id,
+            last_checked_message_id=live_scan_floor_message_id,
             batch_size=batch_size,
         )
-        stats["fetched"] = len(messages)
-        for msg in messages:
-            message_id = getattr(msg, "id", None)
-            if not isinstance(message_id, int):
-                error_message = (
-                    f"Сообщение без корректного id в канале {channel_id}."
-                )
-                break
-            try:
-                parsed, skip_reason = _classify_product_message(msg)
-            except Exception as exc:
-                error_message = _scan_error_message(channel_id, message_id, exc)
-                log("ERROR", error_message)
-                break
+        live_messages_fetched = len(messages)
+        stats["fetched"] += live_messages_fetched
+        live_result = _process_scanned_messages(
+            messages,
+            channel_id=channel_id,
+            account_id=account_id,
+            stats=stats,
+        )
+        inserted += int(live_result["inserted"] or 0)
+        duplicates += int(live_result["duplicates"] or 0)
+        last_processed_message_id = live_result["last_processed_message_id"]  # type: ignore[assignment]
+        error_message = str(live_result["error_message"] or "") or None
 
-            stats["processed"] += 1
-            if parsed is None:
-                if skip_reason:
-                    stats[skip_reason] = stats.get(skip_reason, 0) + 1
-                last_processed_message_id = message_id
-                continue
-
-            stats["parsed_ok"] += 1
-            if save_telegram_product(
+        if error_message is None and live_messages_fetched == 0:
+            resolved_backfill_before = _resolve_backfill_floor_message_id(
                 channel_id,
-                message_id,
-                getattr(msg, "message", "") or "",
-                parsed,
                 account_id=account_id,
-            ):
-                inserted += 1
-                stats["saved"] += 1
-            else:
-                duplicates += 1
-                stats["duplicate"] += 1
-            last_processed_message_id = message_id
+                backfill_before_message_id=backfill_before_message_id,
+                live_scan_floor_message_id=live_scan_floor_message_id,
+            )
+            if resolved_backfill_before is not None and resolved_backfill_before > 1:
+                backfill_attempted = True
+                mark_telegram_backfill_started(channel_id, account_id=account_id)
+                backfill_messages = await _load_messages_for_backfill(
+                    client,
+                    channel_peer,
+                    backfill_before_message_id=resolved_backfill_before,
+                    batch_size=batch_size,
+                )
+                backfill_messages_fetched = len(backfill_messages)
+                stats["fetched"] += backfill_messages_fetched
+                backfill_result = _process_scanned_messages(
+                    backfill_messages,
+                    channel_id=channel_id,
+                    account_id=account_id,
+                    stats=stats,
+                )
+                inserted += int(backfill_result["inserted"] or 0)
+                duplicates += int(backfill_result["duplicates"] or 0)
+                backfill_last_processed_message_id = backfill_result[
+                    "last_processed_message_id"
+                ]  # type: ignore[assignment]
+                backfill_error_message = (
+                    str(backfill_result["error_message"] or "") or None
+                )
+                next_backfill_before_message_id = resolved_backfill_before
+                if backfill_error_message is None:
+                    if backfill_last_processed_message_id is not None:
+                        next_backfill_before_message_id = backfill_last_processed_message_id
+                    elif backfill_messages_fetched == 0:
+                        next_backfill_before_message_id = 1
+                finish_telegram_backfill(
+                    channel_id,
+                    backfill_before_message_id=next_backfill_before_message_id,
+                    account_id=account_id,
+                    error_message=backfill_error_message,
+                )
     except Exception as exc:
         error_message = _scan_error_message(channel_id, None, exc)
         log("ERROR", error_message)
     finally:
         finish_telegram_scan(
             channel_id,
-            last_checked_message_id=last_processed_message_id,
+            last_checked_message_id=(
+                last_processed_message_id
+                if last_processed_message_id is not None
+                else live_scan_floor_message_id
+            ),
             account_id=account_id,
             error_message=error_message,
         )
@@ -2578,6 +2744,11 @@ async def _scan_single_channel(
         "channel_id": channel_id,
         "inserted": inserted,
         "duplicates": duplicates,
+        "live_messages_fetched": live_messages_fetched,
+        "backfill_attempted": backfill_attempted,
+        "backfill_messages_fetched": backfill_messages_fetched,
+        "backfill_last_processed_message_id": backfill_last_processed_message_id,
+        "backfill_error_message": backfill_error_message,
         "last_processed_message_id": last_processed_message_id,
         "error_message": error_message,
         "stats": stats,

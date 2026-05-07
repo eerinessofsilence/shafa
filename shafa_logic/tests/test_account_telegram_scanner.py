@@ -22,6 +22,9 @@ class _FakeTelegramClient:
         min_id = kwargs.get("min_id")
         if isinstance(min_id, int):
             messages = [msg for msg in messages if getattr(msg, "id", 0) > min_id]
+        max_id = kwargs.get("max_id")
+        if isinstance(max_id, int):
+            messages = [msg for msg in messages if getattr(msg, "id", 0) < max_id]
         reverse = bool(kwargs.get("reverse"))
         messages = sorted(messages, key=lambda item: item.id, reverse=not reverse)
         limit = kwargs.get("limit")
@@ -306,6 +309,260 @@ class AccountTelegramScannerTests(unittest.TestCase):
         self.assertEqual(count, 150)
         self.assertEqual(client.calls[0]["limit"], 150)
         self.assertTrue(client.calls[0]["reverse"])
+
+    def test_scanner_without_cursor_uses_existing_queue_as_live_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            client = _FakeTelegramClient(
+                {"peer-11": [_message(89, "old-89"), _message(90, "old-90"), _message(91, "old-91"), _message(92, "new-92")]}
+            )
+            parsed = {
+                "new-92": {"name": "New", "price": "1600", "size": "41"},
+            }
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
+                patch(
+                    "controller.data_controller._sync_channel_titles",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "controller.data_controller._resolve_channel_peer",
+                    new=AsyncMock(return_value="peer-11"),
+                ),
+                patch(
+                    "controller.data_controller._require_telegram_credentials",
+                    return_value=(1, "hash"),
+                ),
+                patch(
+                    "controller.data_controller.create_telegram_client",
+                    return_value=_FakeTelegramContext(client),
+                ),
+                patch(
+                    "controller.data_controller._is_photo_message",
+                    return_value=True,
+                ),
+                patch(
+                    "controller.data_controller.parse_message",
+                    side_effect=lambda text: parsed[text],
+                ),
+            ):
+                for message_id in (89, 90, 91):
+                    db.save_telegram_product(
+                        11,
+                        message_id,
+                        f"queued-{message_id}",
+                        {"name": f"Queued {message_id}", "price": "1500", "size": "41"},
+                        account_id="acc-1",
+                    )
+
+                result = dc.scan_account_telegram_channels(batch_size=150)
+                cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT message_id
+                        FROM telegram_products
+                        WHERE account_id = ?
+                        ORDER BY message_id
+                        """,
+                        ("acc-1",),
+                    ).fetchall()
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(cursor["last_checked_message_id"], 92)
+        self.assertEqual([row[0] for row in rows], [89, 90, 91, 92])
+        self.assertEqual(client.calls[0]["min_id"], 91)
+        self.assertEqual(client.calls[0]["limit"], 150)
+        self.assertTrue(client.calls[0]["reverse"])
+
+    def test_live_cursor_stays_on_tail_while_backfill_reads_older_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            client = _FakeTelegramClient(
+                {"peer-11": [_message(89, "old-89"), _message(90, "old-90"), _message(91, "old-91")]}
+            )
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
+                patch(
+                    "controller.data_controller._sync_channel_titles",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "controller.data_controller._resolve_channel_peer",
+                    new=AsyncMock(return_value="peer-11"),
+                ),
+                patch(
+                    "controller.data_controller._require_telegram_credentials",
+                    return_value=(1, "hash"),
+                ),
+                patch(
+                    "controller.data_controller.create_telegram_client",
+                    return_value=_FakeTelegramContext(client),
+                ),
+                patch(
+                    "controller.data_controller._is_photo_message",
+                    return_value=True,
+                ),
+                patch(
+                    "controller.data_controller.parse_message",
+                    return_value={"name": "History", "price": "1600", "size": "41"},
+                ),
+            ):
+                result = dc.scan_account_telegram_channels(batch_size=150)
+                cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT message_id
+                        FROM telegram_products
+                        WHERE account_id = ?
+                        ORDER BY message_id
+                        """,
+                        ("acc-1",),
+                    ).fetchall()
+
+        self.assertEqual(result["inserted"], 2)
+        self.assertEqual(cursor["last_checked_message_id"], 91)
+        self.assertEqual(cursor["backfill_before_message_id"], 89)
+        self.assertEqual([row[0] for row in rows], [89, 90])
+        self.assertEqual(client.calls[0]["limit"], 1)
+        self.assertNotIn("min_id", client.calls[0])
+        self.assertEqual(client.calls[1]["min_id"], 91)
+        self.assertEqual(client.calls[2]["max_id"], 91)
+
+    def test_scanner_sees_new_message_after_tail_baseline_is_initialized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            messages = [_message(91, "tail-91")]
+            client = _FakeTelegramClient({"peer-11": messages})
+            parsed = {"new-92": {"name": "New", "price": "1600", "size": "41"}}
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
+                patch(
+                    "controller.data_controller._sync_channel_titles",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "controller.data_controller._resolve_channel_peer",
+                    new=AsyncMock(return_value="peer-11"),
+                ),
+                patch(
+                    "controller.data_controller._require_telegram_credentials",
+                    return_value=(1, "hash"),
+                ),
+                patch(
+                    "controller.data_controller.create_telegram_client",
+                    return_value=_FakeTelegramContext(client),
+                ),
+                patch(
+                    "controller.data_controller._is_photo_message",
+                    return_value=True,
+                ),
+                patch(
+                    "controller.data_controller.parse_message",
+                    side_effect=lambda text: parsed[text],
+                ),
+            ):
+                first_result = dc.scan_account_telegram_channels(batch_size=150)
+                first_cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+
+                client.messages_by_peer["peer-11"].append(_message(92, "new-92"))
+
+                second_result = dc.scan_account_telegram_channels(batch_size=150)
+                second_cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT message_id
+                        FROM telegram_products
+                        WHERE account_id = ?
+                        ORDER BY message_id
+                        """,
+                        ("acc-1",),
+                    ).fetchall()
+
+        self.assertEqual(first_result["inserted"], 0)
+        self.assertEqual(first_cursor["last_checked_message_id"], 91)
+        self.assertEqual(first_cursor["backfill_before_message_id"], 1)
+        self.assertEqual(second_result["inserted"], 1)
+        self.assertEqual(second_cursor["last_checked_message_id"], 92)
+        self.assertEqual(second_cursor["backfill_before_message_id"], 1)
+        self.assertEqual([row[0] for row in rows], [92])
+
+    def test_backfill_cursor_moves_down_without_affecting_live_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            client = _FakeTelegramClient(
+                {
+                    "peer-11": [
+                        _message(86, "old-86"),
+                        _message(87, "old-87"),
+                        _message(88, "old-88"),
+                        _message(91, "tail-91"),
+                    ]
+                }
+            )
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
+                patch(
+                    "controller.data_controller._sync_channel_titles",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "controller.data_controller._resolve_channel_peer",
+                    new=AsyncMock(return_value="peer-11"),
+                ),
+                patch(
+                    "controller.data_controller._require_telegram_credentials",
+                    return_value=(1, "hash"),
+                ),
+                patch(
+                    "controller.data_controller.create_telegram_client",
+                    return_value=_FakeTelegramContext(client),
+                ),
+                patch(
+                    "controller.data_controller._is_photo_message",
+                    return_value=True,
+                ),
+                patch(
+                    "controller.data_controller.parse_message",
+                    return_value={"name": "History", "price": "1600", "size": "41"},
+                ),
+            ):
+                first_result = dc.scan_account_telegram_channels(batch_size=2)
+                first_cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+                second_result = dc.scan_account_telegram_channels(batch_size=2)
+                second_cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT message_id
+                        FROM telegram_products
+                        WHERE account_id = ?
+                        ORDER BY message_id
+                        """,
+                        ("acc-1",),
+                    ).fetchall()
+
+        self.assertEqual(first_result["inserted"], 2)
+        self.assertEqual(first_cursor["last_checked_message_id"], 91)
+        self.assertEqual(first_cursor["backfill_before_message_id"], 87)
+        self.assertEqual(second_result["inserted"], 1)
+        self.assertEqual(second_cursor["last_checked_message_id"], 91)
+        self.assertEqual(second_cursor["backfill_before_message_id"], 86)
+        self.assertEqual([row[0] for row in rows], [86, 87, 88])
 
     def test_scanner_skips_legacy_product_and_still_advances_cursor(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

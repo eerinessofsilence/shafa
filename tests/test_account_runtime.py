@@ -36,6 +36,10 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-1/media")
     assert env["SHAFA_TELEGRAM_SESSION_PATH"].endswith("accounts/acc-1/telegram.session")
     assert env["SHAFA_TELEGRAM_CHANNELS_PATH"].endswith("accounts/acc-1/shafa_telegram_channels.json")
+    assert env["SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH"].endswith(
+        "accounts/acc-1/seed_existing_telegram_products.pending"
+    )
+    assert "SHAFA_TELEGRAM_QUEUE_SEED_PENDING" not in env
     assert env["SHAFA_ACCOUNT_ID"] == "acc-1"
     assert env["SHAFA_TELEGRAM_API_ID"] == "777000"
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
@@ -126,6 +130,20 @@ def test_account_runtime_exports_channel_runtime_config(tmp_path: Path) -> None:
     assert config_path.exists()
     assert config_path.name == "my_account_telegram_channels.json"
     assert '"links": [' in config_path.read_text(encoding="utf-8")
+
+
+def test_account_runtime_exposes_pending_new_account_queue_seed_marker(tmp_path: Path) -> None:
+    store = AccountSessionStore(tmp_path, tmp_path / "accounts", tmp_path / "accounts_state.json")
+    runtime = AccountRuntimeService(store)
+    account = Account(id="acc-seed", name="Seed", path=str(tmp_path / "project"))
+    store.mark_pending_telegram_queue_seed(account)
+
+    env = runtime.account_env(account)
+
+    assert env["SHAFA_TELEGRAM_QUEUE_SEED_PENDING"] == "1"
+    assert env["SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH"].endswith(
+        "accounts/acc-seed/seed_existing_telegram_products.pending"
+    )
 
 
 def test_account_runtime_resolves_configured_runtime_project(

@@ -167,6 +167,13 @@ class AccountRuntimeService:
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
+        env["SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH"] = str(
+            self.store.telegram_queue_seed_marker_file(account)
+        )
+        if self.store.has_pending_telegram_queue_seed(account):
+            env["SHAFA_TELEGRAM_QUEUE_SEED_PENDING"] = "1"
+        else:
+            env.pop("SHAFA_TELEGRAM_QUEUE_SEED_PENDING", None)
         if account.markup_amount is None:
             env.pop("SHAFA_PRICE_MARKUP", None)
         else:

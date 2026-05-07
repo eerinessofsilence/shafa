@@ -291,6 +291,66 @@ class ProductQueueStatusTests(unittest.TestCase):
             ],
         )
 
+    def test_seed_new_account_from_existing_db_copies_all_non_skipped_products(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            parsed = {"name": "Sneakers", "price": "1600", "size": "41"}
+            with patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)):
+                db.save_telegram_product(
+                    11,
+                    501,
+                    "legacy-created",
+                    parsed,
+                    account_id=db.LEGACY_TELEGRAM_ACCOUNT_ID,
+                )
+                db.mark_telegram_product_created(
+                    11,
+                    501,
+                    created_product_id="legacy-product-1",
+                    account_id=db.LEGACY_TELEGRAM_ACCOUNT_ID,
+                )
+                db.save_telegram_product(11, 502, "queued", parsed, account_id="acc-1")
+                db.save_telegram_product(11, 503, "failed", parsed, account_id="acc-2")
+                db.increment_telegram_product_attempt(
+                    11,
+                    503,
+                    failure_reason="NO_UPLOADABLE_PHOTOS",
+                    account_id="acc-2",
+                )
+                db.save_telegram_product(11, 504, "skipped", parsed, account_id="acc-3")
+                db.mark_telegram_product_created(
+                    11,
+                    504,
+                    created_product_id="SKIPPED_INVALID_NAME",
+                    account_id="acc-3",
+                )
+
+                seeded = db.seed_account_telegram_products_from_existing_db("acc-new")
+                cursor = db.get_telegram_scan_cursor(11, account_id="acc-new")
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT message_id, status, created, created_product_id, create_attempts, last_create_error
+                        FROM telegram_products
+                        WHERE account_id = ?
+                        ORDER BY message_id
+                        """,
+                        ("acc-new",),
+                    ).fetchall()
+
+        self.assertEqual(seeded, 3)
+        self.assertEqual(cursor["last_checked_message_id"], 503)
+        self.assertEqual(cursor["backfill_before_message_id"], 503)
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [
+                (501, "queued", 0, None, 0, None),
+                (502, "queued", 0, None, 0, None),
+                (503, "queued", 0, None, 0, None),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

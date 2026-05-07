@@ -122,6 +122,9 @@ class AccountService:
         payload.append(record)
         await self._write_payload(payload)
         self._ensure_account_dir(account_id)
+        self.session_store.mark_pending_telegram_queue_seed(
+            self._record_to_account(record)
+        )
         log(account_id, "INFO", "Account created.")
         return await self._to_model(record)
 
