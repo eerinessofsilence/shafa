@@ -311,7 +311,7 @@ def _start_background_invalid_products_deactivator() -> tuple[threading.Event, t
                         "[WARN] Фоновая деактивация невалидного товара не выполнена. "
                         f"{first_error.get('account') or 'default'} | "
                         f"{first_error.get('name') or 'нет данных'} | "
-                        f"{first_error.get('reason') or 'неизвестно'}"
+                        f"{_format_invalid_deactivation_reason(first_error.get('reason'))}"
                     )
             except Exception as exc:
                 print(f"[ERROR] Фоновая деактивация невалидных товаров не выполнена: {exc}")
@@ -327,6 +327,21 @@ def _start_background_invalid_products_deactivator() -> tuple[threading.Event, t
     )
     thread.start()
     return stop_event, thread
+
+
+def _format_invalid_deactivation_reason(reason: object) -> str:
+    if reason == "authentication_required":
+        return "Нужен повторный вход в Shafa."
+    if reason == "missing_cookies":
+        return "Нет сохранённых cookies Shafa."
+    if reason == "not_found_by_name":
+        return "Активный товар не найден по имени."
+    if reason == "empty_response":
+        return "Shafa вернула пустой ответ."
+    if reason == "deactivation_failed":
+        return "Shafa не подтвердила деактивацию."
+    text = str(reason or "").strip()
+    return text or "неизвестно"
 
 
 def run_periodic(action: Callable[[], None], label: str, shafa: bool | None = None) -> None:
@@ -803,7 +818,7 @@ def _auto_deactivate_invalid_products() -> None:
             account = item.get("account") or "default"
             product_id = item.get("product_id") or "нет данных"
             name = item.get("name") or "нет данных"
-            reason = item.get("reason") or "неизвестно"
+            reason = _format_invalid_deactivation_reason(item.get("reason"))
             print(f"- {account} | {name} | {product_id} | {reason}")
 
 

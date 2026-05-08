@@ -27,6 +27,12 @@ from .get_my_clothes_products_feed import MY_CLOTHES_PRODUCTS_FEED_QUERY
 from utils.logging import log
 
 DEACTIVATE_PRODUCTS_OPERATION_NAME = "WEB_ProductDetailsDeactivateProduct"
+AUTHENTICATION_ERROR_MARKERS = (
+    "user not authenticated",
+    "not authenticated",
+    "unauthenticated",
+    "не авториз",
+)
 DEACTIVATE_PRODUCTS_MUTATION = """
 mutation WEB_ProductDetailsDeactivateProduct($includeIds: [Int]) {
   deactivateProducts(includeIds: $includeIds) {
@@ -59,6 +65,67 @@ def parse_product_ids(value: str) -> list[int]:
             seen.add(product_id)
             ids.append(product_id)
     return ids
+
+
+def _extract_error_messages(payload: object) -> list[str]:
+    messages: list[str] = []
+    if isinstance(payload, list):
+        for item in payload:
+            messages.extend(_extract_error_messages(item))
+        return messages
+    if isinstance(payload, dict):
+        message = str(payload.get("message") or "").strip()
+        if message:
+            messages.append(message)
+        nested_messages = payload.get("messages")
+        if isinstance(nested_messages, list):
+            for item in nested_messages:
+                if isinstance(item, dict):
+                    nested_message = str(item.get("message") or "").strip()
+                else:
+                    nested_message = str(item or "").strip()
+                if nested_message:
+                    messages.append(nested_message)
+        return messages
+    text = str(payload or "").strip()
+    if text:
+        messages.append(text)
+    return messages
+
+
+def _is_authentication_error(payload: object) -> bool:
+    haystack = " ".join(_extract_error_messages(payload)).casefold()
+    if not haystack and payload is not None:
+        haystack = str(payload).casefold()
+    return any(marker in haystack for marker in AUTHENTICATION_ERROR_MARKERS)
+
+
+def _normalize_graphql_error_reason(payload: object) -> object:
+    if _is_authentication_error(payload):
+        return "authentication_required"
+    if isinstance(payload, BaseException):
+        return str(payload)
+    return payload
+
+
+def _cookie_fingerprint(cookies: list[dict]) -> tuple[tuple[str, str, str, str], ...]:
+    fingerprint: list[tuple[str, str, str, str]] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        fingerprint.append(
+            (
+                str(cookie.get("name") or ""),
+                str(cookie.get("value") or ""),
+                str(cookie.get("domain") or ""),
+                str(cookie.get("path") or "/"),
+            )
+        )
+    return tuple(sorted(fingerprint))
+
+
+def _cookies_match(left: list[dict], right: list[dict]) -> bool:
+    return _cookie_fingerprint(left) == _cookie_fingerprint(right)
 
 
 def _is_deactivate_result_successful(result: dict) -> bool:
@@ -443,22 +510,37 @@ def _deactivate_invalid_uploaded_products_for_account(
             ],
         }
 
+    active_name_index: Optional[dict[str, list[int]]] = None
     try:
         active_name_index = _load_account_active_product_name_index(cookies)
     except Exception as exc:
-        return {
-            "account": account_name,
-            "checked": len(checked_rows),
-            "invalid": invalid_products,
-            "deactivated": [],
-            "errors": [
-                {
-                    "product_id": None,
-                    "name": "",
-                    "reason": str(exc),
-                }
-            ],
-        }
+        if storage_state_path is not None and _is_authentication_error(exc):
+            fallback_cookies = _load_shafa_cookies_for_account(
+                storage_state_path=None,
+                db_path=db_path,
+            )
+            if fallback_cookies and not _cookies_match(cookies, fallback_cookies):
+                try:
+                    active_name_index = _load_account_active_product_name_index(
+                        fallback_cookies
+                    )
+                    cookies = fallback_cookies
+                except Exception as fallback_exc:
+                    exc = fallback_exc
+        if active_name_index is None:
+            return {
+                "account": account_name,
+                "checked": len(checked_rows),
+                "invalid": invalid_products,
+                "deactivated": [],
+                "errors": [
+                    {
+                        "product_id": None,
+                        "name": "",
+                        "reason": _normalize_graphql_error_reason(exc),
+                    }
+                ],
+            }
 
     deactivated_ids: list[int] = []
     errors: list[dict] = []
@@ -512,19 +594,22 @@ def _deactivate_invalid_uploaded_products_for_account(
             continue
         result_errors = result.get("errors") or []
         if result_errors:
+            normalized_reason = _normalize_graphql_error_reason(result_errors)
             mark_invalid_uploaded_products_error(
                 [row_product_id_raw],
-                last_error=str(result_errors),
+                last_error=str(normalized_reason),
                 db_path=db_path,
             )
             errors.append(
                 {
                     "product_id": target_product_id,
                     "name": sample_name,
-                    "reason": result_errors,
+                    "reason": normalized_reason,
                 }
             )
             processed_items += 1
+            if normalized_reason == "authentication_required":
+                break
             continue
         if _is_deactivate_result_successful(result):
             mark_uploaded_products_deactivated(
@@ -627,7 +712,13 @@ def deactivate_next_invalid_uploaded_product() -> dict:
             all_deactivated.append({"account": context["name"], "product_id": product_id})
         for item in result.get("errors") or []:
             all_errors.append({"account": context["name"], **item})
-        if (result.get("deactivated") or result.get("errors")) and (result.get("invalid") or []):
+
+        has_product_level_error = any(
+            item.get("product_id") not in (None, "")
+            for item in (result.get("errors") or [])
+            if isinstance(item, dict)
+        )
+        if result.get("deactivated") or has_product_level_error:
             break
 
     return {

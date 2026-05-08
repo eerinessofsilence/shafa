@@ -51,8 +51,6 @@ def test_bootstrap_uses_telegram_templates_directory(tmp_path, monkeypatch) -> N
     expected_file = module.DATA_DIR / "telegram_templates" / "channel_templates.json"
     assert expected_file.is_file()
     assert module.os.environ["CHANNEL_TEMPLATES_STATE_FILE"] == str(expected_file)
-
-
 def test_bootstrap_environment_sets_python_io_encoding(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("PYTHONIOENCODING", raising=False)
     module = _load_desktop_backend(tmp_path, monkeypatch)
