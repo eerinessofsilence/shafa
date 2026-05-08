@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from core import no_playwright
 from data.const import MAX_UPLOAD_BYTES
+from utils.media import PreparedMediaBatch, PreparedMediaUpload
 
 
 class NoPlaywrightPhotoRetryTests(unittest.TestCase):
@@ -42,6 +43,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
     @patch("core.no_playwright.mark_product_created")
     @patch("core.no_playwright.create_product")
     @patch("core.no_playwright.upload_photo")
+    @patch("core.no_playwright.prepare_media_batch_for_upload")
     @patch("core.no_playwright.download_product_photos")
     @patch("core.no_playwright.reset_media_dir")
     @patch("core.no_playwright.build_product_raw_data")
@@ -60,6 +62,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         build_product_raw_data,
         _reset_media_dir,
         download_product_photos,
+        prepare_media_batch_for_upload,
         upload_photo,
         create_product,
         _mark_product_created,
@@ -95,6 +98,19 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             photo_path = Path(tmpdir) / "shoe.jpg"
             photo_path.write_bytes(b"jpg")
+            prepare_media_batch_for_upload.return_value = PreparedMediaBatch(
+                items=[
+                    PreparedMediaUpload(
+                        source_path=photo_path,
+                        upload_path=photo_path,
+                        cleanup_path=None,
+                        preparation="original",
+                        size_bytes=photo_path.stat().st_size,
+                    )
+                ],
+                total_size_bytes=photo_path.stat().st_size,
+                within_budget=True,
+            )
             with patch("core.no_playwright.list_media_files", return_value=[photo_path]):
                 with patch("core.no_playwright.handle_retryable_product_failure") as handle_failure:
                     no_playwright.main()
@@ -169,6 +185,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
     @patch("core.no_playwright.mark_product_created")
     @patch("core.no_playwright.create_product")
     @patch("core.no_playwright.upload_photo")
+    @patch("core.no_playwright.prepare_media_batch_for_upload")
     @patch("core.no_playwright.download_product_photos")
     @patch("core.no_playwright.reset_media_dir")
     @patch("core.no_playwright._get_csrftoken_from_cookies")
@@ -183,6 +200,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         get_csrftoken,
         _reset_media_dir,
         download_product_photos,
+        prepare_media_batch_for_upload,
         upload_photo,
         create_product,
         _mark_product_created,
@@ -209,6 +227,19 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             photo_path = Path(tmpdir) / "exact.jpg"
             photo_path.write_bytes(b"0" * MAX_UPLOAD_BYTES)
+            prepare_media_batch_for_upload.return_value = PreparedMediaBatch(
+                items=[
+                    PreparedMediaUpload(
+                        source_path=photo_path,
+                        upload_path=photo_path,
+                        cleanup_path=None,
+                        preparation="original",
+                        size_bytes=photo_path.stat().st_size,
+                    )
+                ],
+                total_size_bytes=photo_path.stat().st_size,
+                within_budget=True,
+            )
             with patch("core.no_playwright.list_media_files", return_value=[photo_path]):
                 with patch("core.no_playwright.handle_retryable_product_failure") as handle_failure:
                     no_playwright.main()
@@ -218,15 +249,18 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         create_product.assert_called_once()
         handle_failure.assert_not_called()
 
+    @patch("core.no_playwright.save_uploaded_product")
+    @patch("core.no_playwright.mark_product_created")
     @patch("core.no_playwright.create_product")
     @patch("core.no_playwright.upload_photo")
+    @patch("core.no_playwright.prepare_media_batch_for_upload")
     @patch("core.no_playwright.download_product_photos")
     @patch("core.no_playwright.reset_media_dir")
     @patch("core.no_playwright._get_csrftoken_from_cookies")
     @patch("core.no_playwright._load_shafa_cookies")
     @patch("core.no_playwright.get_next_product_for_upload")
     @patch("core.no_playwright.init_db")
-    def test_skips_photo_above_10mb_without_pillow(
+    def test_uploads_large_png_after_fallback(
         self,
         _init_db,
         get_next_product_for_upload,
@@ -234,6 +268,80 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         get_csrftoken,
         _reset_media_dir,
         download_product_photos,
+        prepare_media_batch_for_upload,
+        upload_photo,
+        create_product,
+        _mark_product_created,
+        _save_uploaded_product,
+    ):
+        get_next_product_for_upload.return_value = {
+            "channel_id": 9,
+            "message_id": 11543,
+            "parsed_data": {"name": "Новинка", "price": "2500", "size": "41"},
+            "product_raw_data": {
+                "name": "Новинка",
+                "price": 2500,
+                "size": 41,
+                "brand": 77,
+                "category": "obuv/krossovki",
+            },
+        }
+        load_cookies.return_value = [{"name": "csrftoken", "value": "token"}]
+        get_csrftoken.return_value = "token"
+        download_product_photos.return_value = 1
+        upload_photo.return_value = "photo-1"
+        create_product.return_value = {"id": "product-1"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            photo_path = Path(tmpdir) / "big.png"
+            photo_path.write_bytes(b"0" * (MAX_UPLOAD_BYTES + 1))
+            cleanup_dir = Path(tmpdir) / "prepared_png"
+            cleanup_dir.mkdir()
+            optimized_path = cleanup_dir / "big_png_to_jpg.jpg"
+            optimized_path.write_bytes(b"jpg")
+            prepare_media_batch_for_upload.return_value = PreparedMediaBatch(
+                items=[
+                    PreparedMediaUpload(
+                        source_path=photo_path,
+                        upload_path=optimized_path,
+                        cleanup_path=cleanup_dir,
+                        preparation="png_to_jpg",
+                        size_bytes=optimized_path.stat().st_size,
+                    )
+                ],
+                total_size_bytes=optimized_path.stat().st_size,
+                within_budget=True,
+            )
+            with patch("core.no_playwright.list_media_files", return_value=[photo_path]):
+                with patch(
+                    "core.no_playwright.handle_retryable_product_failure"
+                ) as handle_failure:
+                    no_playwright.main()
+
+        upload_photo.assert_called_once()
+        self.assertEqual(upload_photo.call_args[0][2], optimized_path)
+        create_product.assert_called_once()
+        handle_failure.assert_not_called()
+        self.assertFalse(cleanup_dir.exists())
+
+    @patch("core.no_playwright.create_product")
+    @patch("core.no_playwright.upload_photo")
+    @patch("core.no_playwright.prepare_media_batch_for_upload")
+    @patch("core.no_playwright.download_product_photos")
+    @patch("core.no_playwright.reset_media_dir")
+    @patch("core.no_playwright._get_csrftoken_from_cookies")
+    @patch("core.no_playwright._load_shafa_cookies")
+    @patch("core.no_playwright.get_next_product_for_upload")
+    @patch("core.no_playwright.init_db")
+    def test_skips_photo_above_10mb_without_reencoding(
+        self,
+        _init_db,
+        get_next_product_for_upload,
+        load_cookies,
+        get_csrftoken,
+        _reset_media_dir,
+        download_product_photos,
+        prepare_media_batch_for_upload,
         upload_photo,
         create_product,
     ):
@@ -256,10 +364,14 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             photo_path = Path(tmpdir) / "big.jpg"
             photo_path.write_bytes(b"0" * (MAX_UPLOAD_BYTES + 1))
+            prepare_media_batch_for_upload.return_value = PreparedMediaBatch(
+                items=[],
+                total_size_bytes=MAX_UPLOAD_BYTES + 1,
+                within_budget=False,
+            )
             with patch("core.no_playwright.list_media_files", return_value=[photo_path]):
-                with patch("core.no_playwright.Image", None):
-                    with patch("core.no_playwright.handle_retryable_product_failure") as handle_failure:
-                        no_playwright.main()
+                with patch("core.no_playwright.handle_retryable_product_failure") as handle_failure:
+                    no_playwright.main()
 
         upload_photo.assert_not_called()
         create_product.assert_not_called()
@@ -322,6 +434,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
 
     @patch("core.no_playwright.create_product")
     @patch("core.no_playwright.upload_photo")
+    @patch("core.no_playwright.prepare_media_batch_for_upload")
     @patch("core.no_playwright.handle_retryable_product_failure")
     @patch("core.no_playwright.download_product_photos")
     @patch("core.no_playwright.reset_media_dir")
@@ -338,6 +451,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         _reset_media_dir,
         download_product_photos,
         handle_failure,
+        prepare_media_batch_for_upload,
         upload_photo,
         create_product,
     ):
@@ -362,6 +476,19 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             photo_path = Path(tmpdir) / "shoe.jpg"
             photo_path.write_bytes(b"jpg")
+            prepare_media_batch_for_upload.return_value = PreparedMediaBatch(
+                items=[
+                    PreparedMediaUpload(
+                        source_path=photo_path,
+                        upload_path=photo_path,
+                        cleanup_path=None,
+                        preparation="original",
+                        size_bytes=photo_path.stat().st_size,
+                    )
+                ],
+                total_size_bytes=photo_path.stat().st_size,
+                within_budget=True,
+            )
             with patch("core.no_playwright.list_media_files", return_value=[photo_path]):
                 no_playwright.main()
 

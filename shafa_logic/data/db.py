@@ -186,6 +186,26 @@ def _create_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_invalid_uploaded_products_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invalid_uploaded_products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id TEXT,
+            name TEXT,
+            invalid_reason TEXT NOT NULL,
+            raw_payload TEXT,
+            created_at TEXT,
+            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            processed INTEGER NOT NULL DEFAULT 0,
+            processed_at TEXT,
+            last_error TEXT,
+            UNIQUE(product_id)
+        )
+        """
+    )
+
+
 def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(
         db_path,
@@ -220,6 +240,21 @@ def init_db(db_path: Path = DB_PATH) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_uploaded_products_product_id
                 ON uploaded_products(product_id);
+            CREATE TABLE IF NOT EXISTS invalid_uploaded_products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id TEXT,
+                name TEXT,
+                invalid_reason TEXT NOT NULL,
+                raw_payload TEXT,
+                created_at TEXT,
+                detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+                processed INTEGER NOT NULL DEFAULT 0,
+                processed_at TEXT,
+                last_error TEXT,
+                UNIQUE(product_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_invalid_uploaded_products_pending
+                ON invalid_uploaded_products(processed, detected_at DESC);
 
             CREATE TABLE IF NOT EXISTS telegram_fetch_state (
                 scope TEXT PRIMARY KEY,
@@ -286,7 +321,9 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _ensure_schema_migrations_table(conn)
         _create_telegram_products_table(conn)
         _create_telegram_scan_cursors_table(conn)
+        _create_invalid_uploaded_products_table(conn)
         _ensure_uploaded_products_schema(conn)
+        _ensure_invalid_uploaded_products_schema(conn)
         _ensure_telegram_products_schema(conn)
         _ensure_telegram_fetch_state_schema(conn)
         _ensure_telegram_scan_cursors_schema(conn)
@@ -461,6 +498,14 @@ def _ensure_uploaded_products_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE uploaded_products ADD COLUMN is_active "
             "INTEGER NOT NULL DEFAULT 1"
         )
+
+
+def _ensure_invalid_uploaded_products_schema(conn: sqlite3.Connection) -> None:
+    _create_invalid_uploaded_products_table(conn)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_invalid_uploaded_products_pending "
+        "ON invalid_uploaded_products(processed, detected_at DESC)"
+    )
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -1209,6 +1254,165 @@ def list_active_uploaded_product_payloads(
     ]
 
 
+def save_invalid_uploaded_product(
+    product_id: Optional[str],
+    name: str,
+    invalid_reason: str,
+    *,
+    raw_payload: Optional[str] = None,
+    created_at: Optional[str] = None,
+    db_path: Path = DB_PATH,
+) -> None:
+    normalized_product_id = str(product_id or "").strip() or None
+    normalized_name = str(name or "").strip()
+    normalized_reason = str(invalid_reason or "").strip()
+    if not normalized_product_id or not normalized_name or not normalized_reason:
+        return
+    _ensure_db_initialized(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO invalid_uploaded_products (
+                product_id,
+                name,
+                invalid_reason,
+                raw_payload,
+                created_at,
+                detected_at,
+                processed,
+                processed_at,
+                last_error
+            )
+            VALUES (?, ?, ?, ?, ?, datetime('now'), 0, NULL, NULL)
+            ON CONFLICT(product_id) DO UPDATE SET
+                name = excluded.name,
+                invalid_reason = excluded.invalid_reason,
+                raw_payload = excluded.raw_payload,
+                created_at = COALESCE(excluded.created_at, invalid_uploaded_products.created_at),
+                detected_at = datetime('now'),
+                processed = 0,
+                processed_at = NULL,
+                last_error = NULL
+            """,
+            (
+                normalized_product_id,
+                normalized_name,
+                normalized_reason,
+                raw_payload,
+                created_at,
+            ),
+        )
+
+
+def list_pending_invalid_uploaded_products(
+    limit: Optional[int] = None,
+    *,
+    db_path: Path = DB_PATH,
+) -> list[dict]:
+    _ensure_db_initialized(db_path)
+    with _connect(db_path) as conn:
+        if limit is None:
+            rows = conn.execute(
+                """
+                SELECT id, product_id, name, invalid_reason, raw_payload, created_at, detected_at
+                FROM invalid_uploaded_products
+                WHERE processed = 0
+                ORDER BY detected_at DESC, id DESC
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, product_id, name, invalid_reason, raw_payload, created_at, detected_at
+                FROM invalid_uploaded_products
+                WHERE processed = 0
+                ORDER BY detected_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "product_id": row["product_id"],
+            "name": row["name"],
+            "invalid_reason": row["invalid_reason"],
+            "raw_payload": row["raw_payload"],
+            "created_at": row["created_at"],
+            "detected_at": row["detected_at"],
+        }
+        for row in rows
+    ]
+
+
+def mark_invalid_uploaded_products_processed(
+    product_ids: list[object],
+    *,
+    db_path: Path = DB_PATH,
+    last_error: Optional[str] = None,
+) -> int:
+    normalized_ids = [str(item).strip() for item in product_ids if str(item).strip()]
+    if not normalized_ids:
+        return 0
+    _ensure_db_initialized(db_path)
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE invalid_uploaded_products
+            SET processed = 1,
+                processed_at = datetime('now'),
+                last_error = ?
+            WHERE product_id IN ({placeholders})
+            """,
+            [str(last_error or "").strip() or None, *normalized_ids],
+        )
+    return cursor.rowcount
+
+
+def mark_invalid_uploaded_products_error(
+    product_ids: list[object],
+    *,
+    last_error: str,
+    db_path: Path = DB_PATH,
+) -> int:
+    normalized_ids = [str(item).strip() for item in product_ids if str(item).strip()]
+    if not normalized_ids:
+        return 0
+    _ensure_db_initialized(db_path)
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE invalid_uploaded_products
+            SET last_error = ?,
+                processed = 0,
+                processed_at = NULL
+            WHERE product_id IN ({placeholders})
+            """,
+            [str(last_error).strip() or None, *normalized_ids],
+        )
+    return cursor.rowcount
+
+
+def clear_invalid_uploaded_products(
+    product_ids: list[object],
+    *,
+    db_path: Path = DB_PATH,
+) -> int:
+    normalized_ids = [str(item).strip() for item in product_ids if str(item).strip()]
+    if not normalized_ids:
+        return 0
+    _ensure_db_initialized(db_path)
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            f"DELETE FROM invalid_uploaded_products WHERE product_id IN ({placeholders})",
+            normalized_ids,
+        )
+    return cursor.rowcount
+
+
 def save_sizes(
     sizes: list[dict],
     catalog_slug: Optional[str] = None,
@@ -1423,6 +1627,15 @@ def get_brand_id_by_name(brand_name: str) -> Optional[int]:
 def list_brand_names() -> list[str]:
     _, names = _load_brands_cache()
     return list(names)
+
+
+def brand_id_exists(brand_id: object) -> bool:
+    try:
+        normalized_id = int(brand_id)
+    except (TypeError, ValueError):
+        return False
+    mapping, _ = _load_brands_cache()
+    return normalized_id in set(mapping.values())
 
 
 def save_telegram_product(

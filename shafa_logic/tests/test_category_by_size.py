@@ -208,6 +208,14 @@ class CategoryBySizeTests(unittest.TestCase):
         category = dc._resolve_catalog_slug("ONE SIZE", ["M"], "")
         self.assertEqual(category, dc.DEFAULT_SHOES_CATEGORY)
 
+    def test_resolve_catalog_slug_does_not_fallback_to_shoes_for_ukrainian_leggings(self):
+        category = dc._resolve_catalog_slug(
+            "ONE SIZE",
+            [],
+            "Ці легінси створені, щоб підкреслити твою форму",
+        )
+        self.assertEqual(category, "shtany/losiny-i-legginsy")
+
     @patch("controller.data_controller.get_size_id_by_name")
     def test_resolve_size_id_supports_decimal_token(self, get_size_id_by_name):
         get_size_id_by_name.side_effect = lambda name, catalog_slug=None: {

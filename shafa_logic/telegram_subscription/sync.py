@@ -59,12 +59,13 @@ def sync_channels_from_runtime_config() -> list[tuple[int, str, str]]:
 
     try:
         resolved_records = (
-            asyncio.run(_resolve_channel_records(missing_links))
-            if missing_links
-            else []
+            asyncio.run(_resolve_channel_records(missing_links)) if missing_links else []
         )
     except RuntimeError as exc:
-        fallback_channels = get_telegram_channels()
+        fallback_records = _select_records_for_links(links, existing_records)
+        if not fallback_records and not _has_source_linked_records(existing_records):
+            fallback_records = list(existing_records)
+        fallback_channels = _records_to_channel_tuples(fallback_records)
         if fallback_channels:
             _log(
                 "channel sync skipped because Telegram session is unavailable; "
@@ -72,23 +73,32 @@ def sync_channels_from_runtime_config() -> list[tuple[int, str, str]]:
             )
             return fallback_channels
         raise
-    if not missing_links:
-        return get_telegram_channels()
-    if not resolved_records:
-        _log("no channels resolved, runtime storage was not updated")
-        return get_telegram_channels()
-
-    merged_records = {
-        int(record["channel_id"]): record for record in existing_records
-    }
+    merged_records = {int(record["channel_id"]): record for record in existing_records}
     for record in resolved_records:
         merged_records[int(record["channel_id"])] = record
-    set_telegram_channels(merged_records.values())
-    _log(
-        f"synced {len(resolved_records)} new channel(s); "
-        f"total configured: {len(merged_records)}"
-    )
-    return get_telegram_channels()
+
+    selected_records = _select_records_for_links(links, merged_records.values())
+    if selected_records:
+        set_telegram_channels(selected_records)
+    elif existing_records and _has_source_linked_records(existing_records):
+        set_telegram_channels([])
+
+    unresolved_links = max(len(links) - len(selected_records), 0)
+    if resolved_records:
+        _log(
+            f"synced {len(resolved_records)} new channel(s); "
+            f"configured existing channels: {len(selected_records)}"
+        )
+    elif missing_links and not selected_records:
+        _log("no channels resolved from runtime config")
+
+    if unresolved_links:
+        _log(
+            "some configured links were skipped because they are not resolved locally: "
+            f"{unresolved_links}"
+        )
+
+    return _records_to_channel_tuples(selected_records)
 
 
 def get_telegram_channel_records(path: Path | None = None) -> list[dict]:
@@ -119,6 +129,22 @@ def get_telegram_channels(path: Path | None = None) -> list[tuple[int, str, str]
         )
         for record in get_telegram_channel_records(path=path)
     ]
+
+
+def get_configured_telegram_channel_records(path: Path | None = None) -> list[dict]:
+    links = _load_runtime_channel_links()
+    records = get_telegram_channel_records(path=path)
+    if not links:
+        return records
+    if not _has_source_linked_records(records):
+        return records
+    return _select_records_for_links(links, records)
+
+
+def get_configured_telegram_channels(
+    path: Path | None = None,
+) -> list[tuple[int, str, str]]:
+    return _records_to_channel_tuples(get_configured_telegram_channel_records(path=path))
 
 
 def set_telegram_channels(
@@ -437,6 +463,63 @@ def _normalize_source_link(source_link: object) -> str | None:
 def _channel_link_key(source_link: object) -> str:
     normalized = _normalize_source_link(source_link)
     return normalized.casefold() if normalized else ""
+
+
+def _load_runtime_channel_links() -> list[str]:
+    config_path = os.getenv(RUNTIME_CONFIG_ENV, "").strip()
+    if not config_path:
+        return []
+    path = Path(config_path)
+    if not path.exists():
+        return []
+    try:
+        return load_channel_links(path)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _records_to_channel_tuples(records: Iterable[dict]) -> list[tuple[int, str, str]]:
+    return [
+        (
+            int(record["channel_id"]),
+            str(record["name"]),
+            str(record["alias"]),
+        )
+        for record in records
+    ]
+
+
+def _select_records_for_links(
+    links: Iterable[str],
+    records: Iterable[dict],
+) -> list[dict[str, object]]:
+    records_by_link = {
+        _channel_link_key(record.get("source_link")): record
+        for record in records
+        if _channel_link_key(record.get("source_link"))
+    }
+    selected: list[dict[str, object]] = []
+    seen_channel_ids: set[int] = set()
+    for link in links:
+        key = _channel_link_key(link)
+        if not key:
+            continue
+        record = records_by_link.get(key)
+        if record is None:
+            continue
+        channel_id = int(record["channel_id"])
+        if channel_id in seen_channel_ids:
+            continue
+        seen_channel_ids.add(channel_id)
+        selected.append(record)
+    return selected
+
+
+def _has_source_linked_records(records: Iterable[dict]) -> bool:
+    for record in records:
+        if _channel_link_key(record.get("source_link")):
+            return True
+    return False
 
 
 def _normalize_channel_record(

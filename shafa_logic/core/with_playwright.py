@@ -36,7 +36,14 @@ from data.const import (
 )
 from data.db import init_db, save_cookies, save_uploaded_product
 from utils.logging import log
-from utils.media import list_media_files, reset_media_dir
+from utils.media import (
+    cleanup_prepared_media_uploads,
+    list_media_files,
+    prepare_media_batch_for_upload,
+    reset_media_dir,
+    total_media_size_bytes,
+)
+from utils.pipeline_activity import enter_product_pipeline, exit_product_pipeline
 from utils.progress import ProgressBar, verbose_photo_logs_enabled
 
 
@@ -49,6 +56,14 @@ def _has_invalid_size_error(errors: list[dict]) -> bool:
 
 
 def main() -> None:
+    enter_product_pipeline()
+    try:
+        _main_impl()
+    finally:
+        exit_product_pipeline()
+
+
+def _main_impl() -> None:
     init_db()
     product_data = get_next_product_for_upload(
         message_amount=DEFAULT_MESSAGE_PARSE_LIMIT,
@@ -181,26 +196,23 @@ def main() -> None:
                 if not photo_paths:
                     log("WARN", "Файлы для загрузки не найдены.")
                 max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
-                filtered_paths: list[Path] = []
-                for photo_path in photo_paths:
-                    try:
-                        size_bytes = photo_path.stat().st_size
-                    except OSError:
-                        log(
-                            "WARN",
-                            f"Не удалось определить размер файла {photo_path.name}. \n"
-                            + "Пропускаю.",
-                        )
-                        continue
-                    if size_bytes > MAX_UPLOAD_BYTES:
-                        size_mb = size_bytes / (1024 * 1024)
-                        log(
-                            "WARN",
-                            f"Пропускаю {photo_path.name}: \n"
-                            + f"{size_mb:.2f} MB > лимита {max_mb:.2f} MB.",
-                        )
-                        continue
-                    filtered_paths.append(photo_path)
+                downloaded_total_mb = total_media_size_bytes(photo_paths) / (1024 * 1024)
+                if photo_paths:
+                    log(
+                        "INFO",
+                        f"Общий размер фото после скачивания из Telegram: "
+                        + f"{downloaded_total_mb:.2f} MB.",
+                    )
+                log(
+                    "INFO",
+                    "Начинаю подготовку фото для загрузки.",
+                )
+                prepared_batch = prepare_media_batch_for_upload(photo_paths, MAX_UPLOAD_BYTES)
+                log("INFO", "Подготовка фото для загрузки завершена.")
+                filtered_paths = prepared_batch.items
+                total_mb = prepared_batch.total_size_bytes / (1024 * 1024)
+                for note in prepared_batch.notes:
+                    log("INFO", note)
             except Exception as exc:
                 handle_retryable_product_failure(
                     message_id=message_id,
@@ -214,9 +226,31 @@ def main() -> None:
             if photo_paths and not filtered_paths:
                 log(
                     "WARN",
-                    "Все файлы превышают лимит размера. Загрузка фото пропущена.",
+                    "Нет фото для загрузки после фильтрации размера.",
+                )
+            elif filtered_paths:
+                log(
+                    "INFO",
+                    f"Общий размер подготовленных фото: {total_mb:.2f} MB / {max_mb:.2f} MB.",
+                )
+            if filtered_paths and not prepared_batch.within_budget:
+                log(
+                    "WARN",
+                    f"После сжатия фото занимают {total_mb:.2f} MB, "
+                    + f"что больше лимита {max_mb:.2f} MB.",
                 )
             if not filtered_paths:
+                handle_retryable_product_failure(
+                    message_id=message_id,
+                    channel_id=channel_id,
+                    failure_reason="NO_UPLOADABLE_PHOTOS",
+                    detail_message=(
+                        "Не удалось подготовить ни одной фотографии для загрузки."
+                    ),
+                    detail_level="WARN",
+                )
+                return
+            if not prepared_batch.within_budget:
                 handle_retryable_product_failure(
                     message_id=message_id,
                     channel_id=channel_id,
@@ -234,14 +268,17 @@ def main() -> None:
                     label="Загрузка фото",
                     enabled=not verbose_photo_logs,
                 ) as progress:
-                    for idx, photo_path in enumerate(filtered_paths, start=1):
+                    for idx, upload_item in enumerate(filtered_paths, start=1):
+                        upload_path = upload_item.upload_path
+                        if upload_path is None:
+                            continue
                         if verbose_photo_logs:
                             log(
                                 "INFO",
                                 f"Загрузка фото {idx}/{len(filtered_paths)}: "
-                                f"{photo_path.name}",
+                                f"{upload_item.source_path.name}",
                             )
-                        photo_id = upload_photo(ctx, csrftoken, photo_path)
+                        photo_id = upload_photo(ctx, csrftoken, upload_path)
                         photo_ids.append(photo_id)
                         if verbose_photo_logs:
                             log("OK", f"Фото загружено: id={photo_id}")
@@ -333,5 +370,7 @@ def main() -> None:
                     ),
                     detail_message=f"Не удалось обработать товар: {exc}",
                 )
+            finally:
+                cleanup_prepared_media_uploads(filtered_paths)
         finally:
             browser.close()

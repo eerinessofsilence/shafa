@@ -2,11 +2,9 @@ import gzip
 import json
 import os
 import re
-import tempfile
 import time
 import uuid
 import zlib
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from urllib import error, request
@@ -59,7 +57,15 @@ from data.db import (
 from data.size_mapping import build_size_mappings, flatten_v5_size_groups
 from models.product import Product
 from utils.logging import log
-from utils.media import list_media_files, reset_media_dir
+from utils.media import (
+    cleanup_prepared_media_uploads,
+    detect_media_mime_type,
+    list_media_files,
+    prepare_media_batch_for_upload,
+    reset_media_dir,
+    total_media_size_bytes,
+)
+from utils.pipeline_activity import enter_product_pipeline, exit_product_pipeline
 from utils.progress import ProgressBar, verbose_photo_logs_enabled
 
 USER_AGENT = (
@@ -72,12 +78,6 @@ WOMEN_CATALOG_SLUG = "zhenskaya-obuv/krossovki"
 DEFAULT_CLOTES_CATEGORY = "verhnyaya-odezhda/palto"
 
 SIZE_CATALOG_SLUGS = (DEFAULT_CATALOG_SLUG, WOMEN_CATALOG_SLUG, DEFAULT_CLOTES_CATEGORY, "dlya-beremennyh/dzhinsy", "specodezhda/sfera-obsluzhivaniya", "nizhnee-bele-i-kupalniki/lifchiki")
-
-try:
-    from PIL import Image, ImageOps
-except ImportError:  # pragma: no cover - optional dependency
-    Image = None
-    ImageOps = None
 
 
 def _debug_http_enabled() -> bool:
@@ -189,60 +189,6 @@ def _decode_body(body: bytes, encoding: str) -> bytes:
         except zlib.error:
             return zlib.decompress(body, -zlib.MAX_WBITS)
     return body
-
-
-def _get_resample_filter() -> int:
-    try:
-        return Image.Resampling.LANCZOS
-    except AttributeError:
-        return Image.LANCZOS
-
-
-def _resize_image_for_upload(file_path: Path, max_bytes: int) -> Optional[bytes]:
-    if Image is None:
-        return None
-    try:
-        with Image.open(file_path) as img:
-            if ImageOps is not None:
-                exif_transpose = getattr(ImageOps, "exif_transpose", None)
-                if exif_transpose:
-                    img = exif_transpose(img)
-            img = img.convert("RGB")
-            resample = _get_resample_filter()
-            max_dim = 2560
-            for _ in range(5):
-                working = img.copy()
-                if max(working.size) > max_dim:
-                    working.thumbnail((max_dim, max_dim), resample=resample)
-                for quality in (90, 85, 80, 75, 70, 65, 60):
-                    buffer = BytesIO()
-                    working.save(
-                        buffer,
-                        format="JPEG",
-                        quality=quality,
-                        optimize=True,
-                        progressive=True,
-                    )
-                    data = buffer.getvalue()
-                    if len(data) <= max_bytes:
-                        return data
-                max_dim = int(max_dim * 0.85)
-                if max_dim < 800:
-                    break
-    except Exception:
-        return None
-    return None
-
-
-def _write_temp_image(data: bytes) -> Path:
-    temp = tempfile.NamedTemporaryFile(
-        prefix="shafa_upload_",
-        suffix=".jpg",
-        delete=False,
-    )
-    temp.write(data)
-    temp.close()
-    return Path(temp.name)
 
 
 def _read_response_text(resp) -> str:
@@ -639,7 +585,11 @@ def upload_photo(csrftoken: str, cookies: list[dict], file_path: Path) -> str:
         "variables": json.dumps({"file": "file"}),
     }
     files = {
-        "file": (file_path.name, "image/jpeg", file_path.read_bytes()),
+        "file": (
+            file_path.name,
+            detect_media_mime_type(file_path),
+            file_path.read_bytes(),
+        ),
     }
     body, boundary = _encode_multipart(fields, files)
     headers = {
@@ -712,6 +662,14 @@ def create_product(
 
 
 def main() -> None:
+    enter_product_pipeline()
+    try:
+        _main_impl()
+    finally:
+        exit_product_pipeline()
+
+
+def _main_impl() -> None:
     init_db()
     _markup = 0
 
@@ -831,39 +789,23 @@ def main() -> None:
         if not photo_paths:
             log("WARN", "Файлы для загрузки не найдены.")
         max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
-        upload_items: list[tuple[Path, Optional[Path], str]] = []
-        for photo_path in photo_paths:
-            try:
-                size_bytes = photo_path.stat().st_size
-            except OSError:
-                log(
-                    "WARN",
-                    f"Не удалось определить размер файла {photo_path.name}. Пропускаю.",
-                )
-                continue
-            if size_bytes <= MAX_UPLOAD_BYTES:
-                upload_items.append((photo_path, None, photo_path.name))
-                continue
-            size_mb = size_bytes / (1024 * 1024)
+        downloaded_total_mb = total_media_size_bytes(photo_paths) / (1024 * 1024)
+        if photo_paths:
             log(
                 "INFO",
-                f"{photo_path.name} {size_mb:.2f} MB > лимита {max_mb:.2f} MB. \n"
-                + "Пытаюсь сжать.",
+                f"Общий размер фото после скачивания из Telegram: "
+                + f"{downloaded_total_mb:.2f} MB.",
             )
-            if Image is None:
-                log(
-                    "ERROR",
-                    "Pillow не установлен. Установи pillow, чтобы сжимать фото.",
-                )
-                continue
-            resized = _resize_image_for_upload(photo_path, MAX_UPLOAD_BYTES)
-            if not resized:
-                log("WARN", f"Не удалось сжать {photo_path.name}. Пропускаю.")
-                continue
-            resized_mb = len(resized) / (1024 * 1024)
-            temp_path = _write_temp_image(resized)
-            log("INFO", f"Сжатое фото {photo_path.name}: {resized_mb:.2f} MB.")
-            upload_items.append((temp_path, temp_path, photo_path.name))
+        log(
+            "INFO",
+            "Начинаю подготовку фото для загрузки.",
+        )
+        prepared_batch = prepare_media_batch_for_upload(photo_paths, MAX_UPLOAD_BYTES)
+        log("INFO", "Подготовка фото для загрузки завершена.")
+        upload_items = prepared_batch.items
+        total_mb = prepared_batch.total_size_bytes / (1024 * 1024)
+        for note in prepared_batch.notes:
+            log("INFO", note)
     except Exception as exc:
         handle_retryable_product_failure(
             message_id=message_id,
@@ -876,8 +818,28 @@ def main() -> None:
         return
 
     if photo_paths and not upload_items:
-        log("WARN", "Нет фото для загрузки после фильтра/сжатия.")
+        log("WARN", "Нет фото для загрузки после фильтрации размера.")
+    elif upload_items:
+        log(
+            "INFO",
+            f"Общий размер подготовленных фото: {total_mb:.2f} MB / {max_mb:.2f} MB.",
+        )
+    if upload_items and not prepared_batch.within_budget:
+        log(
+            "WARN",
+            f"После сжатия фото занимают {total_mb:.2f} MB, "
+            + f"что больше лимита {max_mb:.2f} MB.",
+        )
     if not upload_items:
+        handle_retryable_product_failure(
+            message_id=message_id,
+            channel_id=channel_id,
+            failure_reason="NO_UPLOADABLE_PHOTOS",
+            detail_message="Не удалось подготовить ни одной фотографии для загрузки.",
+            detail_level="WARN",
+        )
+        return
+    if not prepared_batch.within_budget:
         handle_retryable_product_failure(
             message_id=message_id,
             channel_id=channel_id,
@@ -893,26 +855,20 @@ def main() -> None:
             label="Загрузка фото",
             enabled=not verbose_photo_logs,
         ) as progress:
-            for idx, (upload_path, cleanup_path, display_name) in enumerate(
-                upload_items,
-                start=1,
-            ):
+            for idx, upload_item in enumerate(upload_items, start=1):
+                upload_path = upload_item.upload_path
+                if upload_path is None:
+                    continue
                 if verbose_photo_logs:
                     log(
                         "INFO",
-                        f"Загрузка фото {idx}/{len(upload_items)}: {display_name}",
+                        f"Загрузка фото {idx}/{len(upload_items)}: "
+                        f"{upload_item.source_path.name}",
                     )
-                try:
-                    photo_id = upload_photo(csrftoken, cookies, upload_path)
-                    photo_ids.append(photo_id)
-                    if verbose_photo_logs:
-                        log("OK", f"Фото загружено: id={photo_id}")
-                finally:
-                    if cleanup_path:
-                        try:
-                            cleanup_path.unlink()
-                        except OSError:
-                            pass
+                photo_id = upload_photo(csrftoken, cookies, upload_path)
+                photo_ids.append(photo_id)
+                if verbose_photo_logs:
+                    log("OK", f"Фото загружено: id={photo_id}")
                 if not verbose_photo_logs:
                     progress.advance()
 
@@ -995,6 +951,8 @@ def main() -> None:
             ),
             detail_message=f"Не удалось обработать товар: {exc}",
         )
+    finally:
+        cleanup_prepared_media_uploads(upload_items)
 
 
 if __name__ == "__main__":

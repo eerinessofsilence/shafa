@@ -2,8 +2,10 @@ from pathlib import Path
 import sys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-project_root_str = str(PROJECT_ROOT)
+ROOT = Path(__file__).resolve().parents[2]
+SHAFA_LOGIC_DIR = ROOT / "shafa_logic"
 
-if project_root_str not in sys.path:
-    sys.path.insert(0, project_root_str)
+for path in (ROOT, SHAFA_LOGIC_DIR):
+    text = str(path)
+    if text not in sys.path:
+        sys.path.insert(0, text)

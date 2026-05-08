@@ -434,6 +434,7 @@ SLUG_TO_WORDS = {
     "shtany/losiny-i-legginsy": [
         "лосины",          # RU
         "лосини",          # UA
+        "легінси",         # UA
         "leggings",        # EN
         "леггинсы",        # RU
         "стретч"           # RU
@@ -473,22 +474,53 @@ def _match_score(text: str, tokens: set[str], keyword: str) -> int:
     return 100 if re.search(pattern, text, flags=re.IGNORECASE) else 0
 
 
+def _match_position(text: str, keyword: str) -> int | None:
+    normalized_keyword = _normalize_text(keyword)
+    if not normalized_keyword:
+        return None
+    pattern = rf"(^|\W)({re.escape(normalized_keyword)})($|\W)"
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    return match.start(2)
+
+
 def find_slug_by_word(name: str) -> str | None:
     text = _normalize_text(name)
     tokens = set(re.findall(r"\w+", text))
 
     best_slug = None
     best_score = 0
+    best_position: int | None = None
 
     for slug, words in SLUG_TO_WORDS.items():
         score = 0
+        first_match_position: int | None = None
 
         for word in words:
-            score += _match_score(text, tokens, word)
+            match_score = _match_score(text, tokens, word)
+            score += match_score
+            if match_score <= 0:
+                continue
+            match_position = _match_position(text, word)
+            if match_position is None:
+                continue
+            if first_match_position is None or match_position < first_match_position:
+                first_match_position = match_position
 
         if score > best_score:
             best_score = score
             best_slug = slug
+            best_position = first_match_position
+            continue
+        if (
+            score == best_score
+            and score > 0
+            and first_match_position is not None
+            and (best_position is None or first_match_position < best_position)
+        ):
+            best_slug = slug
+            best_position = first_match_position
     return best_slug
 
 
@@ -497,6 +529,7 @@ def find_word(name: str) -> str | None:
     tokens = set(re.findall(r"\w+", text))
     best_word = None
     best_score = 0
+    best_position: int | None = None
 
     for slug, words in SLUG_TO_WORDS.items():
         for word in words:
@@ -504,6 +537,15 @@ def find_word(name: str) -> str | None:
             if score > best_score:
                 best_score = score
                 best_word = word
+                best_position = _match_position(text, word)
+                continue
+            if score == best_score and score > 0:
+                match_position = _match_position(text, word)
+                if match_position is not None and (
+                    best_position is None or match_position < best_position
+                ):
+                    best_word = word
+                    best_position = match_position
     return best_word
 
 

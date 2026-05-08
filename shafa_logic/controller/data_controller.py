@@ -44,6 +44,7 @@ from data.const import (
     TELEGRAM_SESSION_PATH,
 )
 from data.db import (
+    brand_id_exists,
     claim_next_telegram_product_for_creation,
     claim_telegram_fetch,
     find_size_mapping_candidates,
@@ -74,8 +75,11 @@ from data.size_mapping import (
 from telegram_channels import extract_telegram_invite_hash
 from utils.logging import log
 from utils.progress import ProgressBar, verbose_photo_logs_enabled
-from telegram_subscription import get_telegram_channels, set_telegram_channels
-from telegram_subscription.sync import get_telegram_channel_records
+from telegram_subscription import set_telegram_channels
+from telegram_subscription.sync import (
+    get_configured_telegram_channel_records,
+    get_telegram_channel_records,
+)
 from telegram_subscription.client import create_telegram_client
 
 APP_MODE_ENV = "SHAFA_APP_MODE"
@@ -85,6 +89,10 @@ DEFAULT_TELEGRAM_FETCH_COOLDOWN_SECONDS = 90
 DEFAULT_TELEGRAM_FETCH_LEASE_SECONDS = 180
 DEFAULT_TELEGRAM_FETCH_WAIT_SECONDS = 3.0
 DEFAULT_TELEGRAM_SCAN_BATCH_SIZE = 150
+DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS = 180
+DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS = 360
+MIN_PRODUCT_PRICE_DIGITS = 3
+MAX_PRODUCT_PRICE_DIGITS = 4
 
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
@@ -1042,18 +1050,7 @@ def _get_message_media_size_bytes(message) -> Optional[int]:
 def _get_channel_ids() -> list[int]:
     raw = os.getenv("SHAFA_CHANNEL_IDS", "").strip()
     if not raw:
-        runtime_channels = get_telegram_channels()
-        if runtime_channels:
-            return [channel_id for channel_id, _, _ in runtime_channels]
-        rows = load_telegram_channels()
-        if rows:
-            mirrored = [
-                (int(row["channel_id"]), str(row["name"]), str(row.get("alias") or "main"))
-                for row in rows
-            ]
-            set_telegram_channels(mirrored)
-            return [row["channel_id"] for row in rows]
-        return []
+        return [int(record["channel_id"]) for record in _configured_channel_records()]
     ids: list[int] = []
     for part in re.split(r"[,\s]+", raw):
         if not part:
@@ -1065,23 +1062,21 @@ def _get_channel_ids() -> list[int]:
     return ids
 
 
+def _configured_channel_records() -> list[dict]:
+    return get_configured_telegram_channel_records()
+
+
 def _get_channel_alias(channel_id: int) -> str:
-    for record in get_telegram_channel_records():
+    for record in _configured_channel_records():
         if int(record["channel_id"]) == channel_id:
             return str(record.get("alias") or "")
-    for row in load_telegram_channels():
-        if row["channel_id"] == channel_id:
-            return row.get("alias") or ""
     return ""
 
 
 def _get_channel_record(channel_id: int) -> dict | None:
-    for record in get_telegram_channel_records():
+    for record in _configured_channel_records():
         if int(record["channel_id"]) == channel_id:
             return record
-    for row in load_telegram_channels():
-        if row["channel_id"] == channel_id:
-            return row
     return None
 
 
@@ -2075,6 +2070,30 @@ def is_valid_product_name(name: object) -> bool:
     return _has_clothes_keyword_in_text(text)
 
 
+def is_valid_product_price(price: object) -> bool:
+    parsed_price = _parse_price(price)
+    if parsed_price is None or parsed_price <= 0:
+        return False
+    digits_count = len(str(abs(int(parsed_price))))
+    return MIN_PRODUCT_PRICE_DIGITS <= digits_count <= MAX_PRODUCT_PRICE_DIGITS
+
+
+def is_valid_brand_reference(brand: object) -> bool:
+    if brand is None:
+        return False
+    if brand_id_exists(brand):
+        return True
+    if isinstance(brand, str):
+        return get_brand_id_by_name(brand) is not None
+    return False
+
+
+def is_valid_uploaded_product_identity(name: object, brand: object) -> bool:
+    if is_valid_brand_reference(brand):
+        return True
+    return is_valid_product_name(name)
+
+
 def is_valid_product(parsed: dict) -> bool:
     return is_valid_product_name(parsed.get("name"))
 
@@ -2365,6 +2384,68 @@ def _telegram_fetch_wait_seconds() -> float:
     return min(max(value, 0.0), 30.0)
 
 
+def _telegram_channel_scan_interval_seconds() -> int:
+    raw = os.getenv("SHAFA_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS
+    return min(max(value, 30), 7200)
+
+
+def _telegram_channel_scan_lease_seconds(interval_seconds: Optional[int] = None) -> int:
+    raw = os.getenv("SHAFA_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS
+        return min(max(value, 30), 7200)
+    if interval_seconds is None:
+        interval_seconds = _telegram_channel_scan_interval_seconds()
+    return max(DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS, interval_seconds * 2)
+
+
+def _telegram_channel_scan_scope(channel_id: int) -> str:
+    return f"telegram_channel_scan:{_current_account_id()}:{int(channel_id)}"
+
+
+def _claim_due_telegram_channel(channel_ids: list[int]) -> tuple[Optional[int], Optional[str], str]:
+    if not channel_ids:
+        return None, None, "no_channels"
+    interval_seconds = _telegram_channel_scan_interval_seconds()
+    lease_seconds = _telegram_channel_scan_lease_seconds(interval_seconds)
+    saw_in_progress = False
+    for channel_id in channel_ids:
+        status, lease_token = claim_telegram_fetch(
+            _telegram_channel_scan_scope(channel_id),
+            min_interval_seconds=interval_seconds,
+            lease_seconds=lease_seconds,
+        )
+        if status == "acquired":
+            return channel_id, lease_token, status
+        if status == "in_progress":
+            saw_in_progress = True
+    return None, None, "in_progress" if saw_in_progress else "not_due"
+
+
+def _finish_due_telegram_channel(
+    channel_id: int,
+    lease_token: Optional[str],
+    *,
+    success: bool,
+) -> None:
+    if not lease_token:
+        return
+    finish_telegram_fetch(
+        _telegram_channel_scan_scope(channel_id),
+        lease_token,
+        success=success,
+    )
+
+
 def _claim_shared_telegram_fetch() -> tuple[str, Optional[str]]:
     cooldown_seconds = _telegram_fetch_cooldown_seconds()
     return claim_telegram_fetch(
@@ -2436,6 +2517,7 @@ def _new_scan_stats() -> dict[str, int]:
         "mode_filtered": 0,
         "missing_name": 0,
         "missing_price": 0,
+        "invalid_price": 0,
         "missing_size": 0,
         "parsed_ok": 0,
     }
@@ -2456,6 +2538,8 @@ def _classify_product_message(msg) -> tuple[Optional[dict], Optional[str]]:
         return None, "missing_name"
     if not parsed.get("price"):
         return None, "missing_price"
+    if not is_valid_product_price(parsed.get("price")):
+        return None, "invalid_price"
     if not parsed.get("size"):
         return None, "missing_size"
     return parsed, None
@@ -2758,6 +2842,18 @@ async def _scan_single_channel(
 async def scan_account_telegram_channels_async(
     batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
 ) -> dict:
+    channel_ids = _get_channel_ids()
+    return await _scan_selected_telegram_channels_async(
+        channel_ids,
+        batch_size=batch_size,
+    )
+
+
+async def _scan_selected_telegram_channels_async(
+    channel_ids: list[int],
+    *,
+    batch_size: int,
+) -> dict:
     normalized_batch_size = min(
         max(int(batch_size or DEFAULT_TELEGRAM_SCAN_BATCH_SIZE), 1),
         DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
@@ -2767,6 +2863,14 @@ async def scan_account_telegram_channels_async(
     inserted = 0
     duplicates = 0
     results: list[dict] = []
+    if not channel_ids:
+        return {
+            "account_id": account_id,
+            "batch_size": normalized_batch_size,
+            "inserted": 0,
+            "duplicates": 0,
+            "channels": [],
+        }
     async with create_telegram_client(
         TELEGRAM_SESSION_PATH,
         api_id_value,
@@ -2774,8 +2878,6 @@ async def scan_account_telegram_channels_async(
         save_entities=False,
         telegram_client_cls=TelegramClient,
     ) as client:
-        channel_ids = _get_channel_ids()
-        await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
             channel_result = await _scan_single_channel(
                 client,
@@ -2795,6 +2897,40 @@ async def scan_account_telegram_channels_async(
     }
 
 
+async def scan_next_due_telegram_channel_async(
+    batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+) -> dict:
+    channel_ids = _get_channel_ids()
+    claimed_channel_id, lease_token, status = _claim_due_telegram_channel(channel_ids)
+    if claimed_channel_id is None:
+        return {
+            "account_id": _current_account_id(),
+            "batch_size": min(
+                max(int(batch_size or DEFAULT_TELEGRAM_SCAN_BATCH_SIZE), 1),
+                DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+            ),
+            "status": status,
+            "channel_id": None,
+            "inserted": 0,
+            "duplicates": 0,
+            "channels": [],
+        }
+
+    try:
+        result = await _scan_selected_telegram_channels_async(
+            [claimed_channel_id],
+            batch_size=batch_size,
+        )
+    except Exception:
+        _finish_due_telegram_channel(claimed_channel_id, lease_token, success=False)
+        raise
+
+    _finish_due_telegram_channel(claimed_channel_id, lease_token, success=True)
+    result["status"] = "scanned"
+    result["channel_id"] = claimed_channel_id
+    return result
+
+
 def scan_account_telegram_channels(
     batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
 ) -> dict:
@@ -2805,6 +2941,19 @@ def scan_account_telegram_channels(
     raise RuntimeError(
         "scan_account_telegram_channels cannot be called when an event loop is running. "
         "Use scan_account_telegram_channels_async."
+    )
+
+
+def scan_next_due_telegram_channel(
+    batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+) -> dict:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(scan_next_due_telegram_channel_async(batch_size=batch_size))
+    raise RuntimeError(
+        "scan_next_due_telegram_channel cannot be called when an event loop is running. "
+        "Use scan_next_due_telegram_channel_async."
     )
 
 
@@ -3033,7 +3182,6 @@ async def _download_message_photos(
         save_entities=False,
         telegram_client_cls=TelegramClient,
     ) as client:
-        await _sync_channel_titles(client, _get_channel_ids())
         channel_peer = await _resolve_channel_peer(client, channel_id)
         verbose_photo_logs = verbose_photo_logs_enabled()
         if verbose_photo_logs:
@@ -3875,6 +4023,19 @@ def _pick_next_product_for_upload() -> Optional[dict]:
                 row["channel_id"],
                 row["message_id"],
                 created_product_id="SKIPPED_MISSING_DATA",
+                account_id=account_id,
+            )
+            continue
+        if not is_valid_product_price(parsed.get("price")):
+            log(
+                "WARN",
+                f"Пропускаю сообщение channel_id={row['channel_id']} "
+                + f"message_id={row['message_id']}: невалидная цена товара.",
+            )
+            mark_telegram_product_created(
+                row["channel_id"],
+                row["message_id"],
+                created_product_id="SKIPPED_INVALID_PRICE",
                 account_id=account_id,
             )
             continue

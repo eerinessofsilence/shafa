@@ -8,6 +8,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional at import time for te
 
 from core.core import base_headers, read_response_json
 from data.const import API_URL, UPLOAD_PHOTO_MUTATION
+from utils.media import detect_media_mime_type
 
 
 def upload_photo(ctx: BrowserContext, csrftoken: str, file_path: Path) -> str:
@@ -24,7 +25,7 @@ def upload_photo(ctx: BrowserContext, csrftoken: str, file_path: Path) -> str:
             "variables": json.dumps({"file": "file"}),
             "file": {
                 "name": file_path.name,
-                "mimeType": "image/jpeg",
+                "mimeType": detect_media_mime_type(file_path),
                 "buffer": file_bytes,
             },
         },

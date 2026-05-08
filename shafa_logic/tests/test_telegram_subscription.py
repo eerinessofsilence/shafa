@@ -13,6 +13,7 @@ from telegram_subscription.sync import (
     _extract_search_query,
     _log,
     _resolve_channel_tuples,
+    get_configured_telegram_channel_records,
     get_telegram_channel_records,
     get_telegram_channels,
     sync_channels_from_runtime_config,
@@ -203,13 +204,118 @@ class TelegramSubscriptionTests(unittest.TestCase):
                 with (
                     patch.dict("os.environ", {"SHAFA_TELEGRAM_CHANNEL_LINKS_FILE": str(config_path)}, clear=False),
                     patch(
-                        "telegram_subscription.sync._resolve_channel_tuples",
+                        "telegram_subscription.sync._resolve_channel_records",
                         side_effect=RuntimeError("Сессия Telegram отсутствует или не авторизована."),
                     ),
                 ):
                     result = sync_channels_from_runtime_config()
 
         self.assertEqual(result, saved_channels)
+
+    def test_sync_channels_keeps_only_configured_existing_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "runtime_links.json"
+            channels_path = Path(temp_dir) / "shafa_telegram_channels.json"
+            config_path.write_text(
+                json.dumps(
+                    {"links": ["https://t.me/channel_one", "https://t.me/channel_two"]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch("telegram_subscription.sync._runtime_channels_path", return_value=channels_path):
+                with patch("telegram_subscription.sync._mirror_channels_to_db"):
+                    set_telegram_channels(
+                        [
+                            {
+                                "channel_id": -1001,
+                                "name": "Channel One",
+                                "alias": "main",
+                                "source_link": "https://t.me/channel_one",
+                            },
+                            {
+                                "channel_id": -1009,
+                                "name": "Stale Channel",
+                                "alias": "main",
+                                "source_link": "https://t.me/stale_channel",
+                            },
+                        ],
+                        path=channels_path,
+                    )
+                with (
+                    patch.dict(
+                        "os.environ",
+                        {"SHAFA_TELEGRAM_CHANNEL_LINKS_FILE": str(config_path)},
+                        clear=False,
+                    ),
+                    patch(
+                        "telegram_subscription.sync._resolve_channel_records",
+                        new=AsyncMock(
+                            return_value=[
+                                {
+                                    "channel_id": -1002,
+                                    "name": "Channel Two",
+                                    "alias": "main extra_photos",
+                                    "source_link": "https://t.me/channel_two",
+                                }
+                            ]
+                        ),
+                    ),
+                ):
+                    result = sync_channels_from_runtime_config()
+                    records = get_telegram_channel_records(path=channels_path)
+
+        self.assertEqual(
+            result,
+            [
+                (-1001, "Channel One", "main extra_photos"),
+                (-1002, "Channel Two", "main extra_photos"),
+            ],
+        )
+        self.assertEqual(
+            [record["source_link"] for record in records],
+            ["https://t.me/channel_one", "https://t.me/channel_two"],
+        )
+
+    def test_get_configured_records_filters_locally_without_extra_resolve(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "runtime_links.json"
+            channels_path = Path(temp_dir) / "shafa_telegram_channels.json"
+            config_path.write_text(
+                json.dumps(
+                    {"links": ["https://t.me/channel_two"]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch("telegram_subscription.sync._runtime_channels_path", return_value=channels_path):
+                with patch("telegram_subscription.sync._mirror_channels_to_db"):
+                    set_telegram_channels(
+                        [
+                            {
+                                "channel_id": -1001,
+                                "name": "Channel One",
+                                "alias": "main",
+                                "source_link": "https://t.me/channel_one",
+                            },
+                            {
+                                "channel_id": -1002,
+                                "name": "Channel Two",
+                                "alias": "main",
+                                "source_link": "https://t.me/channel_two",
+                            },
+                        ],
+                        path=channels_path,
+                    )
+                with patch.dict(
+                    "os.environ",
+                    {"SHAFA_TELEGRAM_CHANNEL_LINKS_FILE": str(config_path)},
+                    clear=False,
+                ):
+                    records = get_configured_telegram_channel_records(path=channels_path)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["channel_id"], -1002)
 
 
 if __name__ == "__main__":

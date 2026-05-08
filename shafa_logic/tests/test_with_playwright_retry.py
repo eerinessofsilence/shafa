@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core import with_playwright
+from utils.media import PreparedMediaBatch, PreparedMediaUpload
 
 
 class WithPlaywrightRetryTests(unittest.TestCase):
@@ -15,6 +16,7 @@ class WithPlaywrightRetryTests(unittest.TestCase):
     @patch("core.with_playwright.ProgressBar")
     @patch("core.with_playwright.verbose_photo_logs_enabled")
     @patch("core.with_playwright.list_media_files")
+    @patch("core.with_playwright.prepare_media_batch_for_upload")
     @patch("core.with_playwright.save_cookies")
     @patch("core.with_playwright.get_csrftoken_from_context")
     @patch("core.with_playwright.storage_state_has_cookies")
@@ -36,6 +38,7 @@ class WithPlaywrightRetryTests(unittest.TestCase):
         get_csrftoken_from_context,
         _save_cookies,
         list_media_files,
+        prepare_media_batch_for_upload,
         verbose_photo_logs_enabled,
         progress_bar,
         upload_photo,
@@ -87,6 +90,19 @@ class WithPlaywrightRetryTests(unittest.TestCase):
             photo_path = Path(tmpdir) / "shoe.jpg"
             photo_path.write_bytes(b"jpg")
             list_media_files.return_value = [photo_path]
+            prepare_media_batch_for_upload.return_value = PreparedMediaBatch(
+                items=[
+                    PreparedMediaUpload(
+                        source_path=photo_path,
+                        upload_path=photo_path,
+                        cleanup_path=None,
+                        preparation="original",
+                        size_bytes=photo_path.stat().st_size,
+                    )
+                ],
+                total_size_bytes=photo_path.stat().st_size,
+                within_budget=True,
+            )
 
             with_playwright.main()
 

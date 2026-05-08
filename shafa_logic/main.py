@@ -13,6 +13,7 @@ from utils.stdio import install_safe_stdio
 install_safe_stdio()
 
 from telegram_subscription import complete_login, send_code, session_status, submit_password, sync_channels_from_runtime_config
+from utils.pipeline_activity import is_product_pipeline_active
 
 _ADD_CHANNEL = object()
 SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
@@ -199,6 +200,17 @@ def _background_scan_interval_seconds() -> int:
     return min(max(value, 10), 3600)
 
 
+def _background_invalid_products_interval_seconds() -> int:
+    raw = os.getenv("SHAFA_BACKGROUND_INVALID_PRODUCTS_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return 40
+    try:
+        value = int(raw)
+    except ValueError:
+        return 40
+    return min(max(value, 10), 3600)
+
+
 def _bootstrap_new_account_telegram_queue_if_needed() -> int:
     marker_value = os.getenv("SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH", "").strip()
     if not marker_value:
@@ -229,7 +241,7 @@ def _bootstrap_new_account_telegram_queue_if_needed() -> int:
 def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thread]:
     from controller.data_controller import (
         DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
-        scan_account_telegram_channels,
+        scan_next_due_telegram_channel,
     )
 
     stop_event = threading.Event()
@@ -237,17 +249,24 @@ def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thr
 
     def _worker() -> None:
         while not stop_event.is_set():
+            if is_product_pipeline_active():
+                if stop_event.wait(5.0):
+                    return
+                continue
             started_at = time.time()
             try:
-                result = scan_account_telegram_channels(
+                result = scan_next_due_telegram_channel(
                     batch_size=DEFAULT_TELEGRAM_SCAN_BATCH_SIZE
                 )
-                inserted = int(result.get("inserted") or 0)
-                duplicates = int(result.get("duplicates") or 0)
-                print(
-                    "[INFO] Фоновое сканирование Telegram завершено. "
-                    f"Новых товаров: {inserted}. Дубликатов: {duplicates}."
-                )
+                if result.get("status") == "scanned":
+                    inserted = int(result.get("inserted") or 0)
+                    duplicates = int(result.get("duplicates") or 0)
+                    channel_id = result.get("channel_id")
+                    print(
+                        "[INFO] Фоновая проверка Telegram завершена. "
+                        f"Канал: {channel_id}. Новых товаров: {inserted}. "
+                        f"Дубликатов: {duplicates}."
+                    )
             except Exception as exc:
                 print(f"[ERROR] Фоновое сканирование Telegram не выполнено: {exc}")
             elapsed = time.time() - started_at
@@ -258,6 +277,52 @@ def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thr
     thread = threading.Thread(
         target=_worker,
         name="telegram-background-scanner",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def _start_background_invalid_products_deactivator() -> tuple[threading.Event, threading.Thread]:
+    from core.requests import deactivate_product
+
+    stop_event = threading.Event()
+    interval_seconds = _background_invalid_products_interval_seconds()
+
+    def _worker() -> None:
+        while not stop_event.is_set():
+            if is_product_pipeline_active():
+                if stop_event.wait(5.0):
+                    return
+                continue
+            started_at = time.time()
+            try:
+                result = deactivate_product.deactivate_next_invalid_uploaded_product()
+                deactivated = result.get("deactivated") or []
+                errors = result.get("errors") or []
+                if deactivated:
+                    print(
+                        "[INFO] Фоновая деактивация невалидного товара выполнена. "
+                        f"Обработано: {len(deactivated)}."
+                    )
+                elif errors:
+                    first_error = errors[0]
+                    print(
+                        "[WARN] Фоновая деактивация невалидного товара не выполнена. "
+                        f"{first_error.get('account') or 'default'} | "
+                        f"{first_error.get('name') or 'нет данных'} | "
+                        f"{first_error.get('reason') or 'неизвестно'}"
+                    )
+            except Exception as exc:
+                print(f"[ERROR] Фоновая деактивация невалидных товаров не выполнена: {exc}")
+            elapsed = time.time() - started_at
+            wait_seconds = max(1.0, interval_seconds - elapsed)
+            if stop_event.wait(wait_seconds):
+                return
+
+    thread = threading.Thread(
+        target=_worker,
+        name="invalid-products-background-deactivator",
         daemon=True,
     )
     thread.start()
@@ -818,11 +883,14 @@ def main(
         sync_channels_from_runtime_config()
         os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
         stop_event, scanner_thread = _start_background_telegram_scanner()
+        invalid_stop_event, invalid_thread = _start_background_invalid_products_deactivator()
         try:
             _auto_create_product(shafa=shafa)
         finally:
             stop_event.set()
+            invalid_stop_event.set()
             scanner_thread.join(timeout=5)
+            invalid_thread.join(timeout=5)
         return
 
     _print_ascii_banner()
