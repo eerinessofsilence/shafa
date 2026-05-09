@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SHAFA_LOGIC_DIR = ROOT / "shafa_logic"
+for path in (ROOT, SHAFA_LOGIC_DIR):
+    text = str(path)
+    if text not in sys.path:
+        sys.path.insert(0, text)
 
 from shafa_control import AppConfig, AppConfigStore
 from controller import data_controller as dc
@@ -94,3 +103,39 @@ def test_shared_fetch_skip_uses_existing_queue_without_new_poll(monkeypatch) -> 
 
     assert result == {"ok": True}
     assert calls == []
+
+
+def test_get_next_product_for_upload_accepts_scan_before_pick_and_skips_poll(monkeypatch) -> None:
+    monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
+    monkeypatch.setattr(
+        dc,
+        "_claim_shared_telegram_fetch",
+        lambda: (_ for _ in ()).throw(AssertionError("fetch should not be claimed")),
+    )
+
+    result = dc.get_next_product_for_upload(
+        message_amount=50,
+        first_fetch_check=False,
+        scan_before_pick=False,
+    )
+
+    assert result == {"ok": True}
+
+
+def test_get_next_product_for_upload_prefers_existing_queue_before_poll(monkeypatch) -> None:
+    monkeypatch.setattr(dc, "_pick_next_product_for_upload", lambda: {"ok": True})
+    monkeypatch.setattr(
+        dc,
+        "_claim_shared_telegram_fetch",
+        lambda: (_ for _ in ()).throw(AssertionError("fetch should not be claimed")),
+    )
+
+    result = asyncio.run(
+        dc.get_next_product_for_upload_async(
+            message_amount=50,
+            first_fetch_check=True,
+            scan_before_pick=True,
+        )
+    )
+
+    assert result == {"ok": True}

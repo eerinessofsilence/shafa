@@ -48,6 +48,13 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
 
         no_playwright.main()
 
+        self.assertEqual(
+            get_next_product_for_upload.call_args.kwargs["message_amount"],
+            no_playwright.DEFAULT_MESSAGE_PARSE_LIMIT,
+        )
+        self.assertFalse(
+            get_next_product_for_upload.call_args.kwargs["scan_before_pick"]
+        )
         handle_failure.assert_called_once_with(
             message_id=11543,
             channel_id=9,
@@ -102,6 +109,9 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
             with patch("core.no_playwright.list_media_files", return_value=[photo_path]):
                 no_playwright.main()
 
+        self.assertFalse(
+            get_next_product_for_upload.call_args.kwargs["scan_before_pick"]
+        )
         handle_failure.assert_called_once_with(
             message_id=11543,
             channel_id=9,
@@ -144,6 +154,9 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
 
         no_playwright.main()
 
+        self.assertFalse(
+            get_next_product_for_upload.call_args.kwargs["scan_before_pick"]
+        )
         handle_failure.assert_called_once_with(
             message_id=11543,
             channel_id=9,

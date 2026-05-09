@@ -33,6 +33,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional at import time for te
 
 from controller.catalog_filter import find_slug_by_word, find_word
 from data.const import (
+    ACCOUNT_ID,
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
     DEFAULT_MESSAGE_PARSE_LIMIT,
@@ -47,11 +48,17 @@ from data.db import (
     find_size_mapping_candidates,
     finish_telegram_fetch,
     get_brand_id_by_name,
+    get_max_telegram_product_message_id,
     get_next_uncreated_telegram_product,
+    get_telegram_scan_cursor,
     get_size_id_by_name,
     increment_telegram_product_attempt,
     list_brand_names,
     load_telegram_channels,
+    mark_telegram_backfill_started,
+    mark_telegram_scan_started,
+    finish_telegram_backfill,
+    finish_telegram_scan,
     mark_telegram_product_created,
     save_telegram_channels,
     save_telegram_product,
@@ -77,6 +84,11 @@ MODE_SNEAKERS = "sneakers"
 DEFAULT_TELEGRAM_FETCH_COOLDOWN_SECONDS = 90
 DEFAULT_TELEGRAM_FETCH_LEASE_SECONDS = 180
 DEFAULT_TELEGRAM_FETCH_WAIT_SECONDS = 3.0
+DEFAULT_TELEGRAM_SCAN_BATCH_SIZE = 150
+DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS = 180
+DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS = 360
+MIN_PRODUCT_PRICE_DIGITS = 3
+MAX_PRODUCT_PRICE_DIGITS = 4
 
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
@@ -905,6 +917,15 @@ def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _contains_hint_phrase(text: str, keywords: tuple[str, ...]) -> bool:
+    normalized_text = text.casefold()
+    for keyword in keywords:
+        pattern = rf"(?<!\w){re.escape(keyword.casefold())}(?!\w)"
+        if re.search(pattern, normalized_text):
+            return True
+    return False
+
+
 def _line_has_url(line: str) -> bool:
     lower = line.casefold()
     return "http://" in lower or "https://" in lower or "www." in lower
@@ -1375,7 +1396,7 @@ def _clean_selected_name(value: str) -> str:
 
 
 def _has_forbidden_name_hint(name: str) -> bool:
-    return _contains_any(name.casefold(), _FORBIDDEN_NAME_HINTS)
+    return _contains_hint_phrase(name, _FORBIDDEN_NAME_HINTS)
 
 
 def _is_valid_selected_name(name: str) -> bool:
@@ -1383,6 +1404,11 @@ def _is_valid_selected_name(name: str) -> bool:
     if not text:
         return False
     if _is_garbage_name_line(text):
+        return False
+    lower = text.casefold()
+    if _contains_hint_phrase(lower, _NON_NAME_HINTS) or _contains_hint_phrase(
+        lower, _NAME_EXCLUDE_HINTS
+    ):
         return False
     if _has_forbidden_name_hint(text):
         return False
@@ -1462,13 +1488,15 @@ def _strip_name_prefix(text: str) -> str:
 def _looks_like_name(line: str) -> bool:
     if _is_garbage_name_line(line):
         return False
+    if _looks_like_article_line(line):
+        return False
     if len(line) < 3 or len(line) > 120:
         return False
     lower = line.casefold()
     if (
-        _contains_any(lower, _NON_NAME_HINTS)
-        or _contains_any(lower, _NAME_EXCLUDE_HINTS)
-        or _contains_any(lower, _FORBIDDEN_NAME_HINTS)
+        _contains_hint_phrase(lower, _NON_NAME_HINTS)
+        or _contains_hint_phrase(lower, _NAME_EXCLUDE_HINTS)
+        or _contains_hint_phrase(lower, _FORBIDDEN_NAME_HINTS)
     ):
         return False
     if _line_has_url(line) or "@" in line:
@@ -1584,25 +1612,80 @@ def capitalise_first_word(s: str) -> str:
         return s
     return s[0].upper() + s[1:]
 
-def extract_name(lines: list[str]) -> tuple[str, str]:
-    shirt_name = _extract_shirt_name(lines)
-    if shirt_name:
-        return shirt_name, _infer_word_for_slack(lines, shirt_name)
-
-    article_name = _extract_article_name(lines)
-    if article_name:
-        return article_name, _infer_word_for_slack(lines, article_name)
-
-    return "", _infer_word_for_slack(lines, "")
-
-
-def _infer_word_for_slack(lines: list[str], name: str) -> str:
-    for source in ([name] if name else []) + list(lines):
-        for word in source.casefold().split():
+def _extract_word_for_slack(lines: list[str], name: str = "") -> str:
+    sources = ([name] if name else []) + list(lines)
+    for source in sources:
+        lower_words = source.casefold().split()
+        if any(bad in lower_words for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
+            continue
+        for word in lower_words:
             word_found = find_word(word)
             if word_found:
                 return word_found
     return ""
+
+
+def _is_strong_name_candidate(candidate: str, word_for_slack: str) -> bool:
+    if not candidate:
+        return False
+    if len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate):
+        return True
+    if _find_best_brand_in_text(candidate):
+        return True
+    return bool(word_for_slack) and candidate.casefold() == word_for_slack.casefold()
+
+
+def extract_name(lines: list[str]) -> tuple[str, str]:
+    shirt_name = _extract_shirt_name(lines)
+    if shirt_name:
+        return shirt_name, _extract_word_for_slack(lines, shirt_name)
+
+    article_name = _extract_article_name(lines)
+    if article_name:
+        return article_name, _extract_word_for_slack(lines, article_name)
+
+    word_for_slack = _extract_word_for_slack(lines)
+
+    for line in lines:
+        match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and not _looks_like_article(candidate):
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)^(?:отримали|получили|поступили|поступление|завезли)\s+(?:новинк\w*\s+)?(.+)$",
+            line,
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and _is_strong_name_candidate(candidate, word_for_slack):
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and _is_strong_name_candidate(candidate, word_for_slack):
+                return candidate, word_for_slack or ""
+    for line in lines[:3]:
+        if not _looks_like_name(line):
+            continue
+        candidate = capitalise_first_word(clean_line_name(line))
+        if _is_strong_name_candidate(candidate, word_for_slack):
+            return candidate, word_for_slack or ""
+    for line in lines:
+        if not _looks_like_name(line):
+            continue
+        candidate = capitalise_first_word(clean_line_name(line))
+        if _is_strong_name_candidate(candidate, word_for_slack):
+            return candidate, word_for_slack or ""
+    return "", word_for_slack or ""
+
+
+def _infer_word_for_slack(lines: list[str], name: str) -> str:
+    return _extract_word_for_slack(lines, name)
 
 
 def _normalize_number(value: str) -> str:
@@ -2196,12 +2279,27 @@ def get_runtime_mode() -> str:
     return raw
 
 
+def _current_account_id() -> str:
+    raw = str(os.getenv("SHAFA_ACCOUNT_ID") or ACCOUNT_ID).strip()
+    return raw or "default"
+
+
+def is_valid_product_price(price: object) -> bool:
+    parsed_price = _parse_price(price)
+    if parsed_price is None or parsed_price <= 0:
+        return False
+    digits_count = len(str(abs(int(parsed_price))))
+    return MIN_PRODUCT_PRICE_DIGITS <= digits_count <= MAX_PRODUCT_PRICE_DIGITS
+
+
 def should_run_first_fetch() -> bool:
-    return get_runtime_mode() == MODE_CLOTHES and not telegram_products_exist()
+    return get_runtime_mode() == MODE_CLOTHES and not telegram_products_exist(
+        account_id=_current_account_id()
+    )
 
 
 def _telegram_fetch_scope() -> str:
-    return f"telegram_feed:{get_runtime_mode()}"
+    return f"telegram_feed:{_current_account_id()}:{get_runtime_mode()}"
 
 
 def _telegram_fetch_cooldown_seconds() -> int:
@@ -2258,6 +2356,68 @@ def _finish_shared_telegram_fetch(lease_token: Optional[str], *, success: bool) 
     )
 
 
+def _telegram_channel_scan_interval_seconds() -> int:
+    raw = os.getenv("SHAFA_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS
+    return min(max(value, 30), 7200)
+
+
+def _telegram_channel_scan_lease_seconds(interval_seconds: Optional[int] = None) -> int:
+    raw = os.getenv("SHAFA_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS
+        return min(max(value, 30), 7200)
+    if interval_seconds is None:
+        interval_seconds = _telegram_channel_scan_interval_seconds()
+    return max(DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS, interval_seconds * 2)
+
+
+def _telegram_channel_scan_scope(channel_id: int) -> str:
+    return f"telegram_channel_scan:{_current_account_id()}:{int(channel_id)}"
+
+
+def _claim_due_telegram_channel(channel_ids: list[int]) -> tuple[Optional[int], Optional[str], str]:
+    if not channel_ids:
+        return None, None, "no_channels"
+    interval_seconds = _telegram_channel_scan_interval_seconds()
+    lease_seconds = _telegram_channel_scan_lease_seconds(interval_seconds)
+    saw_in_progress = False
+    for channel_id in channel_ids:
+        status, lease_token = claim_telegram_fetch(
+            _telegram_channel_scan_scope(channel_id),
+            min_interval_seconds=interval_seconds,
+            lease_seconds=lease_seconds,
+        )
+        if status == "acquired":
+            return channel_id, lease_token, status
+        if status == "in_progress":
+            saw_in_progress = True
+    return None, None, "in_progress" if saw_in_progress else "not_due"
+
+
+def _finish_due_telegram_channel(
+    channel_id: int,
+    lease_token: Optional[str],
+    *,
+    success: bool,
+) -> None:
+    if not lease_token:
+        return
+    finish_telegram_fetch(
+        _telegram_channel_scan_scope(channel_id),
+        lease_token,
+        success=success,
+    )
+
+
 def is_mode_allowed_parsed(parsed: dict) -> bool:
     if get_runtime_mode() != MODE_SNEAKERS:
         return True
@@ -2284,146 +2444,390 @@ def catalog_supports_brand(catalog_slug: Optional[str]) -> bool:
 
 
 async def first_fetch() -> int:
-    inserted = 0
-    debug_fetch = _debug_fetch_enabled()
-    debug_verbose = _debug_fetch_verbose()
-    stats = {
-        "total": 0,
-        "no_media": 0,
-        "non_photo_media": 0,
-        "no_text": 0,
-        "missing_name": 0,
-        "missing_price": 0,
-        "missing_size": 0,
-        "parsed_ok": 0,
-        "saved": 0,
-        "duplicate": 0,
-    }
-    verbose_limit = 5
-    verbose_count = 0
-    valid_messages = 0
-    all_valid_messages = 0
-    itter_amount = 0
-    
-    def log_skip(reason: str, text: str, message_id: int, channel_id: int) -> None:
-        nonlocal verbose_count
-        if not debug_verbose or verbose_count >= verbose_limit:
-            return
-        preview_lines = normalize_message(text).splitlines() if text else []
-        preview = preview_lines[0] if preview_lines else ""
-        verbose_count += 1
-
-
-    api_id_value, api_hash_value = _require_telegram_credentials()
-    async with create_telegram_client(
-        TELEGRAM_SESSION_PATH,
-        api_id_value,
-        api_hash_value,
-        save_entities=False,
-        telegram_client_cls=TelegramClient,
-    ) as client:
-        channel_ids = _get_channel_ids()
-        await _sync_channel_titles(client, channel_ids)
-        for channel_id in channel_ids:
-            peer = await _resolve_channel_peer(client, channel_id)
-            async for msg in client.iter_messages(peer, limit=1000):
-                if debug_fetch:
-                    stats["total"] += 1
-                if not msg.media:
-                    if debug_fetch:
-                        stats["no_media"] += 1
-                    log_skip("no_media", msg.message or "", msg.id, channel_id)
-                    continue
-                if not _is_photo_message(msg):
-                    if debug_fetch:
-                        stats["non_photo_media"] += 1
-                    log_skip("non_photo_media", msg.message or "", msg.id, channel_id)
-                    continue
-                if not msg.message:
-                    if debug_fetch:
-                        stats["no_text"] += 1
-                    log_skip("no_text", "", msg.id, channel_id)
-                    continue
-                parsed = parse_message(msg.message)
-                if not is_mode_allowed_parsed(parsed):
-                    continue
-                if not parsed.get("name"):
-                    if debug_fetch:
-                        stats["missing_name"] += 1
-                    log_skip("missing_name", msg.message, msg.id, channel_id)
-                    continue
-                if not parsed.get("price"):
-                    if debug_fetch:
-                        stats["missing_price"] += 1
-                    log_skip("missing_price", msg.message, msg.id, channel_id)
-                    continue
-                if not parsed.get("size"):
-                    if debug_fetch:
-                        stats["missing_size"] += 1
-                    log_skip("missing_size", msg.message, msg.id, channel_id)
-                    continue
-                if debug_fetch:
-                    stats["parsed_ok"] += 1
-                if save_telegram_product(channel_id, msg.id, msg.message, parsed):
-                    inserted += 1
-                    if debug_fetch:
-                        stats["saved"] += 1
-                elif debug_fetch:
-                    stats["duplicate"] += 1
-                itter_amount += 1
-                valid_messages += 1
-                if valid_messages >= 20:
-                    all_valid_messages += 20
-                    valid_messages = 0
-                    break
-                elif itter_amount >= 500:
-                    itter_amount = 0
-                    break
-
-    if debug_fetch:
-        print(
-            "[DEBUG] fetch stats: "
-            f"total={stats['total']} "
-            f"no_media={stats['no_media']} "
-            f"non_photo_media={stats['non_photo_media']} "
-            f"no_text={stats['no_text']} "
-            f"missing_name={stats['missing_name']} "
-            f"missing_price={stats['missing_price']} "
-            f"missing_size={stats['missing_size']} "
-            f"parsed_ok={stats['parsed_ok']} "
-            f"saved={stats['saved']} "
-            f"duplicate={stats['duplicate']}"
-        )
-    return inserted
+    result = await scan_account_telegram_channels_async(
+        batch_size=DEFAULT_TELEGRAM_SCAN_BATCH_SIZE
+    )
+    return int(result["inserted"])
 
 async def _fetch_messages(message_amount: int = 200) -> int:
-    inserted = 0
-    debug_fetch = _debug_fetch_enabled()
-    debug_verbose = _debug_fetch_verbose()
-    stats = {
-        "total": 0,
+    batch_size = min(
+        max(int(message_amount or DEFAULT_TELEGRAM_SCAN_BATCH_SIZE), 1),
+        DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+    )
+    result = await scan_account_telegram_channels_async(batch_size=batch_size)
+    return int(result["inserted"])
+
+
+def _new_scan_stats() -> dict[str, int]:
+    return {
+        "fetched": 0,
+        "processed": 0,
+        "saved": 0,
+        "duplicate": 0,
         "no_media": 0,
         "non_photo_media": 0,
         "no_text": 0,
+        "mode_filtered": 0,
         "missing_name": 0,
         "missing_price": 0,
+        "invalid_price": 0,
         "missing_size": 0,
         "parsed_ok": 0,
-        "saved": 0,
-        "duplicate": 0,
     }
-    verbose_limit = 5
-    verbose_count = 0
 
-    def log_skip(reason: str, text: str, message_id: int, channel_id: int) -> None:
-        nonlocal verbose_count
-        if not debug_verbose or verbose_count >= verbose_limit:
-            return
-        preview_lines = normalize_message(text).splitlines() if text else []
-        preview = preview_lines[0] if preview_lines else ""
-        verbose_count += 1
 
+def _classify_product_message(msg) -> tuple[Optional[dict], Optional[str]]:
+    if not getattr(msg, "media", None):
+        return None, "no_media"
+    if not _is_photo_message(msg):
+        return None, "non_photo_media"
+    raw_message = getattr(msg, "message", None)
+    if not raw_message:
+        return None, "no_text"
+    parsed = parse_message(raw_message)
+    if not is_mode_allowed_parsed(parsed):
+        return None, "mode_filtered"
+    if not parsed.get("name"):
+        return None, "missing_name"
+    if not parsed.get("price"):
+        return None, "missing_price"
+    if not is_valid_product_price(parsed.get("price")):
+        return None, "invalid_price"
+    if not parsed.get("size"):
+        return None, "missing_size"
+    return parsed, None
+
+
+def _scan_batch_result() -> dict[str, Optional[int] | str]:
+    return {
+        "inserted": 0,
+        "duplicates": 0,
+        "last_processed_message_id": None,
+        "error_message": None,
+    }
+
+
+def _process_scanned_messages(
+    messages: list,
+    *,
+    channel_id: int,
+    account_id: str,
+    stats: dict[str, int],
+) -> dict[str, Optional[int] | str]:
+    result = _scan_batch_result()
+    for msg in messages:
+        message_id = getattr(msg, "id", None)
+        if not isinstance(message_id, int):
+            result["error_message"] = (
+                f"Сообщение без корректного id в канале {channel_id}."
+            )
+            break
+        try:
+            parsed, skip_reason = _classify_product_message(msg)
+        except Exception as exc:
+            result["error_message"] = _scan_error_message(channel_id, message_id, exc)
+            log("ERROR", str(result["error_message"]))
+            break
+
+        stats["processed"] += 1
+        if parsed is None:
+            if skip_reason:
+                stats[skip_reason] = stats.get(skip_reason, 0) + 1
+            result["last_processed_message_id"] = message_id
+            continue
+
+        stats["parsed_ok"] += 1
+        if save_telegram_product(
+            channel_id,
+            message_id,
+            getattr(msg, "message", "") or "",
+            parsed,
+            account_id=account_id,
+        ):
+            result["inserted"] = int(result["inserted"] or 0) + 1
+            stats["saved"] += 1
+        else:
+            result["duplicates"] = int(result["duplicates"] or 0) + 1
+            stats["duplicate"] += 1
+        result["last_processed_message_id"] = message_id
+    return result
+
+
+async def _load_messages_for_scan(
+    client: TelegramClient,
+    channel_peer,
+    *,
+    last_checked_message_id: Optional[int],
+    batch_size: int,
+) -> list:
+    if last_checked_message_id is None:
+        return []
+
+    messages: list = []
+    async for msg in client.iter_messages(
+        channel_peer,
+        min_id=last_checked_message_id,
+        limit=batch_size,
+        reverse=True,
+    ):
+        message_id = getattr(msg, "id", None)
+        if not isinstance(message_id, int) or message_id <= last_checked_message_id:
+            continue
+        messages.append(msg)
+    return messages
+
+
+async def _load_messages_for_backfill(
+    client: TelegramClient,
+    channel_peer,
+    *,
+    backfill_before_message_id: Optional[int],
+    batch_size: int,
+) -> list:
+    if backfill_before_message_id is None or backfill_before_message_id <= 1:
+        return []
+
+    messages: list = []
+    async for msg in client.iter_messages(
+        channel_peer,
+        max_id=backfill_before_message_id,
+        limit=batch_size,
+    ):
+        message_id = getattr(msg, "id", None)
+        if (
+            not isinstance(message_id, int)
+            or message_id >= backfill_before_message_id
+        ):
+            continue
+        messages.append(msg)
+    return messages
+
+
+async def _load_latest_message_id_for_scan(
+    client: TelegramClient,
+    channel_peer,
+) -> Optional[int]:
+    async for msg in client.iter_messages(channel_peer, limit=1):
+        message_id = getattr(msg, "id", None)
+        if isinstance(message_id, int):
+            return message_id
+    return None
+
+
+async def _resolve_live_scan_floor_message_id(
+    client: TelegramClient,
+    channel_peer,
+    channel_id: int,
+    *,
+    account_id: str,
+    last_checked_message_id: Optional[int],
+) -> Optional[int]:
+    if last_checked_message_id is not None:
+        return int(last_checked_message_id)
+    known_max_message_id = get_max_telegram_product_message_id(
+        channel_id,
+        account_id=account_id,
+    )
+    if known_max_message_id is not None:
+        return int(known_max_message_id)
+    return await _load_latest_message_id_for_scan(client, channel_peer)
+
+
+def _resolve_backfill_floor_message_id(
+    channel_id: int,
+    *,
+    account_id: str,
+    backfill_before_message_id: Optional[int],
+    live_scan_floor_message_id: Optional[int],
+) -> Optional[int]:
+    if backfill_before_message_id is not None:
+        return int(backfill_before_message_id)
+    if live_scan_floor_message_id is not None:
+        return int(live_scan_floor_message_id)
+    known_max_message_id = get_max_telegram_product_message_id(
+        channel_id,
+        account_id=account_id,
+    )
+    if known_max_message_id is not None:
+        return int(known_max_message_id)
+    return None
+
+
+def _scan_error_message(
+    channel_id: int,
+    message_id: Optional[int],
+    exc: Exception,
+) -> str:
+    if message_id is None:
+        return (
+            f"Не удалось просканировать канал {channel_id}: "
+            f"{exc.__class__.__name__}: {exc}"
+        )
+    return (
+        f"Не удалось обработать сообщение channel_id={channel_id} "
+        f"message_id={message_id}: {exc.__class__.__name__}: {exc}"
+    )
+
+
+async def _scan_single_channel(
+    client: TelegramClient,
+    channel_id: int,
+    *,
+    account_id: str,
+    batch_size: int,
+) -> dict:
+    stats = _new_scan_stats()
+    inserted = 0
+    duplicates = 0
+    last_processed_message_id: Optional[int] = None
+    live_scan_floor_message_id: Optional[int] = None
+    backfill_before_message_id: Optional[int] = None
+    backfill_last_processed_message_id: Optional[int] = None
+    backfill_error_message: Optional[str] = None
+    backfill_attempted = False
+    live_messages_fetched = 0
+    backfill_messages_fetched = 0
+    error_message: Optional[str] = None
+
+    cursor = get_telegram_scan_cursor(channel_id, account_id=account_id)
+    last_checked_message_id = cursor.get("last_checked_message_id")
+    backfill_before_message_id = cursor.get("backfill_before_message_id")
+    mark_telegram_scan_started(channel_id, account_id=account_id)
+
+    try:
+        channel_peer = await _resolve_channel_peer(client, channel_id)
+        live_scan_floor_message_id = await _resolve_live_scan_floor_message_id(
+            client,
+            channel_peer,
+            channel_id,
+            account_id=account_id,
+            last_checked_message_id=last_checked_message_id,
+        )
+        messages = await _load_messages_for_scan(
+            client,
+            channel_peer,
+            last_checked_message_id=live_scan_floor_message_id,
+            batch_size=batch_size,
+        )
+        live_messages_fetched = len(messages)
+        stats["fetched"] += live_messages_fetched
+        live_result = _process_scanned_messages(
+            messages,
+            channel_id=channel_id,
+            account_id=account_id,
+            stats=stats,
+        )
+        inserted += int(live_result["inserted"] or 0)
+        duplicates += int(live_result["duplicates"] or 0)
+        last_processed_message_id = live_result["last_processed_message_id"]  # type: ignore[assignment]
+        error_message = str(live_result["error_message"] or "") or None
+
+        if error_message is None and live_messages_fetched == 0:
+            resolved_backfill_before = _resolve_backfill_floor_message_id(
+                channel_id,
+                account_id=account_id,
+                backfill_before_message_id=backfill_before_message_id,
+                live_scan_floor_message_id=live_scan_floor_message_id,
+            )
+            if resolved_backfill_before is not None and resolved_backfill_before > 1:
+                backfill_attempted = True
+                mark_telegram_backfill_started(channel_id, account_id=account_id)
+                backfill_messages = await _load_messages_for_backfill(
+                    client,
+                    channel_peer,
+                    backfill_before_message_id=resolved_backfill_before,
+                    batch_size=batch_size,
+                )
+                backfill_messages_fetched = len(backfill_messages)
+                stats["fetched"] += backfill_messages_fetched
+                backfill_result = _process_scanned_messages(
+                    backfill_messages,
+                    channel_id=channel_id,
+                    account_id=account_id,
+                    stats=stats,
+                )
+                inserted += int(backfill_result["inserted"] or 0)
+                duplicates += int(backfill_result["duplicates"] or 0)
+                backfill_last_processed_message_id = backfill_result[
+                    "last_processed_message_id"
+                ]  # type: ignore[assignment]
+                backfill_error_message = (
+                    str(backfill_result["error_message"] or "") or None
+                )
+                next_backfill_before_message_id = resolved_backfill_before
+                if backfill_error_message is None:
+                    if backfill_last_processed_message_id is not None:
+                        next_backfill_before_message_id = backfill_last_processed_message_id
+                    elif backfill_messages_fetched == 0:
+                        next_backfill_before_message_id = 1
+                finish_telegram_backfill(
+                    channel_id,
+                    backfill_before_message_id=next_backfill_before_message_id,
+                    account_id=account_id,
+                    error_message=backfill_error_message,
+                )
+    except Exception as exc:
+        error_message = _scan_error_message(channel_id, None, exc)
+        log("ERROR", error_message)
+    finally:
+        finish_telegram_scan(
+            channel_id,
+            last_checked_message_id=(
+                last_processed_message_id
+                if last_processed_message_id is not None
+                else live_scan_floor_message_id
+            ),
+            account_id=account_id,
+            error_message=error_message,
+        )
+
+    return {
+        "channel_id": channel_id,
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "live_messages_fetched": live_messages_fetched,
+        "backfill_attempted": backfill_attempted,
+        "backfill_messages_fetched": backfill_messages_fetched,
+        "backfill_last_processed_message_id": backfill_last_processed_message_id,
+        "backfill_error_message": backfill_error_message,
+        "last_processed_message_id": last_processed_message_id,
+        "error_message": error_message,
+        "stats": stats,
+    }
+
+
+async def scan_account_telegram_channels_async(
+    batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+) -> dict:
+    channel_ids = _get_channel_ids()
+    return await _scan_selected_telegram_channels_async(
+        channel_ids,
+        batch_size=batch_size,
+    )
+
+
+async def _scan_selected_telegram_channels_async(
+    channel_ids: list[int],
+    *,
+    batch_size: int,
+) -> dict:
+    normalized_batch_size = min(
+        max(int(batch_size or DEFAULT_TELEGRAM_SCAN_BATCH_SIZE), 1),
+        DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+    )
+    account_id = _current_account_id()
     api_id_value, api_hash_value = _require_telegram_credentials()
+    inserted = 0
+    duplicates = 0
+    results: list[dict] = []
+    if not channel_ids:
+        return {
+            "account_id": account_id,
+            "batch_size": normalized_batch_size,
+            "inserted": 0,
+            "duplicates": 0,
+            "channels": [],
+        }
     async with create_telegram_client(
         TELEGRAM_SESSION_PATH,
         api_id_value,
@@ -2431,69 +2835,83 @@ async def _fetch_messages(message_amount: int = 200) -> int:
         save_entities=False,
         telegram_client_cls=TelegramClient,
     ) as client:
-        channel_ids = _get_channel_ids()
-        await _sync_channel_titles(client, channel_ids)
         for channel_id in channel_ids:
-            peer = await _resolve_channel_peer(client, channel_id)
-            async for msg in client.iter_messages(peer, limit=message_amount):
-                if debug_fetch:
-                    stats["total"] += 1
-                if not msg.media:
-                    if debug_fetch:
-                        stats["no_media"] += 1
-                    log_skip("no_media", msg.message or "", msg.id, channel_id)
-                    continue
-                if not _is_photo_message(msg):
-                    if debug_fetch:
-                        stats["non_photo_media"] += 1
-                    log_skip("non_photo_media", msg.message or "", msg.id, channel_id)
-                    continue
-                if not msg.message:
-                    if debug_fetch:
-                        stats["no_text"] += 1
-                    log_skip("no_text", "", msg.id, channel_id)
-                    continue
-                parsed = parse_message(msg.message)
-                if not is_mode_allowed_parsed(parsed):
-                    continue
-                if not parsed.get("name"):
-                    if debug_fetch:
-                        stats["missing_name"] += 1
-                    log_skip("missing_name", msg.message, msg.id, channel_id)
-                    continue
-                if not parsed.get("price"):
-                    if debug_fetch:
-                        stats["missing_price"] += 1
-                    log_skip("missing_price", msg.message, msg.id, channel_id)
-                    continue
-                if not parsed.get("size"):
-                    if debug_fetch:
-                        stats["missing_size"] += 1
-                    log_skip("missing_size", msg.message, msg.id, channel_id)
-                    continue
-                if debug_fetch:
-                    stats["parsed_ok"] += 1
-                if save_telegram_product(channel_id, msg.id, msg.message, parsed):
-                    inserted += 1
-                    if debug_fetch:
-                        stats["saved"] += 1
-                elif debug_fetch:
-                    stats["duplicate"] += 1
-    if debug_fetch:
-        print(
-            "[DEBUG] fetch stats: "
-            f"total={stats['total']} "
-            f"no_media={stats['no_media']} "
-            f"non_photo_media={stats['non_photo_media']} "
-            f"no_text={stats['no_text']} "
-            f"missing_name={stats['missing_name']} "
-            f"missing_price={stats['missing_price']} "
-            f"missing_size={stats['missing_size']} "
-            f"parsed_ok={stats['parsed_ok']} "
-            f"saved={stats['saved']} "
-            f"duplicate={stats['duplicate']}"
+            channel_result = await _scan_single_channel(
+                client,
+                channel_id,
+                account_id=account_id,
+                batch_size=normalized_batch_size,
+            )
+            inserted += int(channel_result["inserted"])
+            duplicates += int(channel_result["duplicates"])
+            results.append(channel_result)
+    return {
+        "account_id": account_id,
+        "batch_size": normalized_batch_size,
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "channels": results,
+    }
+
+
+async def scan_next_due_telegram_channel_async(
+    batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+) -> dict:
+    channel_ids = _get_channel_ids()
+    claimed_channel_id, lease_token, status = _claim_due_telegram_channel(channel_ids)
+    if claimed_channel_id is None:
+        return {
+            "account_id": _current_account_id(),
+            "batch_size": min(
+                max(int(batch_size or DEFAULT_TELEGRAM_SCAN_BATCH_SIZE), 1),
+                DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+            ),
+            "status": status,
+            "channel_id": None,
+            "inserted": 0,
+            "duplicates": 0,
+            "channels": [],
+        }
+
+    try:
+        result = await _scan_selected_telegram_channels_async(
+            [claimed_channel_id],
+            batch_size=batch_size,
         )
-    return inserted
+    except Exception:
+        _finish_due_telegram_channel(claimed_channel_id, lease_token, success=False)
+        raise
+
+    _finish_due_telegram_channel(claimed_channel_id, lease_token, success=True)
+    result["status"] = "scanned"
+    result["channel_id"] = claimed_channel_id
+    return result
+
+
+def scan_account_telegram_channels(
+    batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+) -> dict:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(scan_account_telegram_channels_async(batch_size=batch_size))
+    raise RuntimeError(
+        "scan_account_telegram_channels cannot be called when an event loop is running. "
+        "Use scan_account_telegram_channels_async."
+    )
+
+
+def scan_next_due_telegram_channel(
+    batch_size: int = DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+) -> dict:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(scan_next_due_telegram_channel_async(batch_size=batch_size))
+    raise RuntimeError(
+        "scan_next_due_telegram_channel cannot be called when an event loop is running. "
+        "Use scan_next_due_telegram_channel_async."
+    )
 
 
 async def _collect_group_messages(
@@ -3565,7 +3983,12 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 async def get_next_product_for_upload_async(
     message_amount: int = 200,
     first_fetch_check: bool | None = None,
+    scan_before_pick: bool = True,
 ) -> Optional[dict]:
+    product = _pick_next_product_for_upload()
+    if product is not None or not scan_before_pick:
+        return product
+
     fetch_status, lease_token = _claim_shared_telegram_fetch()
     if fetch_status == "acquired":
         fetch_completed = False
@@ -3590,12 +4013,20 @@ async def get_next_product_for_upload_async(
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 200, first_fetch_check: bool | None = None) -> Optional[dict]:
+def get_next_product_for_upload(
+    message_amount: int = 200,
+    first_fetch_check: bool | None = None,
+    scan_before_pick: bool = True,
+) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(
-            get_next_product_for_upload_async(message_amount=message_amount, first_fetch_check=first_fetch_check)
+            get_next_product_for_upload_async(
+                message_amount=message_amount,
+                first_fetch_check=first_fetch_check,
+                scan_before_pick=scan_before_pick,
+            )
         )
     raise RuntimeError(
         "get_next_product_for_upload cannot be called when an event loop is running. "

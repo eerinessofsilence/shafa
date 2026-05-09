@@ -20,12 +20,25 @@ from shafa_control import (
     AccountSessionStore,
     LogRecord,
     LogStore,
+    default_project_dir,
+    is_runnable_project_dir,
+    nested_runnable_project_dir,
     preferred_project_dir,
     project_main_path,
+    resolve_project_dir,
 )
 from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
+from telegram_accounts_api.utils.account_logging import (
+    get_account_log_store,
+    is_ignorable_log_message,
+    normalize_log_message,
+    log,
+)
 from telegram_accounts_api.utils.exceptions import BadRequestError, NotFoundError, StorageError
-from telegram_accounts_api.utils.storage import JsonListStorage
+from telegram_accounts_api.utils.storage import JsonListStorage, read_json_list_file
+
+LOGGER = logging.getLogger(__name__)
+LEGACY_DEFAULT_PROJECT_PATH = "/Users/eeri/coding/python/projects/scripts/shafa"
 
 ACCOUNT_KNOWN_FIELDS = {
     "id",
@@ -34,8 +47,8 @@ ACCOUNT_KNOWN_FIELDS = {
     "phone_number",
     "path",
     "branch",
-    "open_browser",
     "timer_minutes",
+    "markup_amount",
     "channel_links",
     "status",
     "last_run",
@@ -90,15 +103,15 @@ class AccountService:
             account_id = uuid4().hex
 
         timestamp = datetime.now(UTC).isoformat()
-        default_project_path = str(self.session_store.base_dir)
+        default_project_path = str(default_project_dir(self.session_store.base_dir))
         record = {
             "id": account_id,
             "name": data.name,
             "phone_number": data.phone,
             "path": data.path or default_project_path,
             "branch": data.branch,
-            "open_browser": data.open_browser,
             "timer_minutes": data.timer_minutes,
+            "markup_amount": data.markup_amount,
             "channel_links": data.channel_links,
             "status": "stopped",
             "last_run": None,
@@ -109,6 +122,9 @@ class AccountService:
         payload.append(record)
         await self._write_payload(payload)
         self._ensure_account_dir(account_id)
+        self.session_store.mark_pending_telegram_queue_seed(
+            self._record_to_account(record)
+        )
         log(account_id, "INFO", "Account created.")
         return await self._to_model(record)
 
@@ -124,10 +140,10 @@ class AccountService:
                 item["name"] = data.name
             if data.path is not None:
                 item["path"] = data.path
-            if data.open_browser is not None:
-                item["open_browser"] = data.open_browser
             if data.timer_minutes is not None:
                 item["timer_minutes"] = data.timer_minutes
+            if "markup_amount" in data.model_fields_set:
+                item["markup_amount"] = data.markup_amount
             if data.channel_links is not None:
                 item["channel_links"] = data.channel_links
 
@@ -140,17 +156,12 @@ class AccountService:
 
         await self._write_payload(payload)
         LOGGER.info("Updated account %s", account_id)
-        await self.storage.write(payload)
         log(account_id, "INFO", "Account settings updated.")
         return await self._to_model(updated_record)
 
     async def delete_account(self, account_id: str) -> None:
         await self.stop_account(account_id)
-        payload = await self._read_payload()
-        filtered = [item for item in payload if str(item.get("id")) != account_id]
-        if len(filtered) == len(payload):
-            raise NotFoundError(f"Account '{account_id}' not found.")
-        await self._write_payload(filtered)
+        self._delete_record_sync(account_id)
         account_dir = self.accounts_dir / account_id
         if account_dir.exists():
             shutil.rmtree(account_dir)
@@ -163,8 +174,13 @@ class AccountService:
         if running_process is not None:
             return await self._to_model(record)
 
-        launch_context = self._build_launch_context(account)
-        process = self._spawn_process(account, launch_context)
+        try:
+            launch_context = self._build_launch_context(account)
+            process = self._spawn_process(account, launch_context)
+        except BadRequestError as exc:
+            self._append_log(account, f"[ERROR] {exc.message}")
+            self._update_record_sync(account_id, self._mark_process_failed)
+            raise
         await asyncio.sleep(0.2)
 
         exit_code = process.poll()
@@ -201,22 +217,7 @@ class AccountService:
                 f"[CHANNELS] exported {len(account.channel_links)} link(s)",
             )
         LOGGER.info("Started account %s with pid %s", account_id, process.pid)
-    async def set_status(self, account_id: str, status: str) -> AccountRead:
-        payload = await self.storage.read()
-        updated_record: dict | None = None
-        for item in payload:
-            if str(item.get("id")) != account_id:
-                continue
-            item["status"] = status
-            item["updated_at"] = datetime.now(UTC).isoformat()
-            if status == "started":
-                item["last_run"] = datetime.now().isoformat(timespec="seconds")
-            updated_record = item
-            break
-        if updated_record is None:
-            raise NotFoundError(f"Account '{account_id}' not found.")
-        await self.storage.write(payload)
-        log(account_id, "INFO", f"Account status changed to {status}.")
+        log(account_id, "INFO", f"Account status changed to started (pid={process.pid}).")
         return await self._to_model(updated_record)
 
     async def stop_account(self, account_id: str) -> AccountRead:
@@ -233,13 +234,22 @@ class AccountService:
         with self._process_lock:
             self._expected_stops.add(account_id)
 
-        await asyncio.to_thread(self._terminate_process, managed.process)
+        self._terminate_process(managed.process)
         updated_record = await self._update_record(
             account_id,
             lambda item: self._mark_process_stopped(item),
         )
         self._append_log(account, "[STOP] stop requested from API")
         LOGGER.info("Stopped account %s", account_id)
+        log(account_id, "INFO", "Account status changed to stopped.")
+        return await self._to_model(updated_record)
+
+    async def set_account_phone(self, account_id: str, phone: str) -> AccountRead:
+        normalized_phone = str(phone or "").strip()
+        updated_record = await self._update_record(
+            account_id,
+            lambda item: self._set_phone_number(item, normalized_phone),
+        )
         return await self._to_model(updated_record)
 
     async def set_status(self, account_id: str, status: str) -> AccountRead:
@@ -279,8 +289,8 @@ class AccountService:
             phone=phone,
             path=runtime_account.path,
             branch=runtime_account.branch,
-            open_browser=runtime_account.open_browser,
             timer_minutes=runtime_account.timer_minutes,
+            markup_amount=runtime_account.markup_amount,
             channel_links=runtime_account.channel_links,
             status=status,
             last_run=item.get("last_run"),
@@ -295,33 +305,37 @@ class AccountService:
         )
 
     async def _read_payload(self) -> list[dict]:
-        return await asyncio.to_thread(self._read_payload_sync)
+        return self._read_payload_sync()
 
     async def _write_payload(self, payload: list[dict]) -> None:
-        await asyncio.to_thread(self._write_payload_sync, payload)
+        self._write_payload_sync(payload)
 
     def _read_payload_sync(self) -> list[dict]:
         with self._records_lock:
-            if not self.storage.path.exists():
-                return []
-            try:
-                raw = json.loads(self.storage.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise StorageError(f"Failed to read JSON file: {self.storage.path}") from exc
-            if not isinstance(raw, list):
-                raise StorageError(f"Expected a JSON list in {self.storage.path}")
-            return [item for item in raw if isinstance(item, dict)]
+            return [
+                self._normalize_record(item)
+                for item in read_json_list_file(self.storage.path)
+            ]
 
     def _write_payload_sync(self, payload: list[dict]) -> None:
         with self._records_lock:
             try:
                 self.storage.path.parent.mkdir(parents=True, exist_ok=True)
+                normalized_payload = [self._normalize_record(item) for item in payload]
                 self.storage.path.write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    json.dumps(normalized_payload, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
             except OSError as exc:
                 raise StorageError(f"Failed to write JSON file: {self.storage.path}") from exc
+
+    def _delete_record_sync(self, account_id: str) -> None:
+        with self._records_lock:
+            payload = self._read_payload_sync()
+            filtered = [item for item in payload if str(item.get("id")) != account_id]
+            if len(filtered) == len(payload):
+                raise NotFoundError(f"Account '{account_id}' not found.")
+            self._write_payload_sync(filtered)
 
     async def _get_record(self, account_id: str) -> dict:
         payload = await self._read_payload()
@@ -331,7 +345,7 @@ class AccountService:
         raise NotFoundError(f"Account '{account_id}' not found.")
 
     async def _update_record(self, account_id: str, update_fn: Callable[[dict], None]) -> dict:
-        return await asyncio.to_thread(self._update_record_sync, account_id, update_fn)
+        return self._update_record_sync(account_id, update_fn)
 
     def _update_record_sync(self, account_id: str, update_fn: Callable[[dict], None]) -> dict:
         with self._records_lock:
@@ -344,6 +358,39 @@ class AccountService:
                 return dict(item)
         raise NotFoundError(f"Account '{account_id}' not found.")
 
+    @staticmethod
+    def _set_phone_number(item: dict, phone: str) -> None:
+        item["phone_number"] = phone
+        item["updated_at"] = datetime.now(UTC).isoformat()
+
+    def _normalize_record(self, item: dict) -> dict:
+        normalized = dict(item)
+        normalized.pop("open_browser", None)
+        path = str(normalized.get("path") or "").strip()
+        default_path = default_project_dir(self.session_store.base_dir)
+        default_project_path = str(default_path).strip()
+        raw_path = Path(path).expanduser()
+        path_is_runnable = False
+        if path:
+            path_is_runnable = (
+                is_runnable_project_dir(preferred_project_dir(raw_path))
+                or nested_runnable_project_dir(raw_path) is not None
+            )
+        has_runtime_project_default = default_path != self.session_store.base_dir
+        should_use_default_path = (
+            path == LEGACY_DEFAULT_PROJECT_PATH
+            or not path
+            or (
+                has_runtime_project_default
+                and default_project_path
+                and not path_is_runnable
+                and default_project_path != path
+            )
+        )
+        if should_use_default_path:
+            normalized["path"] = default_project_path
+        return normalized
+
     def _record_to_account(self, item: dict) -> Account:
         phone = str(item.get("phone") or item.get("phone_number") or "").strip()
         return Account(
@@ -352,27 +399,37 @@ class AccountService:
             path=str(item.get("path") or "").strip(),
             phone_number=phone,
             branch=str(item.get("branch") or "main").strip() or "main",
-            open_browser=bool(item.get("open_browser", False)),
             timer_minutes=int(item.get("timer_minutes", 5)),
+            markup_amount=self._parse_markup_amount(item.get("markup_amount")),
             channel_links=item.get("channel_links") or [],
             status="started" if str(item.get("status")).strip().lower() in {"started", "running"} else "stopped",
             last_run=item.get("last_run") or "—",
             errors=int(item.get("errors", 0)),
         )
 
+    @staticmethod
+    def _parse_markup_amount(value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed_value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0, min(parsed_value, 100000))
+
     def _build_launch_context(self, account: Account) -> dict[str, str]:
         if not account.path.strip():
-            raise BadRequestError("Account project path is required before starting.")
-        normalized_path = preferred_project_dir(Path(account.path).expanduser())
+            raise BadRequestError("Перед запуском нужно указать путь проекта аккаунта.")
+        normalized_path = resolve_project_dir(Path(account.path).expanduser())
         if not project_main_path(normalized_path).is_file():
-            raise BadRequestError(f"main.py not found at {normalized_path}")
+            raise BadRequestError(f"main.py не найден по пути {normalized_path}")
         if not self.session_store.is_valid_shafa_session(account):
             raise BadRequestError(
-                "Shafa session is missing or invalid. Complete Shafa login before starting the account.",
+                "Сессия Shafa отсутствует или недействительна. Перед запуском аккаунта выполни вход в Shafa.",
             )
         if account.channel_links and not self.session_store.is_valid_telegram_session(account):
             raise BadRequestError(
-                "Telegram session is missing or invalid. Complete Telegram login before starting channel sync.",
+                "Сессия Telegram отсутствует или недействительна. Перед синхронизацией каналов выполни вход в Telegram.",
             )
 
         env = self.runtime.account_env(account)
@@ -399,12 +456,14 @@ class AccountService:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 env=launch_context,
                 **popen_kwargs,
             )
         except OSError as exc:
-            raise BadRequestError(f"Failed to start account process: {exc}") from exc
+            raise BadRequestError(f"Не удалось запустить процесс аккаунта: {exc}") from exc
 
     def _watch_process(self, account: Account, process: subprocess.Popen[str]) -> None:
         try:
@@ -477,15 +536,26 @@ class AccountService:
             LOGGER.exception("Failed to kill pid %s", process.pid)
 
     def _append_log(self, account: Account, message: str) -> None:
+        normalized_message = normalize_log_message(message)
+        if is_ignorable_log_message(normalized_message):
+            return
+
+        record = LogRecord(
+            timestamp=datetime.now(),
+            message=normalized_message,
+            level=self.log_store.detect_level(normalized_message),
+            account_id=account.id,
+            account_name=account.name,
+        )
         self.log_store.append(
-            LogRecord(
-                timestamp=datetime.now(),
-                message=message,
-                level=self.log_store.detect_level(message),
-                account_id=account.id,
-                account_name=account.name,
-            ),
+            record,
             account_log_file=self.session_store.account_log_file(account),
+        )
+        get_account_log_store().append(
+            account_id=account.id,
+            level=record.level,
+            message=normalized_message,
+            timestamp=record.timestamp,
         )
 
     def _consume_process_output(self, process: subprocess.Popen[str]) -> str:
@@ -515,7 +585,7 @@ class AccountService:
 
     def _format_start_failure(self, account: Account, exit_code: int, output: str) -> str:
         tail = output.splitlines()[-1].strip() if output else ""
-        detail = f"Account '{account.name}' exited immediately with code {exit_code}."
+        detail = f"Аккаунт '{account.name}' сразу завершился с кодом {exit_code}."
         if tail:
             detail = f"{detail} {tail}"
         return detail

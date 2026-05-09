@@ -905,6 +905,15 @@ def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _contains_hint_phrase(text: str, keywords: tuple[str, ...]) -> bool:
+    normalized_text = text.casefold()
+    for keyword in keywords:
+        pattern = rf"(?<!\w){re.escape(keyword.casefold())}(?!\w)"
+        if re.search(pattern, normalized_text):
+            return True
+    return False
+
+
 def _line_has_url(line: str) -> bool:
     lower = line.casefold()
     return "http://" in lower or "https://" in lower or "www." in lower
@@ -1375,7 +1384,7 @@ def _clean_selected_name(value: str) -> str:
 
 
 def _has_forbidden_name_hint(name: str) -> bool:
-    return _contains_any(name.casefold(), _FORBIDDEN_NAME_HINTS)
+    return _contains_hint_phrase(name, _FORBIDDEN_NAME_HINTS)
 
 
 def _is_valid_selected_name(name: str) -> bool:
@@ -1383,6 +1392,11 @@ def _is_valid_selected_name(name: str) -> bool:
     if not text:
         return False
     if _is_garbage_name_line(text):
+        return False
+    lower = text.casefold()
+    if _contains_hint_phrase(lower, _NON_NAME_HINTS) or _contains_hint_phrase(
+        lower, _NAME_EXCLUDE_HINTS
+    ):
         return False
     if _has_forbidden_name_hint(text):
         return False
@@ -1462,13 +1476,15 @@ def _strip_name_prefix(text: str) -> str:
 def _looks_like_name(line: str) -> bool:
     if _is_garbage_name_line(line):
         return False
+    if _looks_like_article_line(line):
+        return False
     if len(line) < 3 or len(line) > 120:
         return False
     lower = line.casefold()
     if (
-        _contains_any(lower, _NON_NAME_HINTS)
-        or _contains_any(lower, _NAME_EXCLUDE_HINTS)
-        or _contains_any(lower, _FORBIDDEN_NAME_HINTS)
+        _contains_hint_phrase(lower, _NON_NAME_HINTS)
+        or _contains_hint_phrase(lower, _NAME_EXCLUDE_HINTS)
+        or _contains_hint_phrase(lower, _FORBIDDEN_NAME_HINTS)
     ):
         return False
     if _line_has_url(line) or "@" in line:
@@ -1584,25 +1600,80 @@ def capitalise_first_word(s: str) -> str:
         return s
     return s[0].upper() + s[1:]
 
-def extract_name(lines: list[str]) -> tuple[str, str]:
-    shirt_name = _extract_shirt_name(lines)
-    if shirt_name:
-        return shirt_name, _infer_word_for_slack(lines, shirt_name)
-
-    article_name = _extract_article_name(lines)
-    if article_name:
-        return article_name, _infer_word_for_slack(lines, article_name)
-
-    return "", _infer_word_for_slack(lines, "")
-
-
-def _infer_word_for_slack(lines: list[str], name: str) -> str:
-    for source in ([name] if name else []) + list(lines):
-        for word in source.casefold().split():
+def _extract_word_for_slack(lines: list[str], name: str = "") -> str:
+    sources = ([name] if name else []) + list(lines)
+    for source in sources:
+        lower_words = source.casefold().split()
+        if any(bad in lower_words for bad in _NON_NAME_HINTS + _NAME_EXCLUDE_HINTS):
+            continue
+        for word in lower_words:
             word_found = find_word(word)
             if word_found:
                 return word_found
     return ""
+
+
+def _is_strong_name_candidate(candidate: str, word_for_slack: str) -> bool:
+    if not candidate:
+        return False
+    if len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate):
+        return True
+    if _find_best_brand_in_text(candidate):
+        return True
+    return bool(word_for_slack) and candidate.casefold() == word_for_slack.casefold()
+
+
+def extract_name(lines: list[str]) -> tuple[str, str]:
+    shirt_name = _extract_shirt_name(lines)
+    if shirt_name:
+        return shirt_name, _extract_word_for_slack(lines, shirt_name)
+
+    article_name = _extract_article_name(lines)
+    if article_name:
+        return article_name, _extract_word_for_slack(lines, article_name)
+
+    word_for_slack = _extract_word_for_slack(lines)
+
+    for line in lines:
+        match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and not _looks_like_article(candidate):
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)^(?:отримали|получили|поступили|поступление|завезли)\s+(?:новинк\w*\s+)?(.+)$",
+            line,
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and _is_strong_name_candidate(candidate, word_for_slack):
+                return candidate, word_for_slack or ""
+    for line in lines:
+        match = re.search(
+            r"(?i)\b(?:анонс(?:уємо)?|анонсуємо|новинк\w*|new)\b[:\-]?\s*(.+)", line
+        )
+        if match:
+            candidate = _clean_name(match.group(1))
+            if candidate and _is_strong_name_candidate(candidate, word_for_slack):
+                return candidate, word_for_slack or ""
+    for line in lines[:3]:
+        if not _looks_like_name(line):
+            continue
+        candidate = capitalise_first_word(clean_line_name(line))
+        if _is_strong_name_candidate(candidate, word_for_slack):
+            return candidate, word_for_slack or ""
+    for line in lines:
+        if not _looks_like_name(line):
+            continue
+        candidate = capitalise_first_word(clean_line_name(line))
+        if _is_strong_name_candidate(candidate, word_for_slack):
+            return candidate, word_for_slack or ""
+    return "", word_for_slack or ""
+
+
+def _infer_word_for_slack(lines: list[str], name: str) -> str:
+    return _extract_word_for_slack(lines, name)
 
 
 def _normalize_number(value: str) -> str:
@@ -3565,7 +3636,12 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 async def get_next_product_for_upload_async(
     message_amount: int = 200,
     first_fetch_check: bool | None = None,
+    scan_before_pick: bool = True,
 ) -> Optional[dict]:
+    product = _pick_next_product_for_upload()
+    if product is not None or not scan_before_pick:
+        return product
+
     fetch_status, lease_token = _claim_shared_telegram_fetch()
     if fetch_status == "acquired":
         fetch_completed = False
@@ -3590,12 +3666,20 @@ async def get_next_product_for_upload_async(
     return _pick_next_product_for_upload()
 
 
-def get_next_product_for_upload(message_amount: int = 200, first_fetch_check: bool | None = None) -> Optional[dict]:
+def get_next_product_for_upload(
+    message_amount: int = 200,
+    first_fetch_check: bool | None = None,
+    scan_before_pick: bool = True,
+) -> Optional[dict]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(
-            get_next_product_for_upload_async(message_amount=message_amount, first_fetch_check=first_fetch_check)
+            get_next_product_for_upload_async(
+                message_amount=message_amount,
+                first_fetch_check=first_fetch_check,
+                scan_before_pick=scan_before_pick,
+            )
         )
     raise RuntimeError(
         "get_next_product_for_upload cannot be called when an event loop is running. "

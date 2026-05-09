@@ -37,8 +37,8 @@ class WithPlaywrightRetryTests(unittest.TestCase):
         storage_state_has_cookies,
         get_csrftoken_from_context,
         _save_cookies,
-        list_media_files,
         prepare_media_batch_for_upload,
+        list_media_files,
         verbose_photo_logs_enabled,
         progress_bar,
         upload_photo,
@@ -106,6 +106,9 @@ class WithPlaywrightRetryTests(unittest.TestCase):
 
             with_playwright.main()
 
+        self.assertFalse(
+            get_next_product_for_upload.call_args.kwargs["scan_before_pick"]
+        )
         handle_failure.assert_called_once_with(
             message_id=11543,
             channel_id=9,
