@@ -2,11 +2,29 @@ const runtimeApiBaseUrl =
   typeof window !== 'undefined'
     ? window.desktopShell?.apiBaseUrl?.replace(/\/+$/, '')
     : undefined;
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '');
+const apiBaseUrlSource = runtimeApiBaseUrl
+  ? 'desktop'
+  : configuredApiBaseUrl
+    ? 'vite'
+    : 'default';
 
 export const apiBaseUrl =
   runtimeApiBaseUrl ||
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '') ||
+  configuredApiBaseUrl ||
   'http://127.0.0.1:8000';
+
+function buildUnavailableApiMessage() {
+  if (apiBaseUrlSource === 'desktop') {
+    return `API недоступно по адресу ${apiBaseUrl}. Проверь, что локальный backend запущен. В desktop-режиме адрес передаётся из Electron, а не через VITE_API_BASE_URL.`;
+  }
+
+  if (apiBaseUrlSource === 'vite') {
+    return `API недоступно по адресу ${apiBaseUrl}. Проверь, что backend запущен и VITE_API_BASE_URL указан верно.`;
+  }
+
+  return `API недоступно по адресу ${apiBaseUrl}. Проверь, что backend запущен. Если UI открыт в браузере, при необходимости укажи VITE_API_BASE_URL.`;
+}
 
 export function buildApiUrl(path: string) {
   const normalizedPath = path.replace(/^\/+/, '');
@@ -47,10 +65,7 @@ export async function request<T>(
       },
     });
   } catch {
-    throw new ApiRequestError(
-      `API недоступно по адресу ${apiBaseUrl}. Проверь, что backend запущен и VITE_API_BASE_URL указан верно.`,
-      0,
-    );
+    throw new ApiRequestError(buildUnavailableApiMessage(), 0);
   }
 
   if (!response.ok) {

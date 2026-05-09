@@ -1,0 +1,956 @@
+import json
+import os
+import random
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable, Optional
+import argparse
+
+from utils.stdio import install_safe_stdio
+
+install_safe_stdio()
+
+from telegram_subscription import complete_login, send_code, session_status, submit_password, sync_channels_from_runtime_config
+from utils.pipeline_activity import is_product_pipeline_active
+
+_ADD_CHANNEL = object()
+SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
+
+
+def _load_inquirer():
+    try:
+        import inquirer
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Модуль 'inquirer' нужен только для интерактивного CLI-меню. "
+            "Для запуска меню установи его в используемое окружение Python."
+        ) from exc
+    return inquirer
+
+def _ensure_tty() -> bool:
+    if not sys.stdin.isatty():
+        print("Нужен интерактивный терминал.")
+        return False
+    return True
+
+
+def _print_ascii_banner() -> None:
+    path = Path(__file__).resolve().parent / "data" / "ascii.txt"
+    if not path.exists():
+        return
+    try:
+        banner = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not banner:
+        return
+    if banner.endswith("\n"):
+        sys.stdout.write(banner)
+    else:
+        sys.stdout.write(f"{banner}\n")
+
+
+def _prompt_list(
+    message: str, choices: list[tuple[str, Any]], default: Any = None
+) -> Optional[Any]:
+    if not _ensure_tty():
+        return None
+    inquirer = _load_inquirer()
+    question = inquirer.List(
+        "choice",
+        message=message,
+        choices=choices,
+        default=default,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return answers.get("choice")
+
+
+def _prompt_checkbox(
+    message: str, choices: list[tuple[str, Any]]
+) -> Optional[list[Any]]:
+    if not _ensure_tty():
+        return None
+    inquirer = _load_inquirer()
+    question = inquirer.Checkbox(
+        "items",
+        message=message,
+        choices=choices,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return answers.get("items") or []
+
+
+def _prompt_text(
+    message: str,
+    default: Optional[str] = None,
+    required: bool = False,
+    validator: Optional[Callable[[str], Any]] = None,
+) -> Optional[str]:
+    if not _ensure_tty():
+        return None
+    inquirer = _load_inquirer()
+
+    def _validate(_: dict, value: str) -> Any:
+        if required and not value:
+            return "Поле обязательно."
+        if validator is None:
+            return True
+        return validator(value)
+
+    question = inquirer.Text(
+        "value",
+        message=message,
+        default=default if default is not None else "",
+        # When not required and no custom validator, always accept input.
+        validate=_validate if required or validator else True,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return str(answers.get("value") or "")
+
+
+def _prompt_int(
+    message: str,
+    default: Optional[int] = None,
+    min_value: Optional[int] = None,
+    required: bool = False,
+) -> Optional[int]:
+    if not _ensure_tty():
+        return None
+    inquirer = _load_inquirer()
+
+    def _validate(_: dict, value: str) -> Any:
+        if not value:
+            if required:
+                return "Введите число."
+            return True
+        if not value.isdigit():
+            return "Введите число."
+        number = int(value)
+        if min_value is not None and number < min_value:
+            return f"Минимум {min_value}."
+        return True
+
+    question = inquirer.Text(
+        "value",
+        message=message,
+        default=str(default) if default is not None else "",
+        validate=_validate if required or min_value is not None else None,
+    )
+    try:
+        answers = inquirer.prompt([question])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    raw = str(answers.get("value") or "").strip()
+    if not raw:
+        return None
+    return int(raw)
+
+
+def _prompt_minutes() -> Optional[int]:
+    return _prompt_int("Интервал в минутах (>=1):", default=10, min_value=1)
+
+
+def _choose_yes_no(question: str, default: bool = True) -> Optional[bool]:
+    if not _ensure_tty():
+        return None
+    inquirer = _load_inquirer()
+    prompt = inquirer.Confirm("confirm", message=question, default=default)
+    try:
+        answers = inquirer.prompt([prompt])
+    except KeyboardInterrupt:
+        print()
+        return None
+    if not answers:
+        return None
+    return bool(answers.get("confirm"))
+
+
+def _background_scan_interval_seconds() -> int:
+    raw = os.getenv("SHAFA_BACKGROUND_TELEGRAM_SCAN_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return 60
+    try:
+        value = int(raw)
+    except ValueError:
+        return 60
+    return min(max(value, 10), 3600)
+
+
+def _background_invalid_products_interval_seconds() -> int:
+    raw = os.getenv("SHAFA_BACKGROUND_INVALID_PRODUCTS_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return 40
+    try:
+        value = int(raw)
+    except ValueError:
+        return 40
+    return min(max(value, 10), 3600)
+
+
+def _bootstrap_new_account_telegram_queue_if_needed() -> int:
+    marker_value = os.getenv("SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH", "").strip()
+    if not marker_value:
+        return 0
+    marker_path = Path(marker_value)
+    if not marker_path.exists():
+        return 0
+    account_id = str(os.getenv("SHAFA_ACCOUNT_ID") or "").strip()
+    if not account_id:
+        raise RuntimeError("Не задан SHAFA_ACCOUNT_ID для bootstrap очереди нового аккаунта.")
+    from data.db import seed_account_telegram_products_from_existing_db
+
+    seeded = seed_account_telegram_products_from_existing_db(account_id)
+    try:
+        marker_path.unlink(missing_ok=True)
+    except OSError as exc:
+        print(
+            "Не удалось удалить marker bootstrap очереди "
+            + f"для аккаунта {account_id}: {exc}"
+        )
+    print(
+        f"Bootstrap очереди Telegram для нового аккаунта {account_id}: "
+        + f"добавлено {seeded} товар(ов)."
+    )
+    return seeded
+
+
+def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thread]:
+    from controller.data_controller import (
+        DEFAULT_TELEGRAM_SCAN_BATCH_SIZE,
+        scan_next_due_telegram_channel,
+    )
+
+    stop_event = threading.Event()
+    interval_seconds = _background_scan_interval_seconds()
+
+    def _worker() -> None:
+        while not stop_event.is_set():
+            if is_product_pipeline_active():
+                if stop_event.wait(5.0):
+                    return
+                continue
+            started_at = time.time()
+            try:
+                result = scan_next_due_telegram_channel(
+                    batch_size=DEFAULT_TELEGRAM_SCAN_BATCH_SIZE
+                )
+                if result.get("status") == "scanned":
+                    inserted = int(result.get("inserted") or 0)
+                    duplicates = int(result.get("duplicates") or 0)
+                    channel_id = result.get("channel_id")
+                    print(
+                        "[INFO] Фоновая проверка Telegram завершена. "
+                        f"Канал: {channel_id}. Новых товаров: {inserted}. "
+                        f"Дубликатов: {duplicates}."
+                    )
+            except Exception as exc:
+                print(f"[ERROR] Фоновое сканирование Telegram не выполнено: {exc}")
+            elapsed = time.time() - started_at
+            wait_seconds = max(1.0, interval_seconds - elapsed)
+            if stop_event.wait(wait_seconds):
+                return
+
+    thread = threading.Thread(
+        target=_worker,
+        name="telegram-background-scanner",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def _start_background_invalid_products_deactivator() -> tuple[threading.Event, threading.Thread]:
+    from core.requests import deactivate_product
+
+    stop_event = threading.Event()
+    interval_seconds = _background_invalid_products_interval_seconds()
+
+    def _worker() -> None:
+        while not stop_event.is_set():
+            if is_product_pipeline_active():
+                if stop_event.wait(5.0):
+                    return
+                continue
+            started_at = time.time()
+            try:
+                result = deactivate_product.deactivate_next_invalid_uploaded_product()
+                deactivated = result.get("deactivated") or []
+                errors = result.get("errors") or []
+                if deactivated:
+                    print(
+                        "[INFO] Фоновая деактивация невалидного товара выполнена. "
+                        f"Обработано: {len(deactivated)}."
+                    )
+                elif errors:
+                    first_error = errors[0]
+                    print(
+                        "[WARN] Фоновая деактивация невалидного товара не выполнена. "
+                        f"{first_error.get('account') or 'default'} | "
+                        f"{first_error.get('name') or 'нет данных'} | "
+                        f"{_format_invalid_deactivation_reason(first_error.get('reason'))}"
+                    )
+            except Exception as exc:
+                print(f"[ERROR] Фоновая деактивация невалидных товаров не выполнена: {exc}")
+            elapsed = time.time() - started_at
+            wait_seconds = max(1.0, interval_seconds - elapsed)
+            if stop_event.wait(wait_seconds):
+                return
+
+    thread = threading.Thread(
+        target=_worker,
+        name="invalid-products-background-deactivator",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def _format_invalid_deactivation_reason(reason: object) -> str:
+    if reason == "authentication_required":
+        return "Нужен повторный вход в Shafa."
+    if reason == "missing_cookies":
+        return "Нет сохранённых cookies Shafa."
+    if reason == "not_found_by_name":
+        return "Активный товар не найден по имени."
+    if reason == "empty_response":
+        return "Shafa вернула пустой ответ."
+    if reason == "deactivation_failed":
+        return "Shafa не подтвердила деактивацию."
+    text = str(reason or "").strip()
+    return text or "неизвестно"
+
+
+def run_periodic(action: Callable[[], None], label: str, shafa: bool | None = None) -> None:
+    if shafa == False:
+        minutes = _prompt_minutes()
+    else:
+        minutes = 5
+    if minutes is None:
+        return
+    interval = minutes * 60
+    print(f"Запуск периодического режима: {label}. Интервал: {minutes} мин.")
+    while True:
+        try:
+            action()
+        except Exception as exc:
+            print(f"[ОШИБКА] {label} не выполнено: {exc}")
+        try:
+            percent = random.randint(1, 30)
+            sign = random.choice((-1, 1))
+            jitter = interval * (percent / 100.0)
+            delay = max(1.0, interval + sign * jitter)
+            next_at = time.strftime("%H:%M:%S", time.localtime(time.time() + delay))
+            direction = "+" if sign > 0 else "-"
+            delay_minutes = delay / 60.0
+            print(
+                "Следующий запуск в "
+                f"{next_at}. Пауза: {delay_minutes:.1f} мин ({direction}{percent}%). "
+                "Нажмите Ctrl+C для остановки."
+            )
+            time.sleep(delay)
+        except KeyboardInterrupt:
+            print()
+            return
+
+
+def _create_product() -> None:
+    use_gui = _choose_yes_no("С окном браузера?", default=False)
+    if use_gui is None:
+        return
+    if use_gui:
+        from core.with_playwright import main as with_playwright_main
+
+        with_playwright_main()
+    else:
+        from core.no_playwright import main as no_playwright_main
+
+        no_playwright_main()
+
+
+def _auto_create_product(shafa: bool | None = None) -> None:
+    if shafa:
+        from core.no_playwright import main as no_playwright_main
+
+        run_periodic(no_playwright_main, "Без Playwright", shafa=shafa)
+    else:
+        use_gui = _choose_yes_no("С окном браузера?", default=False)
+        if use_gui is None:
+            return
+        if use_gui:
+            from core.with_playwright import main as with_playwright_main
+
+            run_periodic(with_playwright_main, "Playwright")
+        else:
+            from core.no_playwright import main as no_playwright_main
+
+            run_periodic(no_playwright_main, "Без Playwright")
+
+
+def _bootstrap_project() -> None:
+    from core import bootstrap
+
+    bootstrap.main()
+
+
+def _launch_visible_browser(playwright, *, headless: bool):
+    launch_kwargs = {"headless": headless}
+    last_error: Exception | None = None
+
+    if os.name == "nt" and not headless:
+        for channel in ("msedge", "chrome"):
+            try:
+                browser = playwright.chromium.launch(channel=channel, **launch_kwargs)
+                return browser, channel
+            except Exception as exc:  # pragma: no cover - exercised via fallback tests
+                last_error = exc
+
+    try:
+        browser = playwright.chromium.launch(**launch_kwargs)
+        return browser, "chromium"
+    except Exception:
+        if last_error is not None:
+            raise last_error
+        raise
+
+
+def _login_account() -> None:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+
+    from core.context import new_context_with_storage
+    from core.core import get_csrftoken_from_context
+    from data.const import STORAGE_STATE_PATH
+    from data.db import init_db, save_cookies
+
+    confirmation_file = Path(os.getenv("SHAFA_LOGIN_CONFIRMATION_FILE", "").strip())
+    init_db()
+    with sync_playwright() as p:
+        browser, browser_name = _launch_visible_browser(p, headless=False)
+        try:
+            ctx = new_context_with_storage(browser)
+            page = ctx.new_page()
+            page.set_default_timeout(60000)
+            print(f"Открываю браузер Shafa через {browser_name}.")
+            page.goto(SHAFA_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except PlaywrightTimeoutError:
+                pass
+
+            print("Выполни вход в аккаунт в окне браузера. Ожидание сохранения сессии...")
+            deadline = time.time() + 600
+            last_seen_url = page.url
+            redirect_detected_at: float | None = None
+            login_detected_at: float | None = None
+            while time.time() < deadline:
+                current_url = page.url
+                if current_url != last_seen_url:
+                    last_seen_url = current_url
+                    redirect_detected_at = time.time()
+                    print(f"Обнаружен переход: {current_url}")
+
+                waiting_for_auth_page = any(
+                    token in current_url.lower() for token in ("login", "register")
+                )
+                csrftoken = get_csrftoken_from_context(ctx)
+                if csrftoken and not waiting_for_auth_page:
+                    if login_detected_at is None:
+                        login_detected_at = time.time()
+                        print("Вход обнаружен. Жду 3 секунды, чтобы завершился редирект и обновились cookies...")
+                    wait_from = redirect_detected_at or login_detected_at
+                    if wait_from is not None and time.time() - wait_from < 3:
+                        time.sleep(0.5)
+                        continue
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=3000)
+                    except PlaywrightTimeoutError:
+                        pass
+                    ctx.storage_state(path=str(STORAGE_STATE_PATH))
+                    cookies = ctx.cookies()
+                    save_cookies(cookies)
+                    if confirmation_file:
+                        confirmation_file.write_text("ok\n", encoding="utf-8")
+                    print(f"Вход сохранен. Cookies: {len(cookies)}.")
+                    return
+                time.sleep(2)
+            print("Не удалось получить csrftoken. Проверь, что вход выполнен.")
+        finally:
+            browser.close()
+
+
+def _print_products(limit: int = 20) -> list[dict]:
+    from data.db import list_uploaded_products
+
+    products = list_uploaded_products(limit=limit)
+    if not products:
+        print("Товары не найдены.")
+        return []
+    print("Товары:")
+    for idx, row in enumerate(products, start=1):
+        name = row.get("name") or "нет данных"
+        product_id = row.get("product_id") or "нет данных"
+        print(f"{idx}. {name} | {product_id}")
+    return products
+
+
+def _prompt_action_menu(
+    title: str,
+    actions: list[tuple[str, Callable[[], None]]],
+    exit_label: str,
+) -> Optional[Callable[[], None]]:
+    choices: list[tuple[str, Any]] = [(label, action) for label, action in actions]
+    if exit_label:
+        choices.append((exit_label, None))
+    return _prompt_list(title, choices)
+
+
+def _select_products_for_deactivation(products: list[dict]) -> list[str]:
+    choices: list[tuple[str, str]] = []
+    for idx, row in enumerate(products, start=1):
+        name = row.get("name") or "нет данных"
+        product_id = str(row.get("product_id") or "")
+        label = f"{idx}. {name} | {product_id or 'нет данных'}"
+        choices.append((label, product_id))
+
+    selected = _prompt_checkbox("Выберите товары для деактивации", choices)
+    if selected is None:
+        return []
+    if not selected:
+        print("Ничего не выбрано.")
+        return []
+    return [str(value) for value in selected if value]
+
+
+def _add_telegram_channel() -> None:
+    from data.db import save_telegram_channels
+
+    channel_id = _prompt_int("ID Telegram-канала", required=True)
+    if channel_id is None:
+        return
+    name = _prompt_text("Название канала", required=True)
+    if not name:
+        return
+    alias = _prompt_text("Алиас (необязательно)") or None
+    save_telegram_channels([(channel_id, name, alias)])
+    print("Канал сохранен.")
+
+
+def _list_telegram_channels() -> None:
+    from data.db import load_telegram_channels
+
+    channels = load_telegram_channels()
+    if not channels:
+        print("Telegram-каналы не настроены.")
+        return
+    print("Telegram-канал")
+    for idx, row in enumerate(channels, start=1):
+        alias = row.get("alias") or "-"
+        print(f"{idx}. {row['channel_id']} | {row['name']} | {alias}")
+
+
+def _format_channel_label(channel: dict) -> str:
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    alias = channel.get("alias")
+    if alias:
+        return f"{name} ({alias}) | {channel['channel_id']}"
+    return f"{name} | {channel['channel_id']}"
+
+
+def _delete_telegram_channel(channel: dict) -> None:
+    from data.db import delete_telegram_channel
+
+    label = _format_channel_label(channel)
+    confirm = _choose_yes_no(f"Удалить канал {label}?", default=False)
+    if confirm is None or not confirm:
+        return
+    delete_telegram_channel(channel["channel_id"])
+    print("Канал удален.")
+
+
+def _rename_telegram_channel(channel: dict) -> None:
+    from data.db import rename_telegram_channel
+
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    raw = _prompt_text(f"Новое имя для {name}", required=True)
+    if not raw:
+        return
+    if not rename_telegram_channel(channel["channel_id"], raw):
+        print("Переименование не удалось.")
+        return
+    print("Канал переименован.")
+
+
+def _change_telegram_channel_alias(channel: dict) -> None:
+    from data.db import update_telegram_channel_alias
+
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    current = channel.get("alias") or "-"
+    raw = _prompt_text(
+        f"Новый алиас для {name} (пусто - удалить, текущий: {current}) "
+    )
+    if raw is None:
+        return
+    alias = raw or None
+    if not update_telegram_channel_alias(channel["channel_id"], alias):
+        print("Не удалось обновить алиас.")
+        return
+    print("Алиас обновлен.")
+
+
+def _change_telegram_channel_id(channel: dict) -> None:
+    from data.db import update_telegram_channel_id
+
+    name = channel.get("name") or str(channel.get("channel_id") or "")
+    current_id = channel.get("channel_id")
+    new_id = _prompt_int(
+        f"Новый ID канала для {name} (текущий: {current_id}) ",
+        required=True,
+    )
+    if new_id is None:
+        return
+    if new_id == current_id:
+        print("ID канала не изменен.")
+        return
+    if not update_telegram_channel_id(current_id, new_id):
+        print("Не удалось обновить ID канала.")
+        return
+    print("ID канала обновлен.")
+
+
+def _manage_telegram_channel_actions(channel: dict) -> None:
+    actions = [
+        ("Удалить канал", lambda: _delete_telegram_channel(channel)),
+        ("Переименовать канал", lambda: _rename_telegram_channel(channel)),
+        (
+            "Изменить алиас (например, extra_photos)",
+            lambda: _change_telegram_channel_alias(channel),
+        ),
+        ("Изменить ID", lambda: _change_telegram_channel_id(channel)),
+    ]
+    action = _prompt_action_menu("Что нужно сделать?", actions, "Назад")
+    if action is None:
+        return
+    action()
+
+
+def _manage_telegram_channels() -> None:
+    from data.db import load_telegram_channels
+
+    while True:
+        channels = load_telegram_channels()
+        choices: list[tuple[str, Any]] = [
+            (_format_channel_label(row), row) for row in channels
+        ]
+        choices.append(("[ + ] Добавить Telegram-канал", _ADD_CHANNEL))
+        choices.append(("Назад", None))
+        selection = _prompt_list("Управление Telegram-каналами", choices)
+        if selection is None:
+            return
+        if selection is _ADD_CHANNEL:
+            _add_telegram_channel()
+            continue
+        _manage_telegram_channel_actions(selection)
+
+
+def _clear_storage_state_cookies(path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return True
+    if not isinstance(data, dict):
+        data = {}
+    data["cookies"] = []
+    path.write_text(json.dumps(data, ensure_ascii=True), encoding="utf-8")
+    return True
+
+
+def _delete_account_cookies() -> None:
+    from data.const import STORAGE_STATE_PATH
+    from data.db import delete_all_cookies
+
+    confirm = _choose_yes_no(
+        "Удалить cookies аккаунта из БД и auth.json?",
+        default=False,
+    )
+    if confirm is None or not confirm:
+        return
+    removed = delete_all_cookies()
+    auth_updated = _clear_storage_state_cookies(STORAGE_STATE_PATH)
+    if auth_updated:
+        print(f"Удалено cookies: {removed}. auth.json обновлен.")
+    else:
+        print(f"Удалено cookies: {removed}. auth.json не найден.")
+
+
+def _logout_and_reset_products() -> None:
+    from data.const import STORAGE_STATE_PATH
+    from data.db import delete_all_cookies, reset_telegram_products_created
+
+    confirm = _choose_yes_no(
+        "Выйти из аккаунта и вернуть все товары в очередь?",
+        default=False,
+    )
+    if confirm is None or not confirm:
+        return
+    removed = delete_all_cookies()
+    auth_updated = _clear_storage_state_cookies(STORAGE_STATE_PATH)
+    reset_count = reset_telegram_products_created()
+    if auth_updated:
+        print(f"Удалено cookies: {removed}. auth.json обновлен.")
+    else:
+        print(f"Удалено cookies: {removed}. auth.json не найден.")
+    print(f"Сброшено товаров: {reset_count}.")
+
+
+def _deactivate_product() -> None:
+    from core.requests import deactivate_product
+    from data.db import mark_uploaded_products_deactivated
+
+    products = _print_products()
+    if not products:
+        return
+    selected_values = _select_products_for_deactivation(products)
+    if not selected_values:
+        return
+    product_ids: list[int] = []
+    seen: set[int] = set()
+    for value in selected_values:
+        for product_id in deactivate_product.parse_product_ids(value):
+            if product_id not in seen:
+                seen.add(product_id)
+                product_ids.append(product_id)
+    if not product_ids:
+        print("Не переданы корректные ID товаров.")
+        return
+    successes: list[int] = []
+    errors: list[dict] = []
+    for product_id in product_ids:
+        result = deactivate_product.deactivate_products([product_id])
+        if not result:
+            errors.append(
+                {
+                    "product_id": product_id,
+                    "error": "Не удалось получить ответ.",
+                }
+            )
+            break
+        result_errors = result.get("errors") or []
+        if result_errors:
+            errors.append(
+                {
+                    "product_id": product_id,
+                    "error": result_errors,
+                }
+            )
+            continue
+        if result.get("isSuccess"):
+            mark_uploaded_products_deactivated([product_id])
+            successes.append(product_id)
+            continue
+        errors.append(
+            {
+                "product_id": product_id,
+                "error": "Деактивация не удалась.",
+            }
+        )
+    if errors:
+        print(f"Ошибки деактивации: {errors}")
+    if successes:
+        print(f"Деактивировано товаров: {len(successes)}.")
+    if not successes and not errors:
+        print("Деактивация не удалась.")
+
+
+def _auto_deactivate_invalid_products() -> None:
+    from core.requests import deactivate_product
+
+    result = deactivate_product.deactivate_invalid_uploaded_products()
+    invalid = result.get("invalid") or []
+    deactivated = result.get("deactivated") or []
+    errors = result.get("errors") or []
+
+    if not invalid:
+        print("Невалидные активные товары не найдены.")
+        return
+
+    print(f"Найдено невалидных товаров: {len(invalid)}.")
+    if deactivated:
+        print(f"Автоматически деактивировано: {len(deactivated)}.")
+        accounts = sorted({str(item.get("account") or "default") for item in deactivated})
+        print(f"Аккаунты: {', '.join(accounts)}.")
+    if errors:
+        print(f"Ошибок деактивации: {len(errors)}.")
+        for item in errors:
+            account = item.get("account") or "default"
+            product_id = item.get("product_id") or "нет данных"
+            name = item.get("name") or "нет данных"
+            reason = _format_invalid_deactivation_reason(item.get("reason"))
+            print(f"- {account} | {name} | {product_id} | {reason}")
+
+
+def _product_management_menu() -> None:
+    actions = [
+        ("Создать товар", _create_product),
+        ("Автосоздание товара", _auto_create_product),
+        ("Деактивировать товары", _deactivate_product),
+        ("Автоудалить невалидные товары", _auto_deactivate_invalid_products),
+        ("Список товаров", _print_products),
+    ]
+    while True:
+        action = _prompt_action_menu("Управление товарами", actions, "Назад")
+        if action is None:
+            return
+        action()
+
+
+def _settings_menu() -> None:
+    actions = [
+        ("Инициализация проекта", _bootstrap_project),
+        ("Войти в аккаунт", _login_account),
+        ("Управление Telegram-каналами", _manage_telegram_channels),
+        ("Удалить cookies аккаунта", _delete_account_cookies),
+        ("Выйти и вернуть товары в очередь", _logout_and_reset_products),
+    ]
+    while True:
+        action = _prompt_action_menu("Настройки", actions, "Назад")
+        if action is None:
+            return
+        action()
+
+
+def _legacy_menu(actions: list[tuple[str, Callable[[], None]]]) -> None:
+    while True:
+        action = _prompt_action_menu("Выберите действие", actions, "Выход")
+        if action is None:
+            return
+        action()
+
+
+def main(
+    actions: Optional[list[tuple[str, Callable[[], None]]]] = None,
+    shafa: bool = False,
+    login_shafa: bool = False,
+    mode: Optional[str] = None,
+    telegram_send_code_phone: Optional[str] = None,
+    telegram_login_phone: Optional[str] = None,
+    telegram_login_code: Optional[str] = None,
+    telegram_login_password: Optional[str] = None,
+    telegram_session_status: bool = False,
+) -> None:
+    if mode:
+        os.environ[APP_MODE_ENV] = mode
+    if login_shafa:
+        _login_account()
+        return
+    if telegram_send_code_phone:
+        send_code(telegram_send_code_phone)
+        print("Код Telegram запрошен.")
+        return
+    if telegram_login_password:
+        submit_password(telegram_login_password)
+        print("Пароль Telegram подтверждён.")
+        return
+    if telegram_session_status:
+        if session_status():
+            print("Сессия Telegram авторизована.")
+            return
+        raise RuntimeError("Сессия Telegram отсутствует или не авторизована.")
+    if telegram_login_phone and telegram_login_code:
+        complete_login(telegram_login_phone, telegram_login_code)
+        print("Вход в Telegram завершён.")
+        return
+    if shafa:
+        _bootstrap_new_account_telegram_queue_if_needed()
+        sync_channels_from_runtime_config()
+        os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
+        stop_event, scanner_thread = _start_background_telegram_scanner()
+        invalid_stop_event, invalid_thread = _start_background_invalid_products_deactivator()
+        try:
+            _auto_create_product(shafa=shafa)
+        finally:
+            stop_event.set()
+            invalid_stop_event.set()
+            scanner_thread.join(timeout=5)
+            invalid_thread.join(timeout=5)
+        return
+
+    _print_ascii_banner()
+    if actions:
+        _legacy_menu(actions)
+        return
+
+    actions = [
+        ("Управление товарами", _product_management_menu),
+        ("Настройки", _settings_menu),
+    ]
+    while True:
+        action = _prompt_action_menu("Выберите действие", actions, "Выход")
+        if action is None:
+            return
+        action()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--shafa", action="store_true")
+    parser.add_argument("--login-shafa", action="store_true")
+    parser.add_argument("--mode", choices=["clothes", "sneakers"])
+    parser.add_argument("--telegram-send-code")
+    parser.add_argument("--telegram-login-phone")
+    parser.add_argument("--telegram-login-code")
+    parser.add_argument("--telegram-login-password")
+    parser.add_argument("--telegram-session-status", action="store_true")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    try:
+        main(
+            shafa=args.shafa,
+            login_shafa=args.login_shafa,
+            mode=args.mode,
+            telegram_send_code_phone=args.telegram_send_code,
+            telegram_login_phone=args.telegram_login_phone,
+            telegram_login_code=args.telegram_login_code,
+            telegram_login_password=args.telegram_login_password,
+            telegram_session_status=args.telegram_session_status,
+        )
+    except Exception as exc:
+        print(str(exc) or exc.__class__.__name__, file=sys.stderr)
+        raise SystemExit(1) from None
+APP_MODE_ENV = "SHAFA_APP_MODE"
