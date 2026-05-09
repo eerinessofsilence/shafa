@@ -81,6 +81,3 @@ chart_history.json
 channel_templates.json
 message_templates.json
 telegram_channel_templates.json
-
-
-кароче сделай батник который будет запускать проект на виндовс с папки проекта shafa активировать виртуал окружение запускать ювикорн и после npm run dev
