@@ -81,3 +81,5 @@ chart_history.json
 channel_templates.json
 message_templates.json
 telegram_channel_templates.json
+runtime-project/shafa_logic/shafa_telegram_channels.json
+runtime-project/shafa_logic/auth.json
