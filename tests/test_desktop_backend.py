@@ -7,8 +7,11 @@ import types
 import pytest
 
 
-def _load_desktop_backend(tmp_path, monkeypatch):
-    monkeypatch.setenv("SHAFA_DESKTOP_DATA_DIR", str(tmp_path / "desktop-data"))
+def _load_desktop_backend(tmp_path, monkeypatch, *, set_desktop_data_dir: bool = True):
+    if set_desktop_data_dir:
+        monkeypatch.setenv("SHAFA_DESKTOP_DATA_DIR", str(tmp_path / "desktop-data"))
+    else:
+        monkeypatch.delenv("SHAFA_DESKTOP_DATA_DIR", raising=False)
     monkeypatch.setenv("SHAFA_RUNTIME_PROJECT_DIR", "")
     sys.modules.pop("desktop_backend", None)
     return importlib.import_module("desktop_backend")
@@ -51,12 +54,24 @@ def test_bootstrap_uses_telegram_templates_directory(tmp_path, monkeypatch) -> N
     expected_file = module.DATA_DIR / "telegram_templates" / "channel_templates.json"
     assert expected_file.is_file()
     assert module.os.environ["CHANNEL_TEMPLATES_STATE_FILE"] == str(expected_file)
+
+
 def test_bootstrap_environment_sets_python_io_encoding(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("PYTHONIOENCODING", raising=False)
     module = _load_desktop_backend(tmp_path, monkeypatch)
 
     assert module.os.environ["PYTHONUNBUFFERED"] == "1"
     assert module.os.environ["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_data_dir_defaults_to_runtime_desktop_backend_data(tmp_path, monkeypatch) -> None:
+    module = _load_desktop_backend(tmp_path, monkeypatch, set_desktop_data_dir=False)
+    bundle_dir = tmp_path / "bundle"
+    monkeypatch.setattr(module, "_bundle_dir", lambda: bundle_dir)
+
+    data_dir = module._data_dir()
+
+    assert data_dir == (bundle_dir / "runtime" / "desktop-backend-data").resolve()
 
 
 def test_main_retries_with_free_port_when_default_port_is_busy(tmp_path, monkeypatch) -> None:

@@ -16,7 +16,9 @@ SEED_FILES = ("accounts_state.json", "telegram_channel_templates.json")
 SEED_JSON_PAYLOAD = "[]\n"
 DEFAULT_BACKEND_PORT = 8000
 ADDRESS_IN_USE_WINERROR = 10048
+DEFAULT_DESKTOP_DATA_DIRNAME = "desktop-backend-data"
 RUNTIME_PROJECT_DIRNAME = "runtime-project"
+RUNTIME_DIRNAME = "runtime"
 SHAFA_LOGIC_DIRNAME = "shafa_logic"
 CHANNEL_TEMPLATES_DIRNAME = "telegram_templates"
 CHANNEL_TEMPLATES_FILENAME = "channel_templates.json"
@@ -40,7 +42,7 @@ def _data_dir() -> Path:
     configured = os.getenv("SHAFA_DESKTOP_DATA_DIR", "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return _bundle_dir()
+    return (_bundle_dir() / RUNTIME_DIRNAME / DEFAULT_DESKTOP_DATA_DIRNAME).resolve()
 
 
 def _copy_runtime_project(bundle_dir: Path, data_dir: Path) -> Path | None:
