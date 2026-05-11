@@ -283,67 +283,6 @@ def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thr
     return stop_event, thread
 
 
-def _start_background_invalid_products_deactivator() -> tuple[threading.Event, threading.Thread]:
-    from core.requests import deactivate_product
-
-    stop_event = threading.Event()
-    interval_seconds = _background_invalid_products_interval_seconds()
-
-    def _worker() -> None:
-        while not stop_event.is_set():
-            if is_product_pipeline_active():
-                if stop_event.wait(5.0):
-                    return
-                continue
-            started_at = time.time()
-            try:
-                result = deactivate_product.deactivate_next_invalid_uploaded_product()
-                deactivated = result.get("deactivated") or []
-                errors = result.get("errors") or []
-                if deactivated:
-                    print(
-                        "[INFO] Фоновая деактивация невалидного товара выполнена. "
-                        f"Обработано: {len(deactivated)}."
-                    )
-                elif errors:
-                    first_error = errors[0]
-                    print(
-                        "[WARN] Фоновая деактивация невалидного товара не выполнена. "
-                        f"{first_error.get('account') or 'default'} | "
-                        f"{first_error.get('name') or 'нет данных'} | "
-                        f"{_format_invalid_deactivation_reason(first_error.get('reason'))}"
-                    )
-            except Exception as exc:
-                print(f"[ERROR] Фоновая деактивация невалидных товаров не выполнена: {exc}")
-            elapsed = time.time() - started_at
-            wait_seconds = max(1.0, interval_seconds - elapsed)
-            if stop_event.wait(wait_seconds):
-                return
-
-    thread = threading.Thread(
-        target=_worker,
-        name="invalid-products-background-deactivator",
-        daemon=True,
-    )
-    thread.start()
-    return stop_event, thread
-
-
-def _format_invalid_deactivation_reason(reason: object) -> str:
-    if reason == "authentication_required":
-        return "Нужен повторный вход в Shafa."
-    if reason == "missing_cookies":
-        return "Нет сохранённых cookies Shafa."
-    if reason == "not_found_by_name":
-        return "Активный товар не найден по имени."
-    if reason == "empty_response":
-        return "Shafa вернула пустой ответ."
-    if reason == "deactivation_failed":
-        return "Shafa не подтвердила деактивацию."
-    text = str(reason or "").strip()
-    return text or "неизвестно"
-
-
 def run_periodic(action: Callable[[], None], label: str, shafa: bool | None = None) -> None:
     if shafa == False:
         minutes = _prompt_minutes()
@@ -526,23 +465,6 @@ def _prompt_action_menu(
     if exit_label:
         choices.append((exit_label, None))
     return _prompt_list(title, choices)
-
-
-def _select_products_for_deactivation(products: list[dict]) -> list[str]:
-    choices: list[tuple[str, str]] = []
-    for idx, row in enumerate(products, start=1):
-        name = row.get("name") or "нет данных"
-        product_id = str(row.get("product_id") or "")
-        label = f"{idx}. {name} | {product_id or 'нет данных'}"
-        choices.append((label, product_id))
-
-    selected = _prompt_checkbox("Выберите товары для деактивации", choices)
-    if selected is None:
-        return []
-    if not selected:
-        print("Ничего не выбрано.")
-        return []
-    return [str(value) for value in selected if value]
 
 
 def _add_telegram_channel() -> None:
@@ -736,98 +658,10 @@ def _logout_and_reset_products() -> None:
     print(f"Сброшено товаров: {reset_count}.")
 
 
-def _deactivate_product() -> None:
-    from core.requests import deactivate_product
-    from data.db import mark_uploaded_products_deactivated
-
-    products = _print_products()
-    if not products:
-        return
-    selected_values = _select_products_for_deactivation(products)
-    if not selected_values:
-        return
-    product_ids: list[int] = []
-    seen: set[int] = set()
-    for value in selected_values:
-        for product_id in deactivate_product.parse_product_ids(value):
-            if product_id not in seen:
-                seen.add(product_id)
-                product_ids.append(product_id)
-    if not product_ids:
-        print("Не переданы корректные ID товаров.")
-        return
-    successes: list[int] = []
-    errors: list[dict] = []
-    for product_id in product_ids:
-        result = deactivate_product.deactivate_products([product_id])
-        if not result:
-            errors.append(
-                {
-                    "product_id": product_id,
-                    "error": "Не удалось получить ответ.",
-                }
-            )
-            break
-        result_errors = result.get("errors") or []
-        if result_errors:
-            errors.append(
-                {
-                    "product_id": product_id,
-                    "error": result_errors,
-                }
-            )
-            continue
-        if result.get("isSuccess"):
-            mark_uploaded_products_deactivated([product_id])
-            successes.append(product_id)
-            continue
-        errors.append(
-            {
-                "product_id": product_id,
-                "error": "Деактивация не удалась.",
-            }
-        )
-    if errors:
-        print(f"Ошибки деактивации: {errors}")
-    if successes:
-        print(f"Деактивировано товаров: {len(successes)}.")
-    if not successes and not errors:
-        print("Деактивация не удалась.")
-
-
-def _auto_deactivate_invalid_products() -> None:
-    from core.requests import deactivate_product
-
-    result = deactivate_product.deactivate_invalid_uploaded_products()
-    invalid = result.get("invalid") or []
-    deactivated = result.get("deactivated") or []
-    errors = result.get("errors") or []
-
-    if not invalid:
-        print("Невалидные активные товары не найдены.")
-        return
-
-    print(f"Найдено невалидных товаров: {len(invalid)}.")
-    if deactivated:
-        print(f"Автоматически деактивировано: {len(deactivated)}.")
-        accounts = sorted({str(item.get("account") or "default") for item in deactivated})
-        print(f"Аккаунты: {', '.join(accounts)}.")
-    if errors:
-        print(f"Ошибок деактивации: {len(errors)}.")
-        for item in errors:
-            account = item.get("account") or "default"
-            product_id = item.get("product_id") or "нет данных"
-            name = item.get("name") or "нет данных"
-            reason = _format_invalid_deactivation_reason(item.get("reason"))
-            print(f"- {account} | {name} | {product_id} | {reason}")
-
-
 def _product_management_menu() -> None:
     actions = [
         ("Создать товар", _create_product),
         ("Автосоздание товара", _auto_create_product),
-        ("Деактивировать товары", _deactivate_product),
-        ("Автоудалить невалидные товары", _auto_deactivate_invalid_products),
         ("Список товаров", _print_products),
     ]
     while True:
@@ -898,14 +732,11 @@ def main(
         sync_channels_from_runtime_config()
         os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
         stop_event, scanner_thread = _start_background_telegram_scanner()
-        invalid_stop_event, invalid_thread = _start_background_invalid_products_deactivator()
         try:
             _auto_create_product(shafa=shafa)
         finally:
             stop_event.set()
-            invalid_stop_event.set()
             scanner_thread.join(timeout=5)
-            invalid_thread.join(timeout=5)
         return
 
     _print_ascii_banner()

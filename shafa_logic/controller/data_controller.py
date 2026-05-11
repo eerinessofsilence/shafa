@@ -2144,22 +2144,6 @@ def _fallback_brand_from_name(name: str) -> str:
     return name.split()[0] if name else ""
 
 
-def is_valid_uploaded_product_identity(name: object, brand: object) -> bool:
-    normalized_name = _clean_selected_name(str(name or ""))
-    if not normalized_name:
-        return False
-
-    normalized_brand = str(brand or "").strip()
-    if normalized_brand:
-        return True
-
-    canonical_name = _canonicalize_name_brand(normalized_name, normalized_brand)
-    if _find_best_brand_in_text(canonical_name):
-        return True
-
-    return bool(find_word(canonical_name))
-
-
 def extract_brand(lines: list[str], name: str) -> str:
     for line in lines:
         if not _contains_any(line.casefold(), _BRAND_LABELS):
