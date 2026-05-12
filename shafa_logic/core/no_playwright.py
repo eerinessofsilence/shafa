@@ -13,11 +13,12 @@ from urllib.parse import urlparse
 from controller.catalog_filter import SLUG_TO_WORDS
 from controller.data_controller import (
     build_product_raw_data,
-    catalog_supports_brand,
+    catalog_requires_brand,
     download_product_photos,
     get_product_photo_message_ids,
     get_next_product_for_upload,
     mark_product_created,
+    rebuild_product_data_from_source,
     should_run_first_fetch,
 )
 from core.product_failures import (
@@ -26,6 +27,7 @@ from core.product_failures import (
     summarize_exception,
     summarize_graph_errors,
 )
+from core.requests.get_brands import resolve_brand_catalog_slug
 from data.const import (
     API_BATCH_URL,
     API_URL,
@@ -387,6 +389,7 @@ def _fetch_brands(
     cookies: list[dict],
     catalog_slug: str = DEFAULT_CATALOG_SLUG,
 ) -> list[dict]:
+    resolved_catalog_slug = resolve_brand_catalog_slug(catalog_slug)
     query = (
         "query WEB_ProductFormTopBrands($catalogSlug: String) {\n"
         "  filterTopBrands(catalogSlug: $catalogSlug) {\n"
@@ -409,7 +412,7 @@ def _fetch_brands(
     payload = [
         {
             "operationName": "WEB_ProductFormTopBrands",
-            "variables": {"catalogSlug": catalog_slug},
+            "variables": {"catalogSlug": resolved_catalog_slug},
             "query": query,
         }
     ]
@@ -449,7 +452,8 @@ def _refresh_brands(
     catalog_slug: str = DEFAULT_CATALOG_SLUG,
 ) -> int:
     brands = _fetch_brands(csrftoken, cookies, catalog_slug=catalog_slug)
-    log("INFO", f"Загружены бренды для {catalog_slug}: {len(brands)}.")
+    resolved_catalog_slug = resolve_brand_catalog_slug(catalog_slug)
+    log("INFO", f"Загружены бренды для {resolved_catalog_slug}: {len(brands)}.")
     return len(brands)
 
 
@@ -702,7 +706,7 @@ def _main_impl() -> None:
         log("INFO", f"Каталог из данных товара: {catalog_slug}.")
     if not catalog_slug:
         catalog_slug = DEFAULT_CATALOG_SLUG
-    if product_raw_data.get("brand") is None and catalog_supports_brand(catalog_slug):
+    if product_raw_data.get("brand") is None and catalog_requires_brand(catalog_slug):
         log("WARN", "Бренд не определён. Обновляю список брендов...")
         try:
             _refresh_brands(csrftoken, cookies, catalog_slug=catalog_slug)
@@ -714,8 +718,8 @@ def _main_impl() -> None:
                 detail_message=f"Не удалось обновить бренды: {exc}",
             )
             return
-        if parsed_data:
-            product_raw_data = build_product_raw_data(parsed_data)
+        if parsed_data or product_data.get("raw_message"):
+            parsed_data, product_raw_data = rebuild_product_data_from_source(product_data)
         if product_raw_data.get("brand") is None:
             handle_non_retryable_product_failure(
                 message_id=message_id,
@@ -739,8 +743,8 @@ def _main_impl() -> None:
                 detail_message=f"Не удалось обновить размеры: {exc}",
             )
             return
-        if parsed_data:
-            product_raw_data = build_product_raw_data(parsed_data)
+        if parsed_data or product_data.get("raw_message"):
+            parsed_data, product_raw_data = rebuild_product_data_from_source(product_data)
         if product_raw_data.get("size") is None:
             handle_retryable_product_failure(
                 message_id=message_id,

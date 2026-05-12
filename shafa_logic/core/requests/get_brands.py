@@ -9,6 +9,9 @@ from core.core import base_headers, read_response_json
 from data.const import API_BATCH_URL
 from data.db import save_brands
 
+DEFAULT_BRANDS_CATALOG_SLUG = "obuv/krossovki"
+CLOTHING_BRANDS_CATALOG_SLUG = "sport-otdyh/sportivnyye-kostyumy"
+
 
 def _merge_brand_groups(block: dict) -> list[dict]:
     merged: list[dict] = []
@@ -23,11 +26,24 @@ def _merge_brand_groups(block: dict) -> list[dict]:
     return merged
 
 
+def resolve_brand_catalog_slug(catalog_slug: str | None) -> str:
+    normalized = str(catalog_slug or "").strip()
+    if not normalized:
+        return DEFAULT_BRANDS_CATALOG_SLUG
+    if "/" in normalized and normalized not in {
+        DEFAULT_BRANDS_CATALOG_SLUG,
+        "zhenskaya-obuv/krossovki",
+    }:
+        return CLOTHING_BRANDS_CATALOG_SLUG
+    return normalized
+
+
 def get_brands(
     ctx: BrowserContext,
     csrftoken: str,
-    catalog_slug: str = "obuv/krossovki",
+    catalog_slug: str = DEFAULT_BRANDS_CATALOG_SLUG,
 ) -> list[dict]:
+    resolved_catalog_slug = resolve_brand_catalog_slug(catalog_slug)
     query = (
         "query WEB_ProductFormTopBrands($catalogSlug: String) {\n"
         "  filterTopBrands(catalogSlug: $catalogSlug) {\n"
@@ -51,7 +67,7 @@ def get_brands(
     payload = [
         {
             "operationName": "WEB_ProductFormTopBrands",
-            "variables": {"catalogSlug": catalog_slug},
+            "variables": {"catalogSlug": resolved_catalog_slug},
             "query": query,
         }
     ]
@@ -79,3 +95,14 @@ def get_brands(
     brands = _merge_brand_groups(block)
     save_brands(brands)
     return brands
+
+
+def get_clothing_brands(
+    ctx: BrowserContext,
+    csrftoken: str,
+) -> list[dict]:
+    return get_brands(
+        ctx,
+        csrftoken,
+        catalog_slug=CLOTHING_BRANDS_CATALOG_SLUG,
+    )

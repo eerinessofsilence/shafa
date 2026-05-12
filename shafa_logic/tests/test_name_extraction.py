@@ -54,3 +54,32 @@ def test_extract_name_prefers_clothing_title_over_promotional_header() -> None:
 
     assert name == "Костюм 3-ка"
     assert word_for_slack == "костюм"
+
+
+def test_extract_name_ignores_model_code_and_uses_clothing_sentence() -> None:
+    parsed = dc.parse_message(
+        "Новинка 💕\n"
+        "Мод: 227-31\n"
+        "Розмір: S(42); M(44);L(46)\n"
+        "Тканина: костюмка , рукава шифон\n"
+        "Ціна : 680 грн\n"
+        "Ефектна міні сукня з шифоновими рукавами в білому та в чорному кольорі ! "
+        "Бездоганно сідає по фігурі\n"
+    )
+
+    assert (
+        parsed["name"]
+        == "Ефектна міні сукня з шифоновими рукавами в білому та в чорному кольорі"
+    )
+    assert parsed["brand"] == ""
+
+
+def test_extract_name_returns_empty_when_only_model_code_is_present() -> None:
+    parsed = dc.parse_message(
+        "Новинка\n"
+        "Мод: 227-31\n"
+        "Розмір: S M L\n"
+        "Ціна: 680 грн\n"
+    )
+
+    assert parsed["name"] == ""

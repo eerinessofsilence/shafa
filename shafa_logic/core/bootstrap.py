@@ -3,7 +3,7 @@ from playwright.sync_api import sync_playwright
 
 from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
-from core.requests.get_brands import get_brands
+from core.requests.get_brands import get_brands, get_clothing_brands
 from core.requests.get_sizes import get_sizes
 from data.const import HEADLESS, REFERER_URL, STORAGE_STATE_PATH
 from data.db import init_db, save_cookies
@@ -40,8 +40,10 @@ def main() -> None:
                 sizes_total += len(sizes)
                 print(f"Saved sizes for {catalog_slug}: {len(sizes)}")
             brands = get_brands(ctx, csrftoken)
+            clothing_brands = get_clothing_brands(ctx, csrftoken)
             print(f"Saved sizes total: {sizes_total}")
             print(f"Saved brands: {len(brands)}")
+            print(f"Saved clothing brands: {len(clothing_brands)}")
         finally:
             browser.close()
 

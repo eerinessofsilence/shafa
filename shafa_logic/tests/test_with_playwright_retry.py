@@ -9,6 +9,85 @@ from utils.media import PreparedMediaBatch, PreparedMediaUpload
 
 
 class WithPlaywrightRetryTests(unittest.TestCase):
+    @patch("core.with_playwright.handle_non_retryable_product_failure")
+    @patch("core.with_playwright.handle_retryable_product_failure")
+    @patch("core.with_playwright.get_brands")
+    @patch("core.with_playwright.prepare_media_batch_for_upload")
+    @patch("core.with_playwright.list_media_files")
+    @patch("core.with_playwright.save_cookies")
+    @patch("core.with_playwright.get_csrftoken_from_context")
+    @patch("core.with_playwright.storage_state_has_cookies")
+    @patch("core.with_playwright.new_context_with_storage")
+    @patch("core.with_playwright.sync_playwright")
+    @patch("core.with_playwright.download_product_photos")
+    @patch("core.with_playwright.reset_media_dir")
+    @patch("core.with_playwright.get_next_product_for_upload")
+    @patch("core.with_playwright.init_db")
+    def test_clothing_without_brand_does_not_fail_with_brand_not_resolved(
+        self,
+        _init_db,
+        get_next_product_for_upload,
+        _reset_media_dir,
+        download_product_photos,
+        sync_playwright,
+        new_context_with_storage,
+        storage_state_has_cookies,
+        get_csrftoken_from_context,
+        _save_cookies,
+        list_media_files,
+        prepare_media_batch_for_upload,
+        get_brands,
+        handle_retryable_failure,
+        handle_non_retryable_failure,
+    ):
+        get_next_product_for_upload.return_value = {
+            "channel_id": 9,
+            "message_id": 11543,
+            "parsed_data": {"name": "Пальто", "price": "2500", "size": "42"},
+            "product_raw_data": {
+                "name": "Пальто",
+                "price": 2500,
+                "size": 42,
+                "brand": None,
+                "category": "verhnyaya-odezhda/palto",
+            },
+        }
+        download_product_photos.return_value = 0
+        storage_state_has_cookies.return_value = True
+        get_csrftoken_from_context.return_value = "token"
+        list_media_files.return_value = []
+        prepare_media_batch_for_upload.return_value = PreparedMediaBatch(
+            items=[],
+            total_size_bytes=0,
+            within_budget=True,
+        )
+
+        playwright = Mock()
+        browser = Mock()
+        page = Mock()
+        ctx = Mock()
+        playwright.chromium.launch.return_value = browser
+        ctx.new_page.return_value = page
+        ctx.cookies.return_value = []
+        new_context_with_storage.return_value = ctx
+
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=playwright)
+        manager.__exit__ = Mock(return_value=None)
+        sync_playwright.return_value = manager
+
+        with_playwright.main()
+
+        get_brands.assert_not_called()
+        handle_non_retryable_failure.assert_not_called()
+        handle_retryable_failure.assert_called_once_with(
+            message_id=11543,
+            channel_id=9,
+            failure_reason="NO_UPLOADABLE_PHOTOS",
+            detail_message="Не удалось подготовить ни одной фотографии для загрузки.",
+            detail_level="WARN",
+        )
+
     @patch("core.with_playwright.handle_retryable_product_failure")
     @patch("core.with_playwright.get_sizes")
     @patch("core.with_playwright.create_product")

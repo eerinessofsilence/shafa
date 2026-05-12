@@ -1328,9 +1328,21 @@ def _looks_like_article_line(line: str) -> bool:
     )
 
 
+def _looks_like_model_code_line(line: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?i)(?:модель|мод(?:\.|ель)?|арт(?:\.|икул)?|mod|mdl)"
+            r"\s*[:№#-]?\s*[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9/_-]*",
+            line.strip(),
+        )
+    )
+
+
 def _is_garbage_name_line(line: str) -> bool:
     text = line.strip()
     if not text:
+        return True
+    if _looks_like_model_code_line(text):
         return True
     lower = text.casefold()
     compact = re.sub(r"[\s()]+", "", lower)
@@ -1673,15 +1685,181 @@ def _is_promotional_name_line(line: str) -> bool:
     return all(word in _PROMOTIONAL_NAME_WORDS for word in normalized_words)
 
 
+def _contains_catalog_word(text: str) -> bool:
+    for token in re.findall(
+        r"[A-Za-zА-Яа-яІіЇїЄєҐґ]+(?:-[A-Za-zА-Яа-яІіЇїЄєҐґ]+)?",
+        text,
+    ):
+        if find_word(token.casefold()):
+            return True
+    return False
+
+
+def _clean_clothing_name_candidate(value: str) -> str:
+    candidate = capitalise_first_word(_clean_selected_name(value))
+    candidate = re.split(r"\s*[!?\.]+\s*", candidate, maxsplit=1)[0]
+    candidate = re.sub(r"\s{2,}", " ", candidate)
+    return candidate.strip(" \t-–—|:;,")
+
+
+def _is_valid_clothing_name_candidate(candidate: str, word_for_slack: str) -> bool:
+    if not candidate or not _is_valid_selected_name(candidate):
+        return False
+    lower = candidate.casefold()
+    if word_for_slack and _contains_hint_phrase(lower, (word_for_slack,)):
+        return True
+    if _contains_hint_phrase(lower, _CLOTHES_NAME_HINTS):
+        return True
+    return _contains_catalog_word(candidate)
+
+
+_GENERIC_BRAND_TOKENS = frozenset(
+    {
+        "new",
+        "sale",
+        "hit",
+        "look",
+        "style",
+        "season",
+        "collection",
+        "oversize",
+        "premium",
+        "original",
+        "lux",
+        "fashion",
+        "trend",
+        "trendy",
+        "best",
+        "top",
+        "brand",
+        "made",
+    }
+)
+
+_CLOTHING_BRAND_LINE_SKIP_HINTS = (
+    "тканина",
+    "ткань",
+    "матеріал",
+    "материал",
+    "розмір",
+    "розміри",
+    "размер",
+    "размеры",
+    "size",
+    "сітка",
+    "сетк",
+    "колір",
+    "кольори",
+    "цвет",
+    "цвета",
+    "ціна",
+    "цена",
+    "грн",
+    "uah",
+    "₴",
+    "made in",
+)
+
+
+def _has_clothing_brand_context(lines: list[str], name: str, word_for_slack: str) -> bool:
+    catalog_slug = find_slug_by_word(word_for_slack) if word_for_slack else None
+    if _is_clothing_catalog_slug(catalog_slug):
+        return True
+    if _contains_catalog_word(name):
+        return True
+    return any(_contains_catalog_word(line) for line in lines)
+
+
+def _clean_brand_candidate_token(token: str) -> str:
+    return token.strip(".,;:()[]{}<>\"'`|/\\!?+-")
+
+
+def _is_probable_brand_candidate_token(token: str) -> bool:
+    cleaned = _clean_brand_candidate_token(token)
+    if not cleaned or not re.search(r"[A-Za-z]", cleaned):
+        return False
+    normalized = re.sub(r"[^A-Za-z0-9]+", "", cleaned).casefold()
+    if len(normalized) < 2:
+        return False
+    if normalized in _GENERIC_BRAND_TOKENS:
+        return False
+    if cleaned.islower():
+        return False
+    letters = sum(ch.isalpha() for ch in cleaned)
+    return letters >= 2 or "&" in cleaned
+
+
+def _score_brand_candidate_token(token: str) -> float:
+    cleaned = _clean_brand_candidate_token(token)
+    score = 0.0
+    if any(ch.isupper() for ch in cleaned):
+        score += 0.5
+    if cleaned.isupper():
+        score += 0.35
+    if any(ch in "&.'-" for ch in cleaned):
+        score += 0.2
+    if cleaned[:1].isupper():
+        score += 0.15
+    if any(ch.isdigit() for ch in cleaned):
+        score += 0.05
+    return score
+
+
+def _extract_probable_clothing_brand(line: str) -> str:
+    cleaned_line = _clean_selected_name(line)
+    if not cleaned_line:
+        return ""
+    tokens = re.findall(r"[A-Za-z0-9&.'-]+", cleaned_line)
+    best_candidate = ""
+    best_score = float("-inf")
+    current_tokens: list[str] = []
+
+    def flush_current() -> None:
+        nonlocal best_candidate, best_score, current_tokens
+        if not current_tokens:
+            return
+        candidate = " ".join(_clean_brand_candidate_token(token) for token in current_tokens)
+        candidate = re.sub(r"\s{2,}", " ", candidate).strip()
+        if not candidate:
+            current_tokens = []
+            return
+        score = sum(_score_brand_candidate_token(token) for token in current_tokens)
+        if len(current_tokens) > 1:
+            score += 0.2
+        if score > best_score:
+            best_score = score
+            best_candidate = candidate
+        current_tokens = []
+
+    for token in tokens:
+        if _is_probable_brand_candidate_token(token):
+            current_tokens.append(token)
+            continue
+        flush_current()
+    flush_current()
+
+    return best_candidate if best_score >= 0.5 else ""
+
+
+def _should_skip_clothing_brand_line(line: str) -> bool:
+    lower = line.casefold()
+    if _looks_like_model_code_line(line):
+        return True
+    return _contains_any(lower, _CLOTHING_BRAND_LINE_SKIP_HINTS)
+
+
 def _score_clothing_name_candidate(candidate: str, word_for_slack: str, index: int) -> float:
     score = _score_name_line(candidate)
     lower = candidate.casefold()
+    words = len(candidate.split())
     if _contains_hint_phrase(lower, _CLOTHES_NAME_HINTS):
         score += 0.45
     if word_for_slack and _contains_hint_phrase(lower, (word_for_slack,)):
         score += 0.35
-    if len(candidate.split()) <= 4:
-        score += 0.1
+    if 2 <= words <= 12:
+        score += 0.15
+    elif words == 1:
+        score -= 0.2
     score += max(0, 0.08 - (index * 0.01))
     return score
 
@@ -1692,12 +1870,12 @@ def _extract_clothing_name(lines: list[str], word_for_slack: str) -> str:
     for idx, line in enumerate(lines):
         if _is_promotional_name_line(line):
             continue
-        if not _looks_like_name(line):
+        if len(line) < 3 or len(line) > 220:
             continue
-        candidate = capitalise_first_word(clean_line_name(line))
-        if not _is_valid_selected_name(candidate):
+        if not _looks_like_name(line) and not _contains_catalog_word(line):
             continue
-        if not _is_strong_name_candidate(candidate, word_for_slack):
+        candidate = _clean_clothing_name_candidate(line)
+        if not _is_valid_clothing_name_candidate(candidate, word_for_slack):
             continue
         score = _score_clothing_name_candidate(candidate, word_for_slack, idx)
         if score > best_score:
@@ -1711,11 +1889,17 @@ def extract_name(lines: list[str]) -> tuple[str, str]:
     if shirt_name:
         return shirt_name, _extract_word_for_slack(lines, shirt_name)
 
+    word_for_slack = _extract_word_for_slack(lines)
+    catalog_slug = find_slug_by_word(word_for_slack) if word_for_slack else None
+    if _is_clothing_catalog_slug(catalog_slug):
+        clothing_name = _extract_clothing_name(lines, word_for_slack)
+        if clothing_name:
+            return clothing_name, word_for_slack or ""
+        return "", word_for_slack or ""
+
     article_name = _extract_article_name(lines)
     if article_name:
         return article_name, _extract_word_for_slack(lines, article_name)
-
-    word_for_slack = _extract_word_for_slack(lines)
 
     for line in lines:
         match = re.search(rf"(?i)^(?:{'|'.join(_NAME_LABELS)})\s*[:\-]\s*(.+)$", line)
@@ -1740,11 +1924,6 @@ def extract_name(lines: list[str]) -> tuple[str, str]:
             candidate = _clean_name(match.group(1))
             if candidate and _is_strong_name_candidate(candidate, word_for_slack):
                 return candidate, word_for_slack or ""
-    catalog_slug = find_slug_by_word(word_for_slack) if word_for_slack else None
-    if _is_clothing_catalog_slug(catalog_slug):
-        clothing_name = _extract_clothing_name(lines, word_for_slack)
-        if clothing_name:
-            return clothing_name, word_for_slack or ""
     for line in lines[:3]:
         if not _looks_like_name(line):
             continue
@@ -2200,7 +2379,9 @@ def _brand_token_matches_name_token(brand_token: str, name_token: str) -> bool:
 def _fallback_brand_from_name(name: str) -> str:
     if not name:
         return ""
-    for token in name.split():
+    best_token = ""
+    best_score = float("-inf")
+    for index, token in enumerate(name.split()):
         normalized = _normalize_token(token)
         if not normalized or normalized in _GENERIC_NAME_TOKENS:
             continue
@@ -2216,11 +2397,40 @@ def _fallback_brand_from_name(name: str) -> str:
             continue
         if not normalized or normalized in _DRESS_TOKENS:
             continue
-        return token.strip(".,;:()[]{}")
-    return name.split()[0] if name else ""
+        if normalized in _COLOR_NAME_TOKENS or normalized in _COLOR_MODIFIERS:
+            continue
+        if normalized in _PROMOTIONAL_NAME_WORDS:
+            continue
+
+        cleaned = token.strip(".,;:()[]{}")
+        if not cleaned:
+            continue
+
+        score = index * 0.05
+        has_latin = bool(re.search(r"[A-Za-z]", cleaned))
+        has_cyrillic = bool(re.search(r"[А-Яа-яІіЇїЄєҐґ]", cleaned))
+        if has_latin:
+            score += 1.0
+            if not has_cyrillic:
+                score += 0.3
+        if cleaned[:1].isupper():
+            score += 0.2
+        if any(ch.isdigit() for ch in cleaned):
+            score += 0.2
+        if any(ch in "&+-" for ch in cleaned):
+            score += 0.2
+        if len(normalized) <= 10:
+            score += 0.1
+
+        if score > best_score:
+            best_score = score
+            best_token = cleaned
+    if best_token and best_score >= 0.8:
+        return best_token
+    return ""
 
 
-def extract_brand(lines: list[str], name: str) -> str:
+def extract_brand(lines: list[str], name: str, word_for_slack: str = "") -> str:
     for line in lines:
         if not _contains_any(line.casefold(), _BRAND_LABELS):
             continue
@@ -2245,6 +2455,13 @@ def extract_brand(lines: list[str], name: str) -> str:
         brand = _find_best_brand_in_text(line)
         if brand:
             return brand
+    if _has_clothing_brand_context(lines, name, word_for_slack):
+        for line in lines:
+            if _should_skip_clothing_brand_line(line):
+                continue
+            brand = _extract_probable_clothing_brand(line)
+            if brand:
+                return brand
     return _fallback_brand_from_name(cleaned_name or name)
 
 
@@ -2308,7 +2525,7 @@ def parse_message(message: str) -> dict:
     name, word_for_slack = extract_name(lines)
     slug = find_slug_by_word(word_for_slack)
     description = extract_description(lines)
-    brand = extract_brand(lines, name)
+    brand = extract_brand(lines, name, word_for_slack)
     size, additional_sizes = extract_sizes(
         lines,
         even_range_step=_should_use_even_clothing_size_ranges(slug),
@@ -2500,7 +2717,17 @@ def is_mode_allowed_parsed(parsed: dict) -> bool:
 
 
 def catalog_supports_brand(catalog_slug: Optional[str]) -> bool:
-    return catalog_slug in {DEFAULT_SHOES_CATEGORY, WOMEN_SNEAKERS_CATEGORY}
+    return bool(catalog_slug) and (
+        catalog_requires_brand(catalog_slug)
+        or _is_clothing_catalog_slug(catalog_slug)
+    )
+
+
+def catalog_requires_brand(catalog_slug: Optional[str]) -> bool:
+    return bool(catalog_slug) and catalog_slug in {
+        DEFAULT_SHOES_CATEGORY,
+        WOMEN_SNEAKERS_CATEGORY,
+    }
 
 
 async def first_fetch() -> int:
@@ -3993,6 +4220,16 @@ def build_product_raw_data(parsed: dict) -> dict:
     return _build_product_raw_data(parsed)
 
 
+def rebuild_product_data_from_source(product_data: dict) -> tuple[dict, dict]:
+    parsed_data = product_data.get("parsed_data")
+    if not isinstance(parsed_data, dict):
+        parsed_data = {}
+    raw_message = str(product_data.get("raw_message") or "").strip()
+    if raw_message:
+        parsed_data = parse_message(raw_message)
+    return parsed_data, _build_product_raw_data(parsed_data)
+
+
 def _pick_next_product_for_upload() -> Optional[dict]:
     while True:
         rows = [
@@ -4035,6 +4272,7 @@ def _pick_next_product_for_upload() -> Optional[dict]:
         return {
             "channel_id": row["channel_id"],
             "message_id": row["message_id"],
+            "raw_message": raw_message,
             "parsed_data": parsed,
             "product_raw_data": _build_product_raw_data(parsed),
         }
