@@ -62,6 +62,28 @@ def test_parse_message_does_not_treat_made_in_line_as_brand() -> None:
         _reset_brand_caches()
 
     assert parsed["brand"] == ""
+
+
+def test_parse_message_extracts_brand_from_leetspeak_token() -> None:
+    _reset_brand_caches()
+    try:
+        with patch("controller.data_controller.list_brand_names", return_value=["Nike"]):
+            parsed = dc.parse_message(
+                "N1ke V2K Run\n"
+                "Жіночі кросівки\n"
+                "Розмір: 41\n"
+                "Ціна: 3300 грн\n"
+            )
+    finally:
+        _reset_brand_caches()
+
+    assert parsed["brand"] == "Nike"
+
+
+def test_canonicalize_name_brand_replaces_leetspeak_brand_token() -> None:
+    assert dc._canonicalize_name_brand("N1ke V2K Run", "Nike") == "Nike V2K Run"
+
+
 @patch("controller.data_controller.find_slug_by_word", return_value="verhnyaya-odezhda/palto")
 @patch("controller.data_controller.get_brand_id_by_name", return_value=321)
 def test_build_product_raw_data_resolves_brand_for_clothing_catalog(

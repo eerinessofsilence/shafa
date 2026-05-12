@@ -2230,6 +2230,20 @@ def _trim_masked_brand_token(raw_token: str) -> tuple[str, int]:
     return raw_token.strip(strip_chars), leading
 
 
+_LEET_BRAND_CHAR_SUBSTITUTIONS = {
+    "0": frozenset({"o"}),
+    "1": frozenset({"i", "l"}),
+    "2": frozenset({"z"}),
+    "3": frozenset({"e"}),
+    "4": frozenset({"a"}),
+    "5": frozenset({"s"}),
+    "6": frozenset({"g"}),
+    "7": frozenset({"t"}),
+    "8": frozenset({"b"}),
+    "9": frozenset({"g", "q"}),
+}
+
+
 def _split_masked_brand_token(raw_token: str) -> tuple[str, str, str]:
     strip_chars = ".,;:()[]{}<>\"'"
     leading_len = len(raw_token) - len(raw_token.lstrip(strip_chars))
@@ -2243,11 +2257,15 @@ def _split_masked_brand_token(raw_token: str) -> tuple[str, str, str]:
 def _is_masked_brand_token(token: str) -> bool:
     if len(token) < 3:
         return False
-    visible_count = sum(ch.isalnum() for ch in token)
-    wildcard_count = len(token) - visible_count
-    if visible_count < 2 or wildcard_count == 0 or wildcard_count > 2:
+    alpha_count = sum(ch.isalpha() for ch in token)
+    wildcard_like_count = sum(
+        1
+        for ch in token
+        if not ch.isalnum() or ch in _LEET_BRAND_CHAR_SUBSTITUTIONS
+    )
+    if alpha_count < 2 or wildcard_like_count == 0 or wildcard_like_count > 2:
         return False
-    if not any(ch.isalpha() for ch in token):
+    if any(ch in _LEET_BRAND_CHAR_SUBSTITUTIONS for ch in token) and len(token) < 4:
         return False
     return True
 
@@ -2256,7 +2274,13 @@ def _matches_masked_brand_token(masked_token: str, candidate: str) -> bool:
     if len(masked_token) != len(candidate):
         return False
     for masked_char, candidate_char in zip(masked_token, candidate):
-        if masked_char.isalnum() and masked_char != candidate_char:
+        if masked_char == candidate_char:
+            continue
+        if not masked_char.isalnum():
+            continue
+        if candidate_char in _LEET_BRAND_CHAR_SUBSTITUTIONS.get(masked_char, ()):
+            continue
+        if masked_char.isalnum():
             return False
     return True
 
