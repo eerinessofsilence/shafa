@@ -1,6 +1,5 @@
 fastapi
 inquirer
-Pillow
 playwright
 pydantic
 python-dotenv

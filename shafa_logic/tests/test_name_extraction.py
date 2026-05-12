@@ -34,3 +34,23 @@ def test_extract_name_can_use_brand_model_line_for_shoes() -> None:
 
     assert name == "Nike V2K Run"
     assert word_for_slack == ""
+
+
+def test_extract_name_prefers_clothing_title_over_promotional_header() -> None:
+    lines = [
+        "New collection❤️‍🔥",
+        "Новинка❤️",
+        "Реальні огляди😍",
+        "Костюм 3-ка 🤩",
+        "Мод. 045-119",
+        "Кольори: вершкове масло, чорний, шоколад, айворі",
+        "Тканина: сатин преміальної якості (Туреччина)",
+        "Розмір: 42-44, 46-48",
+        "Ціна: 1230 грн 🔥",
+        "Сатиновий костюм, що виглядає дорого без зайвих зусиль✨",
+    ]
+
+    name, word_for_slack = dc.extract_name(lines)
+
+    assert name == "Костюм 3-ка"
+    assert word_for_slack == "костюм"

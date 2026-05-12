@@ -827,7 +827,7 @@ def _main_impl() -> None:
     if upload_items and not prepared_batch.within_budget:
         log(
             "WARN",
-            f"После сжатия фото занимают {total_mb:.2f} MB, "
+            f"После подготовки фото занимают {total_mb:.2f} MB, "
             + f"что больше лимита {max_mb:.2f} MB.",
         )
     if not upload_items:

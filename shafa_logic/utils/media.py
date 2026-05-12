@@ -1,15 +1,8 @@
 from dataclasses import dataclass
 import mimetypes
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Optional
-
-try:
-    from PIL import Image, ImageOps
-except ImportError:  # pragma: no cover - optional at import time for tests
-    Image = None
-    ImageOps = None
 
 
 @dataclass(frozen=True)
@@ -39,7 +32,6 @@ class PreparedMediaBatch:
 _PREPARATION_STAGE_LABELS = {
     "downloaded": "Telegram",
     "original": "без изменений",
-    "png_to_jpg": "PNG -> JPG",
 }
 
 
@@ -126,21 +118,6 @@ def _safe_file_size(file_path: Path) -> Optional[int]:
         return None
 
 
-def _open_image(file_path: Path):
-    if Image is None:
-        return None
-    try:
-        with Image.open(file_path) as img:
-            if ImageOps is not None:
-                exif_transpose = getattr(ImageOps, "exif_transpose", None)
-                if exif_transpose:
-                    img = exif_transpose(img)
-            img.load()
-            return img.copy()
-    except Exception:
-        return None
-
-
 def _build_original_prepared_upload(file_path: Path) -> PreparedMediaUpload:
     source_size = _safe_file_size(file_path)
     if source_size is None:
@@ -163,63 +140,6 @@ def _build_original_prepared_upload(file_path: Path) -> PreparedMediaUpload:
     )
 
 
-def _flatten_image_for_jpeg(image):
-    if Image is None:
-        return image
-    if image.mode in {"RGBA", "LA"} or (
-        image.mode == "P" and "transparency" in getattr(image, "info", {})
-    ):
-        rgba = image.convert("RGBA")
-        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-        return Image.alpha_composite(background, rgba).convert("RGB")
-    if image.mode != "RGB":
-        return image.convert("RGB")
-    return image
-
-
-def _write_png_to_jpg_candidate(
-    source_path: Path,
-    work_dir: Path,
-    source_size: Optional[int] = None,
-) -> Optional[PreparedMediaUpload]:
-    image = _open_image(source_path)
-    if image is None:
-        return None
-
-    image = _flatten_image_for_jpeg(image)
-    target_path = work_dir / f"{source_path.stem}_png_to_jpg.jpg"
-    save_kwargs = {
-        "format": "JPEG",
-        "quality": 100,
-        "subsampling": 0,
-        "optimize": False,
-        "progressive": False,
-    }
-    icc_profile = getattr(image, "info", {}).get("icc_profile")
-    if icc_profile:
-        save_kwargs["icc_profile"] = icc_profile
-
-    try:
-        image.save(target_path, **save_kwargs)
-    except Exception:
-        return None
-
-    size_bytes = _safe_file_size(target_path)
-    if size_bytes is None:
-        return None
-    return PreparedMediaUpload(
-        source_path=source_path,
-        upload_path=target_path,
-        cleanup_path=work_dir,
-        preparation="png_to_jpg",
-        size_bytes=size_bytes,
-        stages=(
-            PreparedMediaStage("downloaded", source_size),
-            PreparedMediaStage("png_to_jpg", size_bytes),
-        ),
-    )
-
-
 def _build_prepared_batch(
     items: list[PreparedMediaUpload],
     total_max_bytes: int,
@@ -236,26 +156,6 @@ def _build_prepared_batch(
 
 def prepare_media_for_upload(file_path: Path, max_bytes: int) -> PreparedMediaUpload:
     del max_bytes
-
-    mime_type = detect_media_mime_type(file_path)
-    if mime_type != "image/png":
-        return _build_original_prepared_upload(file_path)
-
-    source_size = _safe_file_size(file_path)
-    if source_size is None:
-        return PreparedMediaUpload(
-            source_path=file_path,
-            upload_path=None,
-            cleanup_path=None,
-            preparation="stat_failed",
-        )
-
-    work_dir = Path(tempfile.mkdtemp(prefix="shafa_upload_"))
-    candidate = _write_png_to_jpg_candidate(file_path, work_dir, source_size=source_size)
-    if candidate is not None:
-        return candidate
-
-    shutil.rmtree(work_dir, ignore_errors=True)
     return _build_original_prepared_upload(file_path)
 
 

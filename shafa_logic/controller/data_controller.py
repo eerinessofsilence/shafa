@@ -910,6 +910,23 @@ _CLOTHES_NAME_HINTS = (
     + _JUMPSUIT_TOKENS
     + _SET_TOKENS
 )
+_PROMOTIONAL_NAME_WORDS = frozenset(
+    {
+        "new",
+        "collection",
+        "новинка",
+        "новинки",
+        "огляди",
+        "обзоры",
+        "огляд",
+        "обзор",
+        "реальні",
+        "реальные",
+        "real",
+        "reviews",
+        "review",
+    }
+)
 
 
 
@@ -1635,6 +1652,60 @@ def _is_strong_name_candidate(candidate: str, word_for_slack: str) -> bool:
     return bool(word_for_slack) and candidate.casefold() == word_for_slack.casefold()
 
 
+def _is_clothing_catalog_slug(catalog_slug: Optional[str]) -> bool:
+    return bool(catalog_slug) and catalog_slug not in {
+        DEFAULT_SHOES_CATEGORY,
+        WOMEN_SNEAKERS_CATEGORY,
+    }
+
+
+def _is_promotional_name_line(line: str) -> bool:
+    cleaned = _clean_selected_name(line)
+    if not cleaned:
+        return False
+    normalized_words = [
+        _normalize_token(token)
+        for token in cleaned.split()
+        if _normalize_token(token)
+    ]
+    if not normalized_words:
+        return False
+    return all(word in _PROMOTIONAL_NAME_WORDS for word in normalized_words)
+
+
+def _score_clothing_name_candidate(candidate: str, word_for_slack: str, index: int) -> float:
+    score = _score_name_line(candidate)
+    lower = candidate.casefold()
+    if _contains_hint_phrase(lower, _CLOTHES_NAME_HINTS):
+        score += 0.45
+    if word_for_slack and _contains_hint_phrase(lower, (word_for_slack,)):
+        score += 0.35
+    if len(candidate.split()) <= 4:
+        score += 0.1
+    score += max(0, 0.08 - (index * 0.01))
+    return score
+
+
+def _extract_clothing_name(lines: list[str], word_for_slack: str) -> str:
+    best_name = ""
+    best_score = float("-inf")
+    for idx, line in enumerate(lines):
+        if _is_promotional_name_line(line):
+            continue
+        if not _looks_like_name(line):
+            continue
+        candidate = capitalise_first_word(clean_line_name(line))
+        if not _is_valid_selected_name(candidate):
+            continue
+        if not _is_strong_name_candidate(candidate, word_for_slack):
+            continue
+        score = _score_clothing_name_candidate(candidate, word_for_slack, idx)
+        if score > best_score:
+            best_score = score
+            best_name = candidate
+    return best_name
+
+
 def extract_name(lines: list[str]) -> tuple[str, str]:
     shirt_name = _extract_shirt_name(lines)
     if shirt_name:
@@ -1669,6 +1740,11 @@ def extract_name(lines: list[str]) -> tuple[str, str]:
             candidate = _clean_name(match.group(1))
             if candidate and _is_strong_name_candidate(candidate, word_for_slack):
                 return candidate, word_for_slack or ""
+    catalog_slug = find_slug_by_word(word_for_slack) if word_for_slack else None
+    if _is_clothing_catalog_slug(catalog_slug):
+        clothing_name = _extract_clothing_name(lines, word_for_slack)
+        if clothing_name:
+            return clothing_name, word_for_slack or ""
     for line in lines[:3]:
         if not _looks_like_name(line):
             continue
