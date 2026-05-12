@@ -1,5 +1,4 @@
 import _test_path
-import os
 import unittest
 from unittest.mock import patch
 
@@ -17,14 +16,13 @@ class ProductRetryPolicyTests(unittest.TestCase):
         increment_attempt,
         mark_created,
     ):
-        with patch.dict(os.environ, {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False):
-            get_channel_ids.return_value = [1]
-            increment_attempt.return_value = 1
+        get_channel_ids.return_value = [1]
+        increment_attempt.return_value = 1
 
-            attempts, skipped = dc.register_product_failure(
-                11543,
-                failure_reason="NO_UPLOADABLE_PHOTOS",
-            )
+        attempts, skipped = dc.register_product_failure(
+            11543,
+            failure_reason="NO_UPLOADABLE_PHOTOS",
+        )
 
         self.assertEqual(attempts, 1)
         self.assertFalse(skipped)
@@ -32,7 +30,6 @@ class ProductRetryPolicyTests(unittest.TestCase):
             1,
             11543,
             failure_reason="NO_UPLOADABLE_PHOTOS",
-            account_id="acc-1",
         )
         mark_created.assert_not_called()
 
@@ -43,14 +40,13 @@ class ProductRetryPolicyTests(unittest.TestCase):
         increment_attempt,
         mark_created,
     ):
-        with patch.dict(os.environ, {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False):
-            increment_attempt.return_value = dc.MAX_PRODUCT_CREATE_ATTEMPTS
+        increment_attempt.return_value = dc.MAX_PRODUCT_CREATE_ATTEMPTS
 
-            attempts, skipped = dc.register_product_failure(
-                11543,
-                failure_reason="NO_UPLOADABLE_PHOTOS",
-                channel_id=9,
-            )
+        attempts, skipped = dc.register_product_failure(
+            11543,
+            failure_reason="NO_UPLOADABLE_PHOTOS",
+            channel_id=9,
+        )
 
         self.assertEqual(attempts, dc.MAX_PRODUCT_CREATE_ATTEMPTS)
         self.assertTrue(skipped)
@@ -58,13 +54,11 @@ class ProductRetryPolicyTests(unittest.TestCase):
             9,
             11543,
             failure_reason="NO_UPLOADABLE_PHOTOS",
-            account_id="acc-1",
         )
         mark_created.assert_called_once_with(
             9,
             11543,
             created_product_id=dc.SKIPPED_CREATE_RETRY_LIMIT,
-            account_id="acc-1",
         )
 
     @patch("core.product_failures.register_product_failure")
@@ -77,13 +71,13 @@ class ProductRetryPolicyTests(unittest.TestCase):
         handle_non_retryable_product_failure(
             message_id=11543,
             channel_id=9,
-            failure_reason="BRAND_NOT_RESOLVED",
-            detail_message="Не удалось распознать бренд. Запусти Bootstrap sizes/brands.",
+            failure_reason="NON_RETRYABLE_VALIDATION",
+            detail_message="Товар пропущен из-за неустранимой ошибки валидации.",
         )
 
         register_failure.assert_not_called()
         mark_created.assert_called_once_with(
             11543,
-            created_product_id="SKIPPED_BRAND_NOT_RESOLVED",
+            created_product_id="SKIPPED_NON_RETRYABLE_VALIDATION",
             channel_id=9,
         )

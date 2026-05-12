@@ -62,14 +62,6 @@ def test_parse_message_does_not_treat_made_in_line_as_brand() -> None:
         _reset_brand_caches()
 
     assert parsed["brand"] == ""
-
-
-def test_catalog_requires_brand_only_for_shoes() -> None:
-    assert dc.catalog_requires_brand("obuv/krossovki") is True
-    assert dc.catalog_requires_brand("zhenskaya-obuv/krossovki") is True
-    assert dc.catalog_requires_brand("verhnyaya-odezhda/palto") is False
-
-
 @patch("controller.data_controller.find_slug_by_word", return_value="verhnyaya-odezhda/palto")
 @patch("controller.data_controller.get_brand_id_by_name", return_value=321)
 def test_build_product_raw_data_resolves_brand_for_clothing_catalog(

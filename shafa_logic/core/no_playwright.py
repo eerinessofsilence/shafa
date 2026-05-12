@@ -13,7 +13,6 @@ from urllib.parse import urlparse
 from controller.catalog_filter import SLUG_TO_WORDS
 from controller.data_controller import (
     build_product_raw_data,
-    catalog_requires_brand,
     download_product_photos,
     get_product_photo_message_ids,
     get_next_product_for_upload,
@@ -22,7 +21,6 @@ from controller.data_controller import (
     should_run_first_fetch,
 )
 from core.product_failures import (
-    handle_non_retryable_product_failure,
     handle_retryable_product_failure,
     summarize_exception,
     summarize_graph_errors,
@@ -706,31 +704,6 @@ def _main_impl() -> None:
         log("INFO", f"Каталог из данных товара: {catalog_slug}.")
     if not catalog_slug:
         catalog_slug = DEFAULT_CATALOG_SLUG
-    if product_raw_data.get("brand") is None and catalog_requires_brand(catalog_slug):
-        log("WARN", "Бренд не определён. Обновляю список брендов...")
-        try:
-            _refresh_brands(csrftoken, cookies, catalog_slug=catalog_slug)
-        except Exception as exc:
-            handle_retryable_product_failure(
-                message_id=message_id,
-                channel_id=channel_id,
-                failure_reason="BRAND_REFRESH_FAILED",
-                detail_message=f"Не удалось обновить бренды: {exc}",
-            )
-            return
-        if parsed_data or product_data.get("raw_message"):
-            parsed_data, product_raw_data = rebuild_product_data_from_source(product_data)
-        if product_raw_data.get("brand") is None:
-            handle_non_retryable_product_failure(
-                message_id=message_id,
-                channel_id=channel_id,
-                failure_reason="BRAND_NOT_RESOLVED",
-                detail_message=(
-                    "Не удалось распознать бренд. Запусти Bootstrap sizes/brands."
-                ),
-            )
-            return
-
     if product_raw_data.get("size") is None:
         log("WARN", "Размер не определён. Обновляю список размеров...")
         try:

@@ -13,24 +13,20 @@ except ModuleNotFoundError:  # pragma: no cover - optional at import time for te
 
 from controller.data_controller import (
     build_product_raw_data,
-    catalog_requires_brand,
     download_product_photos,
     get_product_photo_message_ids,
     get_next_product_for_upload,
     mark_product_created,
-    rebuild_product_data_from_source,
     should_run_first_fetch,
 )
 from core.context import new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
 from core.product_failures import (
-    handle_non_retryable_product_failure,
     handle_retryable_product_failure,
     summarize_exception,
     summarize_graph_errors,
 )
 from core.requests.create_product import create_product
-from core.requests.get_brands import get_brands, resolve_brand_catalog_slug
 from core.requests.get_sizes import get_sizes
 from core.requests.upload_photo import upload_photo
 from data.const import (
@@ -164,51 +160,6 @@ def _main_impl() -> None:
             if not csrftoken:
                 raise RuntimeError("Не нашёл csrftoken в cookies контекста")
             save_cookies(ctx.cookies())
-            if (
-                product_raw_data.get("brand") is None
-                and catalog_requires_brand(catalog_slug)
-                and parsed_data
-            ):
-                log("WARN", "Бренд не определён. Обновляю список брендов...")
-                try:
-                    brands = get_brands(ctx, csrftoken, catalog_slug=catalog_slug)
-                    resolved_brand_catalog_slug = resolve_brand_catalog_slug(catalog_slug)
-                    log(
-                        "INFO",
-                        f"Загружены бренды для {resolved_brand_catalog_slug}: {len(brands)}.",
-                    )
-                except Exception as exc:
-                    handle_retryable_product_failure(
-                        message_id=message_id,
-                        channel_id=channel_id,
-                        failure_reason="BRAND_REFRESH_FAILED",
-                        detail_message=f"Не удалось обновить бренды: {exc}",
-                    )
-                    return
-                parsed_data, product_raw_data = rebuild_product_data_from_source(product_data)
-                if product_raw_data.get("brand") is None:
-                    handle_non_retryable_product_failure(
-                        message_id=message_id,
-                        channel_id=channel_id,
-                        failure_reason="BRAND_NOT_RESOLVED",
-                        detail_message=(
-                            "Не удалось распознать бренд. Запусти Bootstrap sizes/brands."
-                        ),
-                    )
-                    return
-            if (
-                product_raw_data.get("brand") is None
-                and catalog_requires_brand(catalog_slug)
-            ):
-                handle_non_retryable_product_failure(
-                    message_id=message_id,
-                    channel_id=channel_id,
-                    failure_reason="BRAND_NOT_RESOLVED",
-                    detail_message=(
-                        "Не удалось распознать бренд. Запусти Bootstrap sizes/brands."
-                    ),
-                )
-                return
 
             try:
                 photo_ids: list[str] = []

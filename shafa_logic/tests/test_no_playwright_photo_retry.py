@@ -8,7 +8,6 @@ from core import no_playwright
 
 
 class NoPlaywrightPhotoRetryTests(unittest.TestCase):
-    @patch("core.no_playwright.handle_non_retryable_product_failure")
     @patch("core.no_playwright._refresh_brands")
     @patch("core.no_playwright.handle_retryable_product_failure")
     @patch("core.no_playwright.list_media_files")
@@ -18,7 +17,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
     @patch("core.no_playwright._load_shafa_cookies")
     @patch("core.no_playwright.get_next_product_for_upload")
     @patch("core.no_playwright.init_db")
-    def test_clothing_without_brand_does_not_fail_with_brand_not_resolved(
+    def test_shoes_without_brand_do_not_fail_with_brand_not_resolved(
         self,
         _init_db,
         get_next_product_for_upload,
@@ -29,18 +28,17 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         list_media_files,
         handle_retryable_failure,
         refresh_brands,
-        handle_non_retryable_failure,
     ):
         get_next_product_for_upload.return_value = {
             "channel_id": 9,
             "message_id": 11543,
-            "parsed_data": {"name": "Пальто", "price": "2500", "size": "42"},
+            "parsed_data": {"name": "Кроссовки", "price": "2500", "size": "41"},
             "product_raw_data": {
-                "name": "Пальто",
+                "name": "Кроссовки",
                 "price": 2500,
-                "size": 42,
+                "size": 41,
                 "brand": None,
-                "category": "verhnyaya-odezhda/palto",
+                "category": "obuv/krossovki",
             },
         }
         load_cookies.return_value = [{"name": "csrftoken", "value": "token"}]
@@ -51,7 +49,6 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         no_playwright.main()
 
         refresh_brands.assert_not_called()
-        handle_non_retryable_failure.assert_not_called()
         handle_retryable_failure.assert_called_once_with(
             message_id=11543,
             channel_id=9,

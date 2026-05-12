@@ -2718,16 +2718,9 @@ def is_mode_allowed_parsed(parsed: dict) -> bool:
 
 def catalog_supports_brand(catalog_slug: Optional[str]) -> bool:
     return bool(catalog_slug) and (
-        catalog_requires_brand(catalog_slug)
+        catalog_slug in {DEFAULT_SHOES_CATEGORY, WOMEN_SNEAKERS_CATEGORY}
         or _is_clothing_catalog_slug(catalog_slug)
     )
-
-
-def catalog_requires_brand(catalog_slug: Optional[str]) -> bool:
-    return bool(catalog_slug) and catalog_slug in {
-        DEFAULT_SHOES_CATEGORY,
-        WOMEN_SNEAKERS_CATEGORY,
-    }
 
 
 async def first_fetch() -> int:
