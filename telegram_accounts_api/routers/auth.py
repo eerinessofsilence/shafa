@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from telegram_accounts_api.dependencies import get_auth_service
 from telegram_accounts_api.models.auth import (
@@ -11,6 +11,7 @@ from telegram_accounts_api.models.auth import (
     TelegramCredentialsRequest,
     TelegramPasswordRequest,
     TelegramPhoneRequest,
+    TelegramSessionCopyRequest,
 )
 from telegram_accounts_api.services.auth_service import AccountAuthService
 
@@ -67,6 +68,24 @@ async def logout_telegram(
     service: AccountAuthService = Depends(get_auth_service),
 ) -> TelegramAuthStatusResponse:
     return await service.logout_telegram(account_id)
+
+
+@router.post("/telegram/copy-session", response_model=TelegramAuthStatusResponse)
+async def copy_telegram_session(
+    account_id: str,
+    payload: TelegramSessionCopyRequest,
+    service: AccountAuthService = Depends(get_auth_service),
+) -> TelegramAuthStatusResponse:
+    return await service.copy_telegram_session(account_id, payload)
+
+
+@router.post("/telegram/import-session", response_model=TelegramAuthStatusResponse)
+async def import_telegram_session(
+    account_id: str,
+    file: UploadFile = File(...),
+    service: AccountAuthService = Depends(get_auth_service),
+) -> TelegramAuthStatusResponse:
+    return await service.import_telegram_session(account_id, file)
 
 
 @router.get("/shafa", response_model=ShafaAuthStatusResponse)

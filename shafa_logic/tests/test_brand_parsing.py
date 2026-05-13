@@ -80,8 +80,38 @@ def test_parse_message_extracts_brand_from_leetspeak_token() -> None:
     assert parsed["brand"] == "Nike"
 
 
+def test_parse_message_extracts_brand_from_common_masked_variants() -> None:
+    _reset_brand_caches()
+    try:
+        with patch(
+            "controller.data_controller.list_brand_names",
+            return_value=["Nike", "Adidas", "Puma"],
+        ):
+            cases = [
+                ("Ad1das Campus\nРозмір: 42\nЦіна: 2900 грн\n", "Adidas"),
+                ("Puma! RS-X\nРозмір: 41\nЦіна: 2600 грн\n", "Puma"),
+                ("N!ke V2K Run\nРозмір: 40\nЦіна: 3300 грн\n", "Nike"),
+                ("N1k3 Vomero\nРозмір: 43\nЦіна: 3500 грн\n", "Nike"),
+            ]
+            for message, expected_brand in cases:
+                parsed = dc.parse_message(message)
+                assert parsed["brand"] == expected_brand
+    finally:
+        _reset_brand_caches()
+
+
 def test_canonicalize_name_brand_replaces_leetspeak_brand_token() -> None:
     assert dc._canonicalize_name_brand("N1ke V2K Run", "Nike") == "Nike V2K Run"
+
+
+def test_canonicalize_name_brand_replaces_common_masked_variants() -> None:
+    cases = [
+        ("Ad1das Campus", "Adidas", "Adidas Campus"),
+        ("N!ke V2K Run", "Nike", "Nike V2K Run"),
+        ("N1k3 Vomero", "Nike", "Nike Vomero"),
+    ]
+    for name, brand, expected in cases:
+        assert dc._canonicalize_name_brand(name, brand) == expected
 
 
 @patch("controller.data_controller.find_slug_by_word", return_value="verhnyaya-odezhda/palto")
