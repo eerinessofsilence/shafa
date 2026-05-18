@@ -3,6 +3,7 @@ import _test_path  # noqa: F401
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -45,11 +46,18 @@ class _FakeTelegramContext:
         return False
 
 
-def _message(message_id: int, text: str, media: object | None = None):
+def _message(
+    message_id: int,
+    text: str,
+    media: object | None = None,
+    *,
+    date: datetime | None = None,
+):
     return SimpleNamespace(
         id=message_id,
         message=text,
         media=object() if media is None else media,
+        date=date,
     )
 
 
@@ -927,6 +935,128 @@ class AccountTelegramScannerTests(unittest.TestCase):
         self.assertEqual(second_result["inserted"], 1)
         self.assertEqual(third_result["status"], "not_due")
         self.assertEqual([(row[0], row[1]) for row in rows], [(11, 101), (22, 201)])
+
+    def test_backfill_stops_at_history_window_and_marks_cursor_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+            client = _FakeTelegramClient(
+                {
+                    "peer-11": [
+                        _message(99, "valid-99", date=now - timedelta(days=10)),
+                        _message(98, "valid-98", date=now - timedelta(days=40)),
+                    ]
+                }
+            )
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
+                patch(
+                    "controller.data_controller._sync_channel_titles",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "controller.data_controller._resolve_channel_peer",
+                    new=AsyncMock(return_value="peer-11"),
+                ),
+                patch(
+                    "controller.data_controller._require_telegram_credentials",
+                    return_value=(1, "hash"),
+                ),
+                patch(
+                    "controller.data_controller.create_telegram_client",
+                    return_value=_FakeTelegramContext(client),
+                ),
+                patch(
+                    "controller.data_controller._is_photo_message",
+                    return_value=True,
+                ),
+                patch(
+                    "controller.data_controller._telegram_product_max_age_days",
+                    return_value=30,
+                ),
+                patch(
+                    "controller.data_controller.parse_message",
+                    side_effect=lambda text: {"name": text, "price": "1600", "size": "41"},
+                ),
+            ):
+                db.finish_telegram_scan(
+                    11,
+                    last_checked_message_id=100,
+                    account_id="acc-1",
+                )
+
+                result = dc.scan_account_telegram_channels(batch_size=150)
+                cursor = db.get_telegram_scan_cursor(11, account_id="acc-1")
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT message_id
+                        FROM telegram_products
+                        WHERE account_id = ?
+                        ORDER BY message_id
+                        """,
+                        ("acc-1",),
+                    ).fetchall()
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertTrue(result["channels"][0]["backfill_history_limit_reached"])
+        self.assertEqual(cursor["last_checked_message_id"], 100)
+        self.assertEqual(cursor["backfill_before_message_id"], 99)
+        self.assertTrue(cursor["backfill_history_limit_reached"])
+        self.assertEqual(cursor["backfill_history_window_days"], 30)
+        self.assertIsNotNone(cursor["backfill_history_limit_reached_at"])
+        self.assertEqual([row[0] for row in rows], [99])
+
+    def test_completed_history_window_skips_rechecking_older_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            client = _FakeTelegramClient({"peer-11": []})
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
+                patch(
+                    "controller.data_controller._sync_channel_titles",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "controller.data_controller._resolve_channel_peer",
+                    new=AsyncMock(return_value="peer-11"),
+                ),
+                patch(
+                    "controller.data_controller._require_telegram_credentials",
+                    return_value=(1, "hash"),
+                ),
+                patch(
+                    "controller.data_controller.create_telegram_client",
+                    return_value=_FakeTelegramContext(client),
+                ),
+                patch(
+                    "controller.data_controller._telegram_product_max_age_days",
+                    return_value=30,
+                ),
+            ):
+                db.finish_telegram_scan(
+                    11,
+                    last_checked_message_id=100,
+                    account_id="acc-1",
+                )
+                db.finish_telegram_backfill(
+                    11,
+                    backfill_before_message_id=99,
+                    account_id="acc-1",
+                    history_limit_reached=True,
+                    history_window_days=30,
+                )
+
+                result = dc.scan_account_telegram_channels(batch_size=150)
+                channel_result = result["channels"][0]
+
+        self.assertFalse(channel_result["backfill_attempted"])
+        self.assertTrue(all("max_id" not in call for call in client.calls))
 
 
 if __name__ == "__main__":

@@ -173,6 +173,9 @@ def _create_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
             channel_id INTEGER NOT NULL,
             last_checked_message_id INTEGER,
             backfill_before_message_id INTEGER,
+            backfill_history_limit_reached INTEGER NOT NULL DEFAULT 0,
+            backfill_history_window_days INTEGER,
+            backfill_history_limit_reached_at TEXT,
             last_scan_started_at TEXT,
             last_scan_finished_at TEXT,
             last_scan_error TEXT,
@@ -906,6 +909,21 @@ def _rebuild_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
         if "backfill_before_message_id" in columns
         else "NULL"
     )
+    backfill_history_limit_reached_expr = (
+        "backfill_history_limit_reached"
+        if "backfill_history_limit_reached" in columns
+        else "0"
+    )
+    backfill_history_window_days_expr = (
+        "backfill_history_window_days"
+        if "backfill_history_window_days" in columns
+        else "NULL"
+    )
+    backfill_history_limit_reached_at_expr = (
+        "backfill_history_limit_reached_at"
+        if "backfill_history_limit_reached_at" in columns
+        else "NULL"
+    )
     last_started_expr = (
         "last_scan_started_at" if "last_scan_started_at" in columns else "NULL"
     )
@@ -932,6 +950,9 @@ def _rebuild_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
             channel_id,
             last_checked_message_id,
             backfill_before_message_id,
+            backfill_history_limit_reached,
+            backfill_history_window_days,
+            backfill_history_limit_reached_at,
             last_scan_started_at,
             last_scan_finished_at,
             last_scan_error,
@@ -945,6 +966,9 @@ def _rebuild_telegram_scan_cursors_table(conn: sqlite3.Connection) -> None:
             {channel_id_expr},
             {last_checked_expr},
             {backfill_before_expr},
+            {backfill_history_limit_reached_expr},
+            {backfill_history_window_days_expr},
+            {backfill_history_limit_reached_at_expr},
             {last_started_expr},
             {last_finished_expr},
             {last_error_expr},
@@ -999,6 +1023,21 @@ def _ensure_telegram_scan_cursors_schema(conn: sqlite3.Connection) -> None:
     if "backfill_before_message_id" not in columns:
         conn.execute(
             "ALTER TABLE telegram_scan_cursors ADD COLUMN backfill_before_message_id INTEGER"
+        )
+    if "backfill_history_limit_reached" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_scan_cursors "
+            "ADD COLUMN backfill_history_limit_reached INTEGER NOT NULL DEFAULT 0"
+        )
+    if "backfill_history_window_days" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_scan_cursors "
+            "ADD COLUMN backfill_history_window_days INTEGER"
+        )
+    if "backfill_history_limit_reached_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_scan_cursors "
+            "ADD COLUMN backfill_history_limit_reached_at TEXT"
         )
     if "last_scan_started_at" not in columns:
         conn.execute(
@@ -2148,6 +2187,9 @@ def get_telegram_scan_cursor(
                 channel_id,
                 last_checked_message_id,
                 backfill_before_message_id,
+                backfill_history_limit_reached,
+                backfill_history_window_days,
+                backfill_history_limit_reached_at,
                 last_scan_started_at,
                 last_scan_finished_at,
                 last_scan_error,
@@ -2172,6 +2214,17 @@ def get_telegram_scan_cursor(
             int(row["backfill_before_message_id"])
             if row and row["backfill_before_message_id"] is not None
             else None
+        ),
+        "backfill_history_limit_reached": bool(
+            row["backfill_history_limit_reached"]
+        ) if row and row["backfill_history_limit_reached"] is not None else False,
+        "backfill_history_window_days": (
+            int(row["backfill_history_window_days"])
+            if row and row["backfill_history_window_days"] is not None
+            else None
+        ),
+        "backfill_history_limit_reached_at": (
+            row["backfill_history_limit_reached_at"] if row else None
         ),
         "last_scan_started_at": row["last_scan_started_at"] if row else None,
         "last_scan_finished_at": row["last_scan_finished_at"] if row else None,
@@ -2304,6 +2357,8 @@ def finish_telegram_backfill(
     backfill_before_message_id: Optional[int],
     account_id: Optional[str] = None,
     error_message: Optional[str] = None,
+    history_limit_reached: Optional[bool] = None,
+    history_window_days: Optional[int] = None,
 ) -> None:
     normalized_account_id = _current_account_id(account_id)
     telegram_db_path = _telegram_products_db_path()
@@ -2311,7 +2366,11 @@ def finish_telegram_backfill(
     with _connect(telegram_db_path) as conn:
         existing = conn.execute(
             """
-            SELECT backfill_before_message_id
+            SELECT
+                backfill_before_message_id,
+                backfill_history_limit_reached,
+                backfill_history_window_days,
+                backfill_history_limit_reached_at
             FROM telegram_scan_cursors
             WHERE account_id = ? AND channel_id = ?
             """,
@@ -2327,19 +2386,51 @@ def finish_telegram_backfill(
             processed_message_id = int(backfill_before_message_id)
             if next_backfill_before is None or processed_message_id < next_backfill_before:
                 next_backfill_before = processed_message_id
+        next_history_limit_reached = (
+            bool(existing["backfill_history_limit_reached"])
+            if existing and existing["backfill_history_limit_reached"] is not None
+            else False
+        )
+        if history_limit_reached is not None:
+            next_history_limit_reached = bool(history_limit_reached)
+        next_history_window_days = (
+            int(existing["backfill_history_window_days"])
+            if existing and existing["backfill_history_window_days"] is not None
+            else None
+        )
+        if history_window_days is not None:
+            next_history_window_days = int(history_window_days)
+        next_history_limit_reached_at = (
+            str(existing["backfill_history_limit_reached_at"])
+            if existing and existing["backfill_history_limit_reached_at"] is not None
+            else None
+        )
+        if history_limit_reached is True:
+            next_history_limit_reached_at = time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+                time.gmtime(),
+            )
+        elif history_limit_reached is False:
+            next_history_limit_reached_at = None
         conn.execute(
             """
             INSERT INTO telegram_scan_cursors (
                 account_id,
                 channel_id,
                 backfill_before_message_id,
+                backfill_history_limit_reached,
+                backfill_history_window_days,
+                backfill_history_limit_reached_at,
                 backfill_scan_finished_at,
                 backfill_scan_error,
                 updated_at
             )
-            VALUES (?, ?, ?, datetime('now'), ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, datetime('now'))
             ON CONFLICT(account_id, channel_id) DO UPDATE SET
                 backfill_before_message_id = excluded.backfill_before_message_id,
+                backfill_history_limit_reached = excluded.backfill_history_limit_reached,
+                backfill_history_window_days = excluded.backfill_history_window_days,
+                backfill_history_limit_reached_at = excluded.backfill_history_limit_reached_at,
                 backfill_scan_finished_at = datetime('now'),
                 backfill_scan_error = excluded.backfill_scan_error,
                 updated_at = datetime('now')
@@ -2348,6 +2439,9 @@ def finish_telegram_backfill(
                 normalized_account_id,
                 channel_id,
                 next_backfill_before,
+                1 if next_history_limit_reached else 0,
+                next_history_window_days,
+                next_history_limit_reached_at,
                 str(error_message).strip() or None,
             ),
         )

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import unicodedata
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -87,6 +88,7 @@ DEFAULT_TELEGRAM_FETCH_WAIT_SECONDS = 3.0
 DEFAULT_TELEGRAM_SCAN_BATCH_SIZE = 150
 DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS = 180
 DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS = 360
+DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS = 183
 MIN_PRODUCT_PRICE_DIGITS = 3
 MAX_PRODUCT_PRICE_DIGITS = 4
 
@@ -2811,6 +2813,43 @@ def _scan_batch_result() -> dict[str, Optional[int] | str]:
     }
 
 
+def _telegram_product_max_age_days() -> int:
+    raw = os.getenv("SHAFA_TELEGRAM_PRODUCT_MAX_AGE_DAYS", "").strip()
+    if not raw:
+        return DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
+    return max(value, 1)
+
+
+def _telegram_backfill_cutoff_utc() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=_telegram_product_max_age_days())
+
+
+def _message_datetime_utc(message) -> Optional[datetime]:
+    value = getattr(message, "date", None)
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _is_backfill_history_window_complete(
+    cursor: dict,
+    *,
+    history_window_days: int,
+) -> bool:
+    if not bool(cursor.get("backfill_history_limit_reached")):
+        return False
+    completed_window_days = cursor.get("backfill_history_window_days")
+    if not isinstance(completed_window_days, int):
+        return False
+    return completed_window_days >= history_window_days
+
+
 def _process_scanned_messages(
     messages: list,
     *,
@@ -2887,11 +2926,13 @@ async def _load_messages_for_backfill(
     *,
     backfill_before_message_id: Optional[int],
     batch_size: int,
-) -> list:
+) -> tuple[list, bool]:
     if backfill_before_message_id is None or backfill_before_message_id <= 1:
-        return []
+        return [], False
 
     messages: list = []
+    cutoff_utc = _telegram_backfill_cutoff_utc()
+    history_limit_reached = False
     async for msg in client.iter_messages(
         channel_peer,
         max_id=backfill_before_message_id,
@@ -2903,8 +2944,12 @@ async def _load_messages_for_backfill(
             or message_id >= backfill_before_message_id
         ):
             continue
+        message_datetime_utc = _message_datetime_utc(msg)
+        if message_datetime_utc is not None and message_datetime_utc < cutoff_utc:
+            history_limit_reached = True
+            break
         messages.append(msg)
-    return messages
+    return messages, history_limit_reached
 
 
 async def _load_latest_message_id_for_scan(
@@ -2988,6 +3033,7 @@ async def _scan_single_channel(
     backfill_before_message_id: Optional[int] = None
     backfill_last_processed_message_id: Optional[int] = None
     backfill_error_message: Optional[str] = None
+    backfill_history_limit_reached = False
     backfill_attempted = False
     live_messages_fetched = 0
     backfill_messages_fetched = 0
@@ -2996,6 +3042,7 @@ async def _scan_single_channel(
     cursor = get_telegram_scan_cursor(channel_id, account_id=account_id)
     last_checked_message_id = cursor.get("last_checked_message_id")
     backfill_before_message_id = cursor.get("backfill_before_message_id")
+    history_window_days = _telegram_product_max_age_days()
     mark_telegram_scan_started(channel_id, account_id=account_id)
 
     try:
@@ -3026,7 +3073,14 @@ async def _scan_single_channel(
         last_processed_message_id = live_result["last_processed_message_id"]  # type: ignore[assignment]
         error_message = str(live_result["error_message"] or "") or None
 
-        if error_message is None and live_messages_fetched == 0:
+        if (
+            error_message is None
+            and live_messages_fetched == 0
+            and not _is_backfill_history_window_complete(
+                cursor,
+                history_window_days=history_window_days,
+            )
+        ):
             resolved_backfill_before = _resolve_backfill_floor_message_id(
                 channel_id,
                 account_id=account_id,
@@ -3036,7 +3090,7 @@ async def _scan_single_channel(
             if resolved_backfill_before is not None and resolved_backfill_before > 1:
                 backfill_attempted = True
                 mark_telegram_backfill_started(channel_id, account_id=account_id)
-                backfill_messages = await _load_messages_for_backfill(
+                backfill_messages, backfill_history_limit_reached = await _load_messages_for_backfill(
                     client,
                     channel_peer,
                     backfill_before_message_id=resolved_backfill_before,
@@ -3060,7 +3114,10 @@ async def _scan_single_channel(
                 )
                 next_backfill_before_message_id = resolved_backfill_before
                 if backfill_error_message is None:
-                    if backfill_last_processed_message_id is not None:
+                    if backfill_history_limit_reached:
+                        if backfill_last_processed_message_id is not None:
+                            next_backfill_before_message_id = backfill_last_processed_message_id
+                    elif backfill_last_processed_message_id is not None:
                         next_backfill_before_message_id = backfill_last_processed_message_id
                     elif backfill_messages_fetched == 0:
                         next_backfill_before_message_id = 1
@@ -3069,6 +3126,14 @@ async def _scan_single_channel(
                     backfill_before_message_id=next_backfill_before_message_id,
                     account_id=account_id,
                     error_message=backfill_error_message,
+                    history_limit_reached=(
+                        True if backfill_error_message is None and backfill_history_limit_reached else None
+                    ),
+                    history_window_days=(
+                        history_window_days
+                        if backfill_error_message is None and backfill_history_limit_reached
+                        else None
+                    ),
                 )
     except Exception as exc:
         error_message = _scan_error_message(channel_id, None, exc)
@@ -3092,6 +3157,7 @@ async def _scan_single_channel(
         "live_messages_fetched": live_messages_fetched,
         "backfill_attempted": backfill_attempted,
         "backfill_messages_fetched": backfill_messages_fetched,
+        "backfill_history_limit_reached": backfill_history_limit_reached,
         "backfill_last_processed_message_id": backfill_last_processed_message_id,
         "backfill_error_message": backfill_error_message,
         "last_processed_message_id": last_processed_message_id,

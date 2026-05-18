@@ -323,6 +323,8 @@ class LegacyTelegramMigrationTests(unittest.TestCase):
 
             self.assertIsNone(current_cursor["last_checked_message_id"])
             self.assertEqual(legacy_cursor["last_checked_message_id"], 321)
+            self.assertFalse(legacy_cursor["backfill_history_limit_reached"])
+            self.assertIsNone(legacy_cursor["backfill_history_window_days"])
 
 
 if __name__ == "__main__":
