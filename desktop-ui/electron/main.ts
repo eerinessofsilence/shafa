@@ -290,26 +290,79 @@ function streamBackendLogs(
   });
 }
 
-function resolveDevBackendCommand(): { command: string; args: string[]; cwd: string } {
+interface BackendLaunchCommand {
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
+function pushBackendLaunchCandidate(
+  candidates: BackendLaunchCommand[],
+  seen: Set<string>,
+  candidate: BackendLaunchCommand,
+): void {
+  const key = `${candidate.command}\u0000${candidate.cwd}\u0000${candidate.args.join("\u0000")}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  candidates.push(candidate);
+}
+
+function resolveDevBackendCommands(): BackendLaunchCommand[] {
   const root = repoRoot();
   const scriptPath = path.join(root, "desktop_backend.py");
+  const pythonBinaryName = process.platform === "win32" ? "python.exe" : "python";
+  const pythonDirName = process.platform === "win32" ? "Scripts" : "bin";
+  const candidates: BackendLaunchCommand[] = [];
+  const seen = new Set<string>();
+  const configuredVirtualEnv = process.env.VIRTUAL_ENV?.trim();
   const pythonCandidates = [
-    process.env.SHAFA_BACKEND_PYTHON,
-    path.join(root, "venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
-    path.join(root, ".venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+    process.env.SHAFA_BACKEND_PYTHON?.trim(),
+    process.env.SHAFA_PYTHON?.trim(),
+    configuredVirtualEnv
+      ? path.join(configuredVirtualEnv, pythonDirName, pythonBinaryName)
+      : undefined,
+    path.join(root, "venv", pythonDirName, pythonBinaryName),
+    path.join(root, ".venv", pythonDirName, pythonBinaryName),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of pythonCandidates) {
     if (!path.isAbsolute(candidate) || fs.existsSync(candidate)) {
-      return { command: candidate, args: [scriptPath], cwd: root };
+      pushBackendLaunchCandidate(candidates, seen, {
+        command: candidate,
+        args: [scriptPath],
+        cwd: root,
+      });
     }
   }
 
+  pushBackendLaunchCandidate(candidates, seen, {
+    command: "python",
+    args: [scriptPath],
+    cwd: root,
+  });
   if (process.platform === "win32") {
-    return { command: "py", args: ["-3", scriptPath], cwd: root };
+    pushBackendLaunchCandidate(candidates, seen, {
+      command: "py",
+      args: ["-3", scriptPath],
+      cwd: root,
+    });
+    pushBackendLaunchCandidate(candidates, seen, {
+      command: "py",
+      args: [scriptPath],
+      cwd: root,
+    });
+    return candidates;
   }
 
-  return { command: "python3", args: [scriptPath], cwd: root };
+  pushBackendLaunchCandidate(candidates, seen, {
+    command: "python3",
+    args: [scriptPath],
+    cwd: root,
+  });
+
+  return candidates;
 }
 
 async function waitForBackendReady(
@@ -418,7 +471,7 @@ async function startBackend(): Promise<string> {
   const port = resolveBackendPort();
   const apiBaseUrl = `http://${host}:${port}`;
   const userDataDir = path.join(app.getPath("userData"), "backend-data");
-  const launch = resolveDevBackendCommand();
+  const launches = resolveDevBackendCommands();
 
   for (let attempt = 1; attempt <= BACKEND_START_MAX_ATTEMPTS; attempt += 1) {
     const existingHealth = await fetchBackendHealth(apiBaseUrl);
@@ -440,33 +493,48 @@ async function startBackend(): Promise<string> {
       `Starting backend attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS}.`,
     );
 
-    try {
-      const child = await launchBackendProcess(launch.command, launch.args, {
-        apiBaseUrl,
-        cwd: launch.cwd,
-        host,
-        port,
-        userDataDir,
-      });
-      backendProcess = child;
-      process.env.SHAFA_API_BASE_URL = apiBaseUrl;
+    let lastError: unknown = null;
+
+    for (const launch of launches) {
       appendBackendLog(
-        `Backend became healthy on attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS}.`,
+        `Trying backend command: ${launch.command} ${launch.args.join(" ")}`,
       );
-      return apiBaseUrl;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      appendBackendLog(
-        `Backend start attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS} failed: ${message}`,
-      );
-      if (
-        !isRetryableBackendStartupError(error) ||
-        attempt === BACKEND_START_MAX_ATTEMPTS
-      ) {
-        throw error;
+
+      try {
+        const child = await launchBackendProcess(launch.command, launch.args, {
+          apiBaseUrl,
+          cwd: launch.cwd,
+          host,
+          port,
+          userDataDir,
+        });
+        backendProcess = child;
+        process.env.SHAFA_API_BASE_URL = apiBaseUrl;
+        appendBackendLog(
+          `Backend became healthy on attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS}.`,
+        );
+        return apiBaseUrl;
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        appendBackendLog(
+          `Backend command failed (${launch.command} ${launch.args.join(" ")}): ${message}`,
+        );
+        if (!isRetryableBackendStartupError(error)) {
+          throw error;
+        }
       }
-      await createDelay(BACKEND_START_RETRY_DELAY_MS);
     }
+
+    const message =
+      lastError instanceof Error ? lastError.message : String(lastError);
+    appendBackendLog(
+      `Backend start attempt ${attempt}/${BACKEND_START_MAX_ATTEMPTS} failed: ${message}`,
+    );
+    if (attempt === BACKEND_START_MAX_ATTEMPTS) {
+      throw lastError;
+    }
+    await createDelay(BACKEND_START_RETRY_DELAY_MS);
   }
 
   throw new Error("Backend start attempts were exhausted.");
