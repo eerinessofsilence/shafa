@@ -31,3 +31,17 @@ def test_find_slug_by_word_matches_ukrainian_leggings_phrase() -> None:
         find_slug_by_word("Ці легінси створені, щоб підкреслити твою форму")
         == "shtany/losiny-i-legginsy"
     )
+
+
+def test_find_slug_by_word_switches_womens_slug_to_mens_by_marker() -> None:
+    assert (
+        find_slug_by_word("Мужской брючный костюм двойка")
+        == "muzhskie-kostyumy/bryuchnye-kostyumy"
+    )
+
+
+def test_find_slug_by_word_detects_ukrainian_mens_marker() -> None:
+    assert (
+        find_slug_by_word("Чоловічий худі oversize")
+        == "kofty/hudi"
+    )

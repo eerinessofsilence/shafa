@@ -54,13 +54,16 @@ from data.db import (
     get_telegram_scan_cursor,
     get_size_id_by_name,
     increment_telegram_product_attempt,
+    list_expired_created_telegram_products,
     list_brand_names,
     load_telegram_channels,
+    mark_telegram_product_deactivated_on_shafa,
     mark_telegram_backfill_started,
     mark_telegram_scan_started,
     finish_telegram_backfill,
     finish_telegram_scan,
     mark_telegram_product_created,
+    record_telegram_product_shafa_deactivate_failure,
     save_telegram_channels,
     save_telegram_product,
     size_id_exists,
@@ -89,6 +92,8 @@ DEFAULT_TELEGRAM_SCAN_BATCH_SIZE = 150
 DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS = 180
 DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS = 360
 DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS = 183
+DEFAULT_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE = 10
+DEFAULT_OLD_PRODUCT_DEACTIVATE_SLEEP_SECONDS = 3.0
 MIN_PRODUCT_PRICE_DIGITS = 3
 MAX_PRODUCT_PRICE_DIGITS = 4
 
@@ -2828,6 +2833,28 @@ def _telegram_backfill_cutoff_utc() -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=_telegram_product_max_age_days())
 
 
+def _old_product_deactivate_batch_size() -> int:
+    raw = os.getenv("SHAFA_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE", "").strip()
+    if not raw:
+        return DEFAULT_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE
+    return min(max(value, 1), 100)
+
+
+def _old_product_deactivate_sleep_seconds() -> float:
+    raw = os.getenv("SHAFA_OLD_PRODUCT_DEACTIVATE_SLEEP_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_OLD_PRODUCT_DEACTIVATE_SLEEP_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_OLD_PRODUCT_DEACTIVATE_SLEEP_SECONDS
+    return min(max(value, 0.0), 60.0)
+
+
 def _message_datetime_utc(message) -> Optional[datetime]:
     value = getattr(message, "date", None)
     if not isinstance(value, datetime):
@@ -2835,6 +2862,12 @@ def _message_datetime_utc(message) -> Optional[datetime]:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _deactivate_product_backend_not_configured(product_id: str) -> None:
+    from core.requests.deactivate_product import deactivate_product
+
+    deactivate_product(product_id)
 
 
 def _is_backfill_history_window_complete(
@@ -2886,6 +2919,7 @@ def _process_scanned_messages(
             getattr(msg, "message", "") or "",
             parsed,
             account_id=account_id,
+            telegram_message_date=_message_datetime_utc(msg),
         ):
             result["inserted"] = int(result["inserted"] or 0) + 1
             stats["saved"] += 1
@@ -4491,6 +4525,111 @@ def register_product_failure(
         )
         return attempts, True
     return attempts, False
+
+
+def deactivate_old_telegram_products(
+    *,
+    older_than_days: Optional[int] = None,
+    limit: Optional[int] = None,
+    sleep_seconds: Optional[float] = None,
+    dry_run: bool = False,
+    account_id: Optional[str] = None,
+    deactivate_product_func=None,
+) -> dict[str, object]:
+    age_days = (
+        _telegram_product_max_age_days()
+        if older_than_days is None
+        else max(int(older_than_days), 1)
+    )
+    batch_limit = (
+        _old_product_deactivate_batch_size() if limit is None else max(int(limit), 1)
+    )
+    delay_seconds = (
+        _old_product_deactivate_sleep_seconds()
+        if sleep_seconds is None
+        else min(max(float(sleep_seconds), 0.0), 60.0)
+    )
+    deactivator = deactivate_product_func or _deactivate_product_backend_not_configured
+    candidates = list_expired_created_telegram_products(
+        older_than_days=age_days,
+        limit=batch_limit,
+        account_id=account_id,
+    )
+    result: dict[str, object] = {
+        "older_than_days": age_days,
+        "limit": batch_limit,
+        "dry_run": dry_run,
+        "sleep_seconds": delay_seconds,
+        "found": len(candidates),
+        "deactivated": 0,
+        "failed": 0,
+        "candidates": candidates,
+    }
+    if dry_run or not candidates:
+        return result
+
+    deactivated = 0
+    failed = 0
+    for index, candidate in enumerate(candidates, start=1):
+        product_id = str(candidate["created_product_id"])
+        channel_id = int(candidate["channel_id"])
+        message_id = int(candidate["message_id"])
+        candidate_account_id = str(candidate["account_id"])
+        try:
+            deactivator(product_id)
+        except Exception as exc:
+            failed += 1
+            attempts = record_telegram_product_shafa_deactivate_failure(
+                channel_id,
+                message_id,
+                str(exc),
+                account_id=candidate_account_id,
+            )
+            log(
+                "ERROR",
+                "Не удалось деактивировать старый товар Shafa. "
+                f"product_id={product_id}. "
+                f"channel_id={channel_id}. message_id={message_id}. "
+                f"Попытка деактивации: {attempts}. Ошибка: {exc}",
+            )
+        else:
+            deactivated += 1
+            mark_telegram_product_deactivated_on_shafa(
+                channel_id,
+                message_id,
+                account_id=candidate_account_id,
+            )
+            log(
+                "OK",
+                "Деактивирован старый товар Shafa. "
+                f"product_id={product_id}. channel_id={channel_id}. "
+                f"message_id={message_id}.",
+            )
+        if index < len(candidates) and delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    result["deactivated"] = deactivated
+    result["failed"] = failed
+    return result
+
+
+def delete_old_telegram_products(
+    *,
+    older_than_days: Optional[int] = None,
+    limit: Optional[int] = None,
+    sleep_seconds: Optional[float] = None,
+    dry_run: bool = False,
+    account_id: Optional[str] = None,
+    delete_product_func=None,
+) -> dict[str, object]:
+    return deactivate_old_telegram_products(
+        older_than_days=older_than_days,
+        limit=limit,
+        sleep_seconds=sleep_seconds,
+        dry_run=dry_run,
+        account_id=account_id,
+        deactivate_product_func=delete_product_func,
+    )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import unittest
 from core.no_playwright import _build_create_product_payload
 from core.requests.create_product import build_create_product_payload
 from models.product import (
+    ABSTRACTION_PRINT_CHARACTERISTIC_ID,
     DEMISEASON_CHARACTERISTIC_ID,
     HANDMADE_CHARACTERISTIC_ID,
 )
@@ -24,6 +25,21 @@ def _base_product_raw_data(**overrides) -> dict:
 
 
 class CreateProductCharacteristicsTests(unittest.TestCase):
+    def test_playwright_payload_for_shoes_includes_abstraction_print(self):
+        payload = build_create_product_payload(
+            ["photo-1"],
+            _base_product_raw_data(category="obuv/krossovki"),
+            100,
+        )
+
+        self.assertEqual(
+            payload["variables"]["characteristics"],
+            [
+                DEMISEASON_CHARACTERISTIC_ID,
+                ABSTRACTION_PRINT_CHARACTERISTIC_ID,
+            ],
+        )
+
     def test_playwright_payload_for_branded_clothing_excludes_handmade(self):
         payload = build_create_product_payload(
             ["photo-1"],
@@ -63,5 +79,5 @@ class CreateProductCharacteristicsTests(unittest.TestCase):
 
         self.assertEqual(
             payload["variables"]["characteristics"],
-            [555, DEMISEASON_CHARACTERISTIC_ID],
+            [555, DEMISEASON_CHARACTERISTIC_ID, ABSTRACTION_PRINT_CHARACTERISTIC_ID],
         )

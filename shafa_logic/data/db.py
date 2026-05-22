@@ -3,6 +3,7 @@ import os
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -154,11 +155,18 @@ def _create_telegram_products_table(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'queued',
             created INTEGER NOT NULL DEFAULT 0,
             created_product_id TEXT,
+            telegram_message_date TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             status_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             create_attempts INTEGER NOT NULL DEFAULT 0,
             last_create_error TEXT,
+            shafa_deactivated_at TEXT,
+            shafa_deactivate_attempts INTEGER NOT NULL DEFAULT 0,
+            last_shafa_deactivate_error TEXT,
+            shafa_deleted_at TEXT,
+            shafa_delete_attempts INTEGER NOT NULL DEFAULT 0,
+            last_shafa_delete_error TEXT,
             UNIQUE(account_id, channel_id, message_id)
         )
         """
@@ -353,6 +361,28 @@ def _normalize_catalog_slug(catalog_slug: Optional[str]) -> Optional[str]:
     if not text:
         return None
     return text.casefold()
+
+
+def _normalize_datetime_text(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        normalized = value.astimezone(timezone.utc) if value.tzinfo else value.replace(
+            tzinfo=timezone.utc
+        )
+        return normalized.strftime("%Y-%m-%d %H:%M:%S")
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        normalized = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if normalized.tzinfo is None:
+        normalized = normalized.replace(tzinfo=timezone.utc)
+    else:
+        normalized = normalized.astimezone(timezone.utc)
+    return normalized.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _load_sizes_cache() -> tuple[
@@ -599,6 +629,9 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
     create_attempts_expr = (
         "COALESCE(create_attempts, 0)" if "create_attempts" in columns else "0"
     )
+    telegram_message_date_expr = (
+        "telegram_message_date" if "telegram_message_date" in columns else "NULL"
+    )
     created_at_source = "created_at" if "created_at" in columns else "NULL"
     updated_at_source = "updated_at" if "updated_at" in columns else "NULL"
     status_updated_at_source = (
@@ -606,6 +639,30 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
     )
     last_create_error_expr = (
         "last_create_error" if "last_create_error" in columns else "NULL"
+    )
+    shafa_deleted_at_expr = (
+        "shafa_deleted_at" if "shafa_deleted_at" in columns else "NULL"
+    )
+    shafa_deactivated_at_expr = (
+        "shafa_deactivated_at" if "shafa_deactivated_at" in columns else "NULL"
+    )
+    shafa_delete_attempts_expr = (
+        "COALESCE(shafa_delete_attempts, 0)"
+        if "shafa_delete_attempts" in columns
+        else "0"
+    )
+    shafa_deactivate_attempts_expr = (
+        "COALESCE(shafa_deactivate_attempts, 0)"
+        if "shafa_deactivate_attempts" in columns
+        else "0"
+    )
+    last_shafa_delete_error_expr = (
+        "last_shafa_delete_error" if "last_shafa_delete_error" in columns else "NULL"
+    )
+    last_shafa_deactivate_error_expr = (
+        "last_shafa_deactivate_error"
+        if "last_shafa_deactivate_error" in columns
+        else "NULL"
     )
     conn.execute("ALTER TABLE telegram_products RENAME TO telegram_products_legacy")
     _create_telegram_products_table(conn)
@@ -621,11 +678,18 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
             status,
             created,
             created_product_id,
+            telegram_message_date,
             created_at,
             updated_at,
             status_updated_at,
             create_attempts,
-            last_create_error
+            last_create_error,
+            shafa_deactivated_at,
+            shafa_deactivate_attempts,
+            last_shafa_deactivate_error,
+            shafa_deleted_at,
+            shafa_delete_attempts,
+            last_shafa_delete_error
         )
         SELECT
             {id_expr},
@@ -647,6 +711,7 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
             END,
             {created_expr},
             {created_product_id_expr},
+            {telegram_message_date_expr},
             COALESCE({created_at_source}, datetime('now')),
             COALESCE({updated_at_source}, {created_at_source}, datetime('now')),
             COALESCE(
@@ -656,7 +721,13 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
                 datetime('now')
             ),
             {create_attempts_expr},
-            {last_create_error_expr}
+            {last_create_error_expr},
+            {shafa_deactivated_at_expr},
+            {shafa_deactivate_attempts_expr},
+            {last_shafa_deactivate_error_expr},
+            {shafa_deleted_at_expr},
+            {shafa_delete_attempts_expr},
+            {last_shafa_delete_error_expr}
         FROM telegram_products_legacy
         """,
         (
@@ -713,6 +784,10 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
         )
     if "last_create_error" not in columns:
         conn.execute("ALTER TABLE telegram_products ADD COLUMN last_create_error TEXT")
+    if "telegram_message_date" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN telegram_message_date TEXT"
+        )
     if "status" not in columns:
         conn.execute(
             "ALTER TABLE telegram_products ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'"
@@ -744,6 +819,30 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
             WHERE status_updated_at IS NULL
             """
         )
+    if "shafa_deactivated_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN shafa_deactivated_at TEXT"
+        )
+    if "shafa_deactivate_attempts" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN shafa_deactivate_attempts "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_shafa_deactivate_error" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN last_shafa_deactivate_error TEXT"
+        )
+    if "shafa_deleted_at" not in columns:
+        conn.execute("ALTER TABLE telegram_products ADD COLUMN shafa_deleted_at TEXT")
+    if "shafa_delete_attempts" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN shafa_delete_attempts "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_shafa_delete_error" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN last_shafa_delete_error TEXT"
+        )
     conn.execute(
         f"UPDATE telegram_products SET account_id = '{LEGACY_TELEGRAM_ACCOUNT_ID}' "
         "WHERE account_id IS NULL OR TRIM(account_id) = ''"
@@ -764,6 +863,14 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_created_at "
         "ON telegram_products(account_id, created_at DESC, message_id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_message_date "
+        "ON telegram_products(account_id, telegram_message_date, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_deactivated_at "
+        "ON telegram_products(account_id, shafa_deactivated_at)"
     )
 
 
@@ -1461,11 +1568,13 @@ def save_telegram_product(
     parsed_data: dict,
     *,
     account_id: Optional[str] = None,
+    telegram_message_date: object = None,
 ) -> bool:
     size = parsed_data.get("size")
     if size is None or str(size).strip() == "":
         return False
     normalized_account_id = _current_account_id(account_id)
+    normalized_telegram_message_date = _normalize_datetime_text(telegram_message_date)
     telegram_db_path = _telegram_products_db_path()
     _ensure_db_initialized(telegram_db_path)
     with _connect(telegram_db_path) as conn:
@@ -1490,8 +1599,15 @@ def save_telegram_product(
         cursor = conn.execute(
             """
             INSERT INTO telegram_products
-                (account_id, channel_id, message_id, raw_message, parsed_data)
-            VALUES (?, ?, ?, ?, ?)
+                (
+                    account_id,
+                    channel_id,
+                    message_id,
+                    raw_message,
+                    parsed_data,
+                    telegram_message_date
+                )
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, channel_id, message_id) DO NOTHING
             """,
             (
@@ -1500,6 +1616,7 @@ def save_telegram_product(
                 message_id,
                 raw_message,
                 json.dumps(parsed_data, ensure_ascii=True),
+                normalized_telegram_message_date,
             ),
         )
     return cursor.rowcount == 1
@@ -2040,6 +2157,12 @@ def mark_telegram_product_created(
                 created = 1,
                 created_product_id = ?,
                 last_create_error = ?,
+                shafa_deactivated_at = NULL,
+                shafa_deactivate_attempts = 0,
+                last_shafa_deactivate_error = NULL,
+                shafa_deleted_at = NULL,
+                shafa_delete_attempts = 0,
+                last_shafa_delete_error = NULL,
                 updated_at = datetime('now')
                 ,
                 status_updated_at = datetime('now')
@@ -2058,6 +2181,188 @@ def mark_telegram_product_created(
                 message_id,
             ),
         )
+
+
+def list_expired_created_telegram_products(
+    *,
+    older_than_days: int,
+    limit: int = 20,
+    account_id: Optional[str] = None,
+) -> list[dict]:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    age_days = max(int(older_than_days), 1)
+    row_limit = max(int(limit), 1)
+    with _connect(telegram_db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                account_id,
+                channel_id,
+                message_id,
+                created_product_id,
+                telegram_message_date,
+                shafa_deactivate_attempts,
+                last_shafa_deactivate_error,
+                shafa_delete_attempts,
+                last_shafa_delete_error
+            FROM telegram_products
+            WHERE account_id = ?
+              AND status = ?
+              AND created = 1
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              AND telegram_message_date IS NOT NULL
+              AND TRIM(telegram_message_date) != ''
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+              AND datetime(telegram_message_date) <= datetime('now', ?)
+            ORDER BY datetime(telegram_message_date) ASC, message_id ASC
+            LIMIT ?
+            """,
+            (
+                normalized_account_id,
+                TELEGRAM_PRODUCT_STATUS_CREATED,
+                f"-{age_days} days",
+                row_limit,
+            ),
+        ).fetchall()
+    return [
+        {
+            "account_id": row["account_id"],
+            "channel_id": int(row["channel_id"]),
+            "message_id": int(row["message_id"]),
+            "created_product_id": str(row["created_product_id"]),
+            "telegram_message_date": row["telegram_message_date"],
+            "shafa_deactivate_attempts": int(row["shafa_deactivate_attempts"] or 0),
+            "last_shafa_deactivate_error": row["last_shafa_deactivate_error"],
+            "shafa_delete_attempts": int(row["shafa_delete_attempts"] or 0),
+            "last_shafa_delete_error": row["last_shafa_delete_error"],
+        }
+        for row in rows
+    ]
+
+
+def mark_telegram_product_deactivated_on_shafa(
+    channel_id: int,
+    message_id: int,
+    *,
+    account_id: Optional[str] = None,
+) -> None:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        conn.execute(
+            """
+            UPDATE telegram_products
+            SET shafa_deactivated_at = datetime('now'),
+                last_shafa_deactivate_error = NULL,
+                updated_at = datetime('now')
+            WHERE account_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (normalized_account_id, channel_id, message_id),
+        )
+
+
+def record_telegram_product_shafa_deactivate_failure(
+    channel_id: int,
+    message_id: int,
+    error_message: Optional[str],
+    *,
+    account_id: Optional[str] = None,
+) -> int:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    normalized_error = str(error_message or "").strip() or None
+    with _connect(telegram_db_path) as conn:
+        conn.execute(
+            """
+            UPDATE telegram_products
+            SET shafa_deactivate_attempts = COALESCE(shafa_deactivate_attempts, 0) + 1,
+                last_shafa_deactivate_error = ?,
+                updated_at = datetime('now')
+            WHERE account_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (
+                normalized_error,
+                normalized_account_id,
+                channel_id,
+                message_id,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT COALESCE(shafa_deactivate_attempts, 0) AS shafa_deactivate_attempts
+            FROM telegram_products
+            WHERE account_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (normalized_account_id, channel_id, message_id),
+        ).fetchone()
+    return int(row["shafa_deactivate_attempts"] or 0) if row else 0
+
+
+def mark_telegram_product_deleted_from_shafa(
+    channel_id: int,
+    message_id: int,
+    *,
+    account_id: Optional[str] = None,
+) -> None:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        conn.execute(
+            """
+            UPDATE telegram_products
+            SET shafa_deleted_at = datetime('now'),
+                last_shafa_delete_error = NULL,
+                updated_at = datetime('now')
+            WHERE account_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (normalized_account_id, channel_id, message_id),
+        )
+
+
+def record_telegram_product_shafa_delete_failure(
+    channel_id: int,
+    message_id: int,
+    error_message: Optional[str],
+    *,
+    account_id: Optional[str] = None,
+) -> int:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    normalized_error = str(error_message or "").strip() or None
+    with _connect(telegram_db_path) as conn:
+        conn.execute(
+            """
+            UPDATE telegram_products
+            SET shafa_delete_attempts = COALESCE(shafa_delete_attempts, 0) + 1,
+                last_shafa_delete_error = ?,
+                updated_at = datetime('now')
+            WHERE account_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (
+                normalized_error,
+                normalized_account_id,
+                channel_id,
+                message_id,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT COALESCE(shafa_delete_attempts, 0) AS shafa_delete_attempts
+            FROM telegram_products
+            WHERE account_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (normalized_account_id, channel_id, message_id),
+        ).fetchone()
+    return int(row["shafa_delete_attempts"] or 0) if row else 0
 
 
 def increment_telegram_product_attempt(

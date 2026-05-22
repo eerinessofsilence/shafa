@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 DEMISEASON_CHARACTERISTIC_ID = 10273
 HANDMADE_CHARACTERISTIC_ID = 10324
+ABSTRACTION_PRINT_CHARACTERISTIC_ID = 2375
 _SHOES_CATEGORIES = frozenset(
     {
         "obuv/krossovki",
@@ -25,6 +26,8 @@ def _has_brand_value(brand: object) -> bool:
 
 def _required_characteristic_ids(category: object, brand: object) -> tuple[int, ...]:
     required = [DEMISEASON_CHARACTERISTIC_ID]
+    if str(category or "").strip() in _SHOES_CATEGORIES:
+        required.append(ABSTRACTION_PRINT_CHARACTERISTIC_ID)
     if _is_clothing_category(category) and not _has_brand_value(brand):
         required.append(HANDMADE_CHARACTERISTIC_ID)
     return tuple(required)

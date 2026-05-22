@@ -1,6 +1,53 @@
 # category_words.py
 import re
 
+_MENS_MARKER_WORDS = frozenset(
+    {
+        "man",
+        "male",
+        "men",
+        "mens",
+        "gentleman",
+        "gentlemen",
+        "mans",
+        "мужик",
+        "мужская",
+        "мужские",
+        "мужский",
+        "мужских",
+        "мужского",
+        "мужскому",
+        "мужским",
+        "мужскими",
+        "мужчина",
+        "мужчин",
+        "мужчины",
+        "мужчину",
+        "парень",
+        "парни",
+        "парня",
+        "парней",
+        "чоловік",
+        "чоловіки",
+        "чоловіків",
+        "чоловіча",
+        "чоловіче",
+        "чоловічий",
+        "чоловічим",
+        "чоловічих",
+        "чоловічого",
+        "хлопець",
+        "хлопці",
+        "хлопців",
+    }
+)
+_MENS_MARKER_PREFIXES = ("мужск", "чоловіч")
+_WOMEN_TO_MEN_SLUG_REPLACEMENTS = (
+    ("women", "men"),
+    ("zhenskaya", "muzhskaya"),
+    ("zhenskie", "muzhskie"),
+)
+
 SLUG_TO_WORDS = {
     # Женская одежда - Верхний одяг
     "verhnyaya-odezhda/palto": [
@@ -485,6 +532,22 @@ def _match_position(text: str, keyword: str) -> int | None:
     return match.start(2)
 
 
+def _contains_mens_marker(text: str) -> bool:
+    tokens = re.findall(r"\w+", text)
+    return any(
+        token in _MENS_MARKER_WORDS
+        or any(token.startswith(prefix) for prefix in _MENS_MARKER_PREFIXES)
+        for token in tokens
+    )
+
+
+def _to_mens_slug(slug: str) -> str:
+    updated_slug = slug
+    for source, target in _WOMEN_TO_MEN_SLUG_REPLACEMENTS:
+        updated_slug = updated_slug.replace(source, target)
+    return updated_slug
+
+
 def find_slug_by_word(name: str) -> str | None:
     text = _normalize_text(name)
     tokens = set(re.findall(r"\w+", text))
@@ -521,6 +584,8 @@ def find_slug_by_word(name: str) -> str | None:
         ):
             best_slug = slug
             best_position = first_match_position
+    if best_slug and _contains_mens_marker(text):
+        return _to_mens_slug(best_slug)
     return best_slug
 
 

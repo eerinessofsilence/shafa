@@ -211,6 +211,17 @@ def _background_invalid_products_interval_seconds() -> int:
     return min(max(value, 10), 3600)
 
 
+def _background_old_product_deactivate_interval_seconds() -> int:
+    raw = os.getenv("SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return 300
+    try:
+        value = int(raw)
+    except ValueError:
+        return 300
+    return min(max(value, 60), 86400)
+
+
 def _bootstrap_new_account_telegram_queue_if_needed() -> int:
     marker_value = os.getenv("SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH", "").strip()
     if not marker_value:
@@ -277,6 +288,56 @@ def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thr
     thread = threading.Thread(
         target=_worker,
         name="telegram-background-scanner",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def _start_background_old_product_deactivator() -> tuple[threading.Event, threading.Thread]:
+    from controller.data_controller import deactivate_old_telegram_products
+
+    stop_event = threading.Event()
+    interval_seconds = _background_old_product_deactivate_interval_seconds()
+
+    def _worker() -> None:
+        backend_unavailable_reported = False
+        while not stop_event.is_set():
+            if is_product_pipeline_active():
+                if stop_event.wait(5.0):
+                    return
+                continue
+            started_at = time.time()
+            try:
+                result = deactivate_old_telegram_products(dry_run=False)
+                found = int(result.get("found") or 0)
+                deactivated = int(result.get("deactivated") or 0)
+                failed = int(result.get("failed") or 0)
+                if found or deactivated or failed:
+                    print(
+                        "[INFO] Фоновая деактивация старых товаров завершена. "
+                        f"Найдено: {found}. Деактивировано: {deactivated}. Ошибок: {failed}."
+                    )
+                backend_unavailable_reported = False
+            except Exception as exc:
+                message = str(exc)
+                print(f"[ERROR] Фоновая деактивация старых товаров не выполнена: {exc}")
+                if (
+                    "не реализована в API-слое" in message
+                    or "не настроено" in message
+                ):
+                    if backend_unavailable_reported:
+                        return
+                    backend_unavailable_reported = True
+                    return
+            elapsed = time.time() - started_at
+            wait_seconds = max(1.0, interval_seconds - elapsed)
+            if stop_event.wait(wait_seconds):
+                return
+
+    thread = threading.Thread(
+        target=_worker,
+        name="old-products-background-deactivator",
         daemon=True,
     )
     thread.start()
@@ -732,11 +793,14 @@ def main(
         sync_channels_from_runtime_config()
         os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
         stop_event, scanner_thread = _start_background_telegram_scanner()
+        deactivate_stop_event, deactivate_thread = _start_background_old_product_deactivator()
         try:
             _auto_create_product(shafa=shafa)
         finally:
             stop_event.set()
             scanner_thread.join(timeout=5)
+            deactivate_stop_event.set()
+            deactivate_thread.join(timeout=5)
         return
 
     _print_ascii_banner()
