@@ -108,3 +108,13 @@ def test_extract_name_rejects_generic_line_without_clothing_word_or_brand() -> N
     )
 
     assert parsed["name"] == ""
+
+
+def test_extract_name_ignores_invitation_service_line() -> None:
+    parsed = dc.parse_message(
+        "CPM easydrop - посилання на запрошення\n"
+        "Ціна: 1650 грн\n"
+        "Розміри 41-45\n"
+    )
+
+    assert parsed["name"] == ""

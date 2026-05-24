@@ -400,6 +400,12 @@ _NAME_EXCLUDE_HINTS = (
     "додатков",
     "црм",
     "crm",
+    "cpm",
+    "easydrop",
+    "посилання на запрошення",
+    "ссылка на приглашение",
+    "invite link",
+    "invitation link",
     "розмірна",
     "сітка",
     "опис",
@@ -3583,9 +3589,14 @@ async def _download_message_photos(
                 if candidate_id and candidate_id not in source_message_ids:
                     source_message_ids.append(candidate_id)
         messages: list = []
+        resolved_source_message_ids: list[int] = []
         for candidate_id in source_message_ids:
             message = await client.get_messages(channel_peer, ids=candidate_id)
-            if not message or not _is_photo_message(message):
+            if not message:
+                continue
+            if message.id not in resolved_source_message_ids:
+                resolved_source_message_ids.append(message.id)
+            if not _is_photo_message(message):
                 continue
             messages.append(message)
         if not messages:
@@ -3608,9 +3619,9 @@ async def _download_message_photos(
                     continue
             expanded_messages.append(message)
         messages = expanded_messages or messages
-        discussion_message_ids = [message_id]
+        discussion_message_ids = list(resolved_source_message_ids)
         for msg in sorted(messages, key=lambda item: item.id):
-            if msg.id != message_id:
+            if msg.id not in discussion_message_ids:
                 discussion_message_ids.append(msg.id)
         extra = await _collect_discussion_photos(
             client,

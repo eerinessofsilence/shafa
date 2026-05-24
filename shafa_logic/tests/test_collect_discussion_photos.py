@@ -364,3 +364,48 @@ class DownloadMessagePhotosTotalLimitTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((Path(tmpdir) / "10.jpg").exists())
             self.assertTrue((Path(tmpdir) / "11.jpg").exists())
             self.assertFalse((Path(tmpdir) / "12.jpg").exists())
+
+    async def test_discussion_candidates_exclude_unresolved_comment_ids(self):
+        messages = {
+            10: DummyMessage(10, 111, is_photo=True),
+            11: DummyMessage(11, 111, is_photo=True),
+        }
+
+        class DownloadClient:
+            async def get_messages(self, channel_id, ids):
+                return messages.get(ids)
+
+            async def download_media(self, message, file):
+                path = os.path.join(file, f"{message.id}.jpg")
+                with open(path, "wb") as handle:
+                    handle.write(b"0")
+                return path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "controller.data_controller.TelegramClient",
+                    return_value=FakeTelegramClientContext(DownloadClient()),
+                ),
+                patch("controller.data_controller._require_telegram_credentials", return_value=(1, "hash")),
+                patch("controller.data_controller._sync_channel_titles"),
+                patch("controller.data_controller._collect_discussion_photos", return_value=[]) as collect_discussion,
+                patch("controller.data_controller._is_photo_message", return_value=True),
+                patch("controller.data_controller.verbose_photo_logs_enabled", return_value=False),
+            ):
+                downloaded = await dc._download_message_photos(
+                    111,
+                    999,
+                    Path(tmpdir),
+                    max_photos=10,
+                    message_ids=[999, 10, 11],
+                )
+
+            self.assertEqual(downloaded, 2)
+            collect_discussion.assert_awaited_once_with(
+                unittest.mock.ANY,
+                111,
+                111,
+                999,
+                [10, 11],
+            )
