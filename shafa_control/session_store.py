@@ -104,6 +104,9 @@ class AccountSessionStore:
             "telegram_queue_seed_marker_path": str(self.telegram_queue_seed_marker_file(account)),
             "telegram_queue_seed_pending": self.has_pending_telegram_queue_seed(account),
             "media_dir_path": str(self.media_dir(account)),
+            "proxy_id": account.proxy_id,
+            "proxy_config_path": str(self.proxy_config_file(account)),
+            "proxy_assigned": bool(account.proxy_id),
             "logs_path": str(self.account_log_file(account)),
         }
         manifest_path.write_text(
@@ -154,6 +157,9 @@ class AccountSessionStore:
 
     def channel_templates_file(self, account: Account) -> Path:
         return self.account_dir(account) / "channel_templates.json"
+
+    def proxy_config_file(self, account: Account) -> Path:
+        return self.account_dir(account) / "proxy.json"
 
     def telegram_queue_seed_marker_file(self, account: Account) -> Path:
         return self.account_dir(account) / NEW_ACCOUNT_TELEGRAM_QUEUE_SEED_MARKER

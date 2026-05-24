@@ -38,6 +38,7 @@ import type {
   ApiAccountCreate,
   ApiAccountLogEntryRead,
   ApiAccountRead,
+  ApiProxySummary,
   ApiChannelTemplateSummary,
   ApiDashboardSummary,
   ApiShafaAuthStatus,
@@ -131,7 +132,7 @@ const navItemIcons: Record<PageId, ReactNode> = {
 
 type TelegramChannelDraft = Pick<TelegramChannel, 'handle'>;
 type ActionTone = ButtonTone;
-type AccountEditableField = 'name' | 'path' | 'timer' | 'markup';
+type AccountEditableField = 'name' | 'path' | 'timer' | 'markup' | 'proxyId';
 type AccountDraft = Pick<AccountRow, AccountEditableField>;
 type AccountSortField = 'name' | 'timer' | 'channels' | 'status' | 'errors';
 type AccountSortDirection = 'asc' | 'desc';
@@ -188,6 +189,7 @@ const accountDraftInitialState: AccountDraft = {
   path: '',
   timer: `${defaultTimerMinutes} мин`,
   markup: '',
+  proxyId: '',
 };
 const accountPageSizeOptions = [5, 10, 20, 50] as const;
 const tablePaginationSelectClassName =
@@ -313,6 +315,7 @@ const dateTimeFormatOptions = [
 const settingsSectionItems = [
   { id: 'interface', icon: SlidersHorizontal, label: 'Время и часовой пояс' },
   { id: 'http-retry', icon: RefreshCw, label: 'Повторы HTTP' },
+  { id: 'proxies', icon: ShieldCheck, label: 'Прокси и маршруты' },
   { id: 'working-paths', icon: FolderOpen, label: 'Рабочие пути' },
 ] as const;
 
@@ -1190,6 +1193,8 @@ function mapApiAccountToRow(account: ApiAccountRead): AccountRow {
     branch: account.branch || 'main',
     timer: formatTimerLabel(account.timer_minutes),
     markup: formatMarkupLabel(account.markup_amount),
+    proxyId: account.proxy_id || '',
+    proxySummary: account.proxy_summary as ApiProxySummary | null,
     errors: String(account.errors),
     statusLabel,
     statusTone,
@@ -1212,6 +1217,7 @@ function createAccountCreatePayload(draft: AccountDraft): ApiAccountCreate {
     timer_minutes: parseTimerLabel(draft.timer),
     markup_amount: parseMarkupLabel(draft.markup),
     channel_links: [],
+    proxy_id: draft.proxyId.trim() || null,
   };
 }
 
@@ -1221,6 +1227,7 @@ function createAccountUpdatePayload(draft: AccountDraft): ApiAccountUpdate {
     path: draft.path.trim(),
     timer_minutes: parseTimerLabel(draft.timer),
     markup_amount: parseMarkupLabel(draft.markup),
+    proxy_id: draft.proxyId.trim() || null,
   };
 }
 
@@ -1606,6 +1613,7 @@ function getAccountDraftFromRow(account: AccountRow): AccountDraft {
     path: account.path,
     timer: account.timer,
     markup: account.markup,
+    proxyId: account.proxyId,
   };
 }
 

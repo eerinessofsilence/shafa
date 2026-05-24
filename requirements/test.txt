@@ -1,4 +1,5 @@
 -r runtime.txt
 
 httpx
+pytest
 PySide6

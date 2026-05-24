@@ -10,6 +10,19 @@ from typing import Optional
 from urllib import error, request
 from urllib.parse import urlparse
 
+try:
+    from shafa_logic.utils.proxy import (
+        load_runtime_proxy_config,
+        open_url,
+        record_proxy_request_result,
+    )
+except ImportError:  # pragma: no cover - runtime script path fallback
+    from utils.proxy import (  # type: ignore[no-redef]
+        load_runtime_proxy_config,
+        open_url,
+        record_proxy_request_result,
+    )
+
 from controller.catalog_filter import SLUG_TO_WORDS
 from controller.data_controller import (
     build_product_raw_data,
@@ -30,6 +43,7 @@ from data.const import (
     API_BATCH_URL,
     API_URL,
     API_V5_URL,
+    ACCOUNT_ID,
     APP_PLATFORM,
     APP_VERSION,
     CREATE_PRODUCT_MUTATION,
@@ -212,14 +226,29 @@ def _request_json(
     retries = _http_retry_count()
     delay = _http_retry_delay()
     last_error: Optional[Exception] = None
+    proxy_config = load_runtime_proxy_config()
 
     for attempt in range(retries + 1):
         req = request.Request(url, data=payload, headers=merged_headers, method="POST")
         try:
-            with request.urlopen(req, timeout=60) as resp:
+            with open_url(req, config=proxy_config, timeout=60) as resp:
                 text = _read_response_text(resp)
+            record_proxy_request_result(
+                proxy_config.proxy_id if proxy_config else None,
+                account_id=ACCOUNT_ID,
+                target=url,
+                success=True,
+            )
         except error.HTTPError as exc:
             text = _read_response_text(exc)
+            record_proxy_request_result(
+                proxy_config.proxy_id if proxy_config else None,
+                account_id=ACCOUNT_ID,
+                target=url,
+                success=False,
+                error_type=exc.__class__.__name__,
+                error_message=f"HTTP {exc.code}",
+            )
             if _debug_http_enabled():
                 print(text[:preview])
             if exc.code in retryable and attempt < retries:
@@ -234,11 +263,29 @@ def _request_json(
                     detail += " (empty response)"
                 raise RuntimeError(detail) from json_exc
         except error.URLError as exc:
+            record_proxy_request_result(
+                proxy_config.proxy_id if proxy_config else None,
+                account_id=ACCOUNT_ID,
+                target=url,
+                success=False,
+                error_type=exc.__class__.__name__,
+                error_message=str(exc.reason),
+            )
             if attempt < retries:
                 time.sleep(delay * (attempt + 1))
                 last_error = exc
                 continue
             raise RuntimeError(f"Request failed: {exc.reason}") from exc
+        except Exception as exc:
+            record_proxy_request_result(
+                proxy_config.proxy_id if proxy_config else None,
+                account_id=ACCOUNT_ID,
+                target=url,
+                success=False,
+                error_type=exc.__class__.__name__,
+                error_message=str(exc),
+            )
+            raise
 
         if _debug_http_enabled():
             print(text[:preview])

@@ -8,6 +8,7 @@ from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.services.channel_template_service import ChannelTemplateService
 from telegram_accounts_api.services.dashboard_service import DashboardService
+from telegram_accounts_api.services.proxy_service import ProxyService
 from telegram_accounts_api.services.telegram_service import TelegramService
 from telegram_accounts_api.services.template_service import TemplateService
 from telegram_accounts_api.utils.account_logging import AccountLogStore, get_account_log_store as get_shared_account_log_store
@@ -21,6 +22,7 @@ def _get_account_service_cached() -> AccountService:
         storage=JsonListStorage(settings.accounts_file),
         accounts_dir=settings.accounts_dir,
         channel_template_service=_get_channel_template_service_cached(),
+        proxy_service=_get_proxy_service_cached(),
     )
 
 
@@ -54,7 +56,21 @@ def _get_base_account_service() -> AccountService:
     return AccountService(
         storage=JsonListStorage(settings.accounts_file),
         accounts_dir=settings.accounts_dir,
+        proxy_service=_get_proxy_service_cached(),
     )
+
+
+@lru_cache
+def _get_proxy_service_cached() -> ProxyService:
+    return ProxyService(
+        db_path=settings.proxies_db_file,
+        accounts_file=settings.accounts_file,
+        accounts_dir=settings.accounts_dir,
+    )
+
+
+async def get_proxy_service() -> ProxyService:
+    return _get_proxy_service_cached()
 
 
 @lru_cache

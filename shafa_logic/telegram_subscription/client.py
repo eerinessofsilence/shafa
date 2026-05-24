@@ -10,6 +10,21 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from shafa_logic.utils.proxy import (
+        RuntimeProxyConfig,
+        build_telethon_proxy_settings,
+        load_runtime_proxy_config,
+        record_proxy_request_result,
+    )
+except ImportError:  # pragma: no cover - runtime script path fallback
+    from utils.proxy import (  # type: ignore[no-redef]
+        RuntimeProxyConfig,
+        build_telethon_proxy_settings,
+        load_runtime_proxy_config,
+        record_proxy_request_result,
+    )
+
 DEFAULT_SQLITE_TIMEOUT_SECONDS = 30.0
 _SESSION_LOCK_RETRY_INTERVAL_SECONDS = 0.1
 _SESSION_LOCKS: dict[str, threading.Lock] = {}
@@ -28,6 +43,9 @@ def create_telegram_client(
     save_entities: bool = False,
     sqlite_timeout_seconds: float = DEFAULT_SQLITE_TIMEOUT_SECONDS,
     telegram_client_cls: Any | None = None,
+    proxy_config: RuntimeProxyConfig | None = None,
+    proxy_db_path: Path | None = None,
+    account_id: str | None = None,
 ):
     if telegram_client_cls is None:
         from telethon import TelegramClient
@@ -42,9 +60,16 @@ def create_telegram_client(
         save_entities=save_entities,
         sqlite_timeout_seconds=sqlite_timeout_seconds,
     )
+    resolved_proxy_config = proxy_config or load_runtime_proxy_config()
+    client_kwargs: dict[str, Any] = {}
+    if resolved_proxy_config is not None:
+        client_kwargs["proxy"] = build_telethon_proxy_settings(resolved_proxy_config)
     return LockedTelegramClient(
-        telegram_client_cls(session, api_id, api_hash),
+        telegram_client_cls(session, api_id, api_hash, **client_kwargs),
         session_path=session_path,
+        proxy_config=resolved_proxy_config,
+        proxy_db_path=proxy_db_path,
+        account_id=account_id,
     )
 
 
@@ -234,11 +259,22 @@ class SessionUsageLock:
 
 
 class LockedTelegramClient:
-    def __init__(self, client: Any, *, session_path: str | Path) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        session_path: str | Path,
+        proxy_config: RuntimeProxyConfig | None = None,
+        proxy_db_path: Path | None = None,
+        account_id: str | None = None,
+    ) -> None:
         self._client = client
         self._lock = SessionUsageLock(session_path)
         self._lock_acquired = False
         self._lock_timeout_seconds = _session_lock_timeout_seconds()
+        self._proxy_config = proxy_config
+        self._proxy_db_path = proxy_db_path
+        self._account_id = account_id
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
@@ -249,10 +285,13 @@ class LockedTelegramClient:
     async def connect(self):
         await self._ensure_lock()
         try:
-            return await self._client.connect()
-        except Exception:
+            result = await self._client.connect()
+        except Exception as exc:
+            self._record_proxy_result(success=False, error=exc)
             await self._release_lock()
             raise
+        self._record_proxy_result(success=True)
+        return result
 
     async def disconnect(self):
         try:
@@ -267,9 +306,11 @@ class LockedTelegramClient:
                 await self._client.__aenter__()
             else:
                 await self._client.connect()
-        except Exception:
+        except Exception as exc:
+            self._record_proxy_result(success=False, error=exc)
             await self._release_lock()
             raise
+        self._record_proxy_result(success=True)
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -303,6 +344,22 @@ class LockedTelegramClient:
             self._lock.release()
         finally:
             self._lock_acquired = False
+
+    def _record_proxy_result(
+        self,
+        *,
+        success: bool,
+        error: Exception | None = None,
+    ) -> None:
+        record_proxy_request_result(
+            self._proxy_config.proxy_id if self._proxy_config else None,
+            account_id=self._account_id,
+            target="telegram_connect",
+            success=success,
+            db_path=self._proxy_db_path,
+            error_type=error.__class__.__name__ if error is not None else None,
+            error_message=str(error) if error is not None else None,
+        )
 
 
 class BusyTimeoutSQLiteSession:

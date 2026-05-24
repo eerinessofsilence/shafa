@@ -1,4 +1,5 @@
 import {
+  formatApiError,
   AppPreferences,
   AppSidebar,
   dateTimeFormatOptions,
@@ -17,7 +18,11 @@ import {
   ThemeMode,
   ToggleSwitch,
 } from '../app/shared';
-import type { PageId } from '../types';
+import type {
+  ApiProxyCreate,
+  ApiProxyRead,
+  PageId,
+} from '../types';
 import { getButtonClassName } from '../ui';
 import {
   ChevronDown,
@@ -29,41 +34,100 @@ import {
   Info,
   RefreshCw,
   Save,
+  ShieldCheck,
   SlidersHorizontal,
+  Trash2,
 } from 'lucide-react';
-import { type ReactNode, useEffect, useState } from 'react';
+import {
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+  useEffect,
+  useState,
+} from 'react';
 
 interface SettingsPageProps {
   hasUnsavedChanges: boolean;
+  isProxyMutationPending: boolean;
+  isProxiesLoading: boolean;
   onChangePreference: (
     field: keyof AppPreferences,
     value: string | number | boolean,
   ) => void;
+  onCreateProxy: (payload: ApiProxyCreate) => Promise<void>;
+  onDeleteProxy: (proxyId: string) => Promise<void>;
   onNavigateToPage: (page: PageId) => void;
   onResetPreferences: () => void;
   onSavePreferences: () => void;
   onToggleTheme: () => void;
+  onUpdateProxy: (proxyId: string, payload: ApiProxyCreate) => Promise<void>;
   preferences: AppPreferences;
+  proxies: ApiProxyRead[];
+  proxiesError: string;
   themeMode: ThemeMode;
+}
+
+interface ProxyFormDraft {
+  enabled: boolean;
+  host: string;
+  maxAccounts: number;
+  name: string;
+  notes: string;
+  password: string;
+  port: string;
+  scheme: 'http' | 'https' | 'socks5';
+  username: string;
+}
+
+function createEmptyProxyDraft(): ProxyFormDraft {
+  return {
+    enabled: true,
+    host: '',
+    maxAccounts: 3,
+    name: '',
+    notes: '',
+    password: '',
+    port: '',
+    scheme: 'http',
+    username: '',
+  };
 }
 
 function SettingsPage({
   hasUnsavedChanges,
+  isProxyMutationPending,
+  isProxiesLoading,
   onChangePreference,
+  onCreateProxy,
+  onDeleteProxy,
   onNavigateToPage,
   onResetPreferences,
   onSavePreferences,
   onToggleTheme,
+  onUpdateProxy,
   preferences,
+  proxies,
+  proxiesError,
   themeMode,
 }: SettingsPageProps) {
   const [activeSection, setActiveSection] = useState<
     (typeof settingsSectionItems)[number]['id']
   >(settingsSectionItems[0].id);
+  const [editingProxyId, setEditingProxyId] = useState('');
+  const [proxyDraft, setProxyDraft] = useState<ProxyFormDraft>(
+    createEmptyProxyDraft,
+  );
+  const [proxySubmitError, setProxySubmitError] = useState('');
   const selectedDateTimeFormat =
     dateTimeFormatOptions.find(
       (option) => option.value === preferences.dateTimeFormat,
     ) ?? dateTimeFormatOptions[0];
+
+  const isProxyDraftValid =
+    Boolean(proxyDraft.name.trim()) &&
+    Boolean(proxyDraft.host.trim()) &&
+    Number.parseInt(proxyDraft.port, 10) > 0 &&
+    Number.parseInt(proxyDraft.port, 10) <= 65535 &&
+    proxyDraft.maxAccounts >= 1;
 
   useEffect(() => {
     const sections = settingsSectionItems
@@ -108,6 +172,78 @@ function SettingsPage({
       observer.disconnect();
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      editingProxyId &&
+      !proxies.some((proxy) => proxy.id === editingProxyId)
+    ) {
+      setEditingProxyId('');
+      setProxyDraft(createEmptyProxyDraft());
+      setProxySubmitError('');
+    }
+  }, [editingProxyId, proxies]);
+
+  const handleProxyFieldChange = (
+    field: keyof ProxyFormDraft,
+    value: string | number | boolean,
+  ) => {
+    setProxyDraft((currentDraft) => ({
+      ...currentDraft,
+      [field]: value,
+    }));
+  };
+
+  const resetProxyDraft = () => {
+    setEditingProxyId('');
+    setProxyDraft(createEmptyProxyDraft());
+    setProxySubmitError('');
+  };
+
+  const submitProxyDraft = async () => {
+    setProxySubmitError('');
+
+    const payload: ApiProxyCreate = {
+      name: proxyDraft.name.trim(),
+      scheme: proxyDraft.scheme,
+      host: proxyDraft.host.trim(),
+      port: Number.parseInt(proxyDraft.port, 10),
+      username: proxyDraft.username.trim(),
+      password: proxyDraft.password,
+      max_accounts: proxyDraft.maxAccounts,
+      enabled: proxyDraft.enabled,
+      notes: proxyDraft.notes.trim(),
+    };
+
+    try {
+      if (editingProxyId) {
+        await onUpdateProxy(editingProxyId, payload);
+      } else {
+        await onCreateProxy(payload);
+      }
+      resetProxyDraft();
+    } catch (error) {
+      setProxySubmitError(
+        formatApiError(error, 'Не удалось сохранить настройки прокси.'),
+      );
+    }
+  };
+
+  const beginProxyEdit = (proxy: ApiProxyRead) => {
+    setEditingProxyId(proxy.id);
+    setProxyDraft({
+      enabled: proxy.enabled,
+      host: proxy.host,
+      maxAccounts: proxy.max_accounts,
+      name: proxy.name,
+      notes: proxy.notes || '',
+      password: proxy.password || '',
+      port: String(proxy.port),
+      scheme: proxy.scheme,
+      username: proxy.username || '',
+    });
+    setProxySubmitError('');
+  };
 
   return (
     <div className={settingsPageClassName}>
@@ -283,6 +419,281 @@ function SettingsPage({
                         )
                       }
                     />
+                  </div>
+                </section>
+
+                <section
+                  id="settings-proxies"
+                  className={`${settingsPanelClassName} scroll-mt-20`}
+                >
+                  <SettingsSectionHeader
+                    icon={<ShieldCheck className="h-4.5 w-4.5" />}
+                    title="Прокси и маршруты"
+                  />
+
+                  <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+                    <div className="space-y-4">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <SettingsSummaryCard
+                          icon={<ShieldCheck className="h-5 w-5" />}
+                          label="АКТИВНЫЕ ПРОКСИ"
+                          value={String(
+                            proxies.filter((proxy) => proxy.enabled).length,
+                          )}
+                        />
+                        <SettingsSummaryCard
+                          icon={<RefreshCw className="h-5 w-5" />}
+                          label="ВСЕГО ПРОКСИ"
+                          value={String(proxies.length)}
+                        />
+                      </div>
+
+                      {proxiesError ? (
+                        <p className="rounded-[8px] border border-error/15 bg-error/6 px-4 py-3 text-sm text-error">
+                          {proxiesError}
+                        </p>
+                      ) : null}
+
+                      <div className="space-y-3">
+                        {isProxiesLoading ? (
+                          <div className={settingsSubtleCardClassName}>
+                            <p className="text-sm text-text-muted">
+                              Загружаю список прокси...
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {!isProxiesLoading && proxies.length === 0 ? (
+                          <div className={settingsSubtleCardClassName}>
+                            <p className="text-sm text-text-muted">
+                              Прокси ещё не добавлены. Создай первый профиль
+                              справа, и он станет доступен в настройках
+                              аккаунта.
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {proxies.map((proxy) => {
+                          const isEditing = editingProxyId === proxy.id;
+                          return (
+                            <div
+                              key={proxy.id}
+                              className="rounded-[10px] border border-border bg-foreground px-4 py-4"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <h3 className="text-[15px] font-semibold text-text">
+                                      {proxy.name}
+                                    </h3>
+                                    <span className="rounded-full border border-border bg-secondary px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.04em] text-text-muted">
+                                      {proxy.scheme}
+                                    </span>
+                                    <span className="rounded-full border border-border bg-secondary px-2.5 py-1 text-[11px] font-medium text-text-muted">
+                                      {proxy.status}
+                                    </span>
+                                  </div>
+                                  <p className="text-sm text-text-muted">
+                                    {proxy.host}:{proxy.port}
+                                  </p>
+                                  <p className="text-[12px] text-text-muted">
+                                    Аккаунтов: {proxy.assigned_accounts_count}/
+                                    {proxy.max_accounts}
+                                  </p>
+                                </div>
+
+                                <div className="flex gap-2">
+                                  <button
+                                    className={getButtonClassName({
+                                      size: 'sm',
+                                      variant: isEditing ? 'solid' : 'soft',
+                                      tone: isEditing ? 'info' : 'neutral',
+                                    })}
+                                    type="button"
+                                    onClick={() => beginProxyEdit(proxy)}
+                                  >
+                                    Изменить
+                                  </button>
+                                  <button
+                                    className={getButtonClassName({
+                                      size: 'sm',
+                                      tone: 'danger',
+                                      variant: 'soft',
+                                    })}
+                                    disabled={isProxyMutationPending}
+                                    type="button"
+                                    onClick={async () => {
+                                      if (
+                                        !window.confirm(
+                                          `Удалить прокси "${proxy.name}"?`,
+                                        )
+                                      ) {
+                                        return;
+                                      }
+
+                                      try {
+                                        await onDeleteProxy(proxy.id);
+                                        if (editingProxyId === proxy.id) {
+                                          resetProxyDraft();
+                                        }
+                                      } catch (error) {
+                                        setProxySubmitError(
+                                          formatApiError(
+                                            error,
+                                            'Не удалось удалить прокси.',
+                                          ),
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                    Удалить
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-4 rounded-[12px] border border-border bg-secondary/40 p-4">
+                      <div className="space-y-1">
+                        <h3 className="text-[16px] font-semibold text-text">
+                          {editingProxyId ? 'Редактирование прокси' : 'Новый прокси'}
+                        </h3>
+                        <p className="text-sm text-text-muted">
+                          Прокси назначаются аккаунтам и затем автоматически
+                          используются для Shafa и Telegram в пределах этого
+                          аккаунта.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4">
+                        <SettingsTextField
+                          label="НАЗВАНИЕ ПРОКСИ"
+                          value={proxyDraft.name}
+                          onChange={(value) =>
+                            handleProxyFieldChange('name', value)
+                          }
+                        />
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <SettingsSelectField
+                            label="ТИП ПРОКСИ"
+                            options={[
+                              { label: 'HTTP', value: 'http' },
+                              { label: 'HTTPS', value: 'https' },
+                              { label: 'SOCKS5', value: 'socks5' },
+                            ]}
+                            value={proxyDraft.scheme}
+                            onChange={(value) =>
+                              handleProxyFieldChange(
+                                'scheme',
+                                value as ProxyFormDraft['scheme'],
+                              )
+                            }
+                          />
+                          <SettingsNumberField
+                            label="ЛИМИТ АККАУНТОВ"
+                            maximum={100}
+                            minimum={1}
+                            step={1}
+                            value={proxyDraft.maxAccounts}
+                            onChange={(value) =>
+                              handleProxyFieldChange('maxAccounts', value)
+                            }
+                          />
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_140px]">
+                          <SettingsTextField
+                            label="HOST"
+                            value={proxyDraft.host}
+                            onChange={(value) =>
+                              handleProxyFieldChange('host', value)
+                            }
+                          />
+                          <SettingsTextField
+                            inputMode="numeric"
+                            label="PORT"
+                            value={proxyDraft.port}
+                            onChange={(value) =>
+                              handleProxyFieldChange(
+                                'port',
+                                value.replace(/[^\d]/g, '').slice(0, 5),
+                              )
+                            }
+                          />
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <SettingsTextField
+                            label="USERNAME"
+                            value={proxyDraft.username}
+                            onChange={(value) =>
+                              handleProxyFieldChange('username', value)
+                            }
+                          />
+                          <SettingsTextField
+                            label="PASSWORD"
+                            value={proxyDraft.password}
+                            onChange={(value) =>
+                              handleProxyFieldChange('password', value)
+                            }
+                          />
+                        </div>
+                        <SettingsTextField
+                          label="ЗАМЕТКИ"
+                          value={proxyDraft.notes}
+                          onChange={(value) =>
+                            handleProxyFieldChange('notes', value)
+                          }
+                        />
+                        <SettingsToggleCard
+                          checked={proxyDraft.enabled}
+                          description="Отключённый прокси нельзя назначить новому аккаунту, и backend будет блокировать запуск уже связанных аккаунтов."
+                          icon={
+                            <ShieldCheck className="h-4.5 w-4.5 text-text-faint" />
+                          }
+                          label="Прокси активен"
+                          onToggle={() =>
+                            handleProxyFieldChange('enabled', !proxyDraft.enabled)
+                          }
+                        />
+                      </div>
+
+                      {proxySubmitError ? (
+                        <p className="rounded-[8px] border border-error/15 bg-error/6 px-4 py-3 text-sm text-error">
+                          {proxySubmitError}
+                        </p>
+                      ) : null}
+
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {editingProxyId ? (
+                          <button
+                            className={getButtonClassName({
+                              size: 'sm',
+                              variant: 'soft',
+                            })}
+                            type="button"
+                            onClick={resetProxyDraft}
+                          >
+                            Отмена
+                          </button>
+                        ) : null}
+                        <button
+                          className={getButtonClassName({
+                            tone: 'info',
+                            variant: 'solid',
+                            size: 'sm',
+                          })}
+                          disabled={!isProxyDraftValid || isProxyMutationPending}
+                          type="button"
+                          onClick={() => void submitProxyDraft()}
+                        >
+                          <Save className="h-4 w-4" />
+                          {editingProxyId ? 'Сохранить прокси' : 'Создать прокси'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </section>
 
@@ -520,6 +931,40 @@ function SettingsNumberField({
           </span>
         ) : null}
       </div>
+    </SettingsFieldShell>
+  );
+}
+
+interface SettingsTextFieldProps {
+  description?: string;
+  inputMode?: ComponentPropsWithoutRef<'input'>['inputMode'];
+  label: string;
+  labelTooltip?: string;
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function SettingsTextField({
+  description,
+  inputMode,
+  label,
+  labelTooltip,
+  value,
+  onChange,
+}: SettingsTextFieldProps) {
+  return (
+    <SettingsFieldShell
+      description={description}
+      label={label}
+      labelTooltip={labelTooltip}
+    >
+      <input
+        className={settingsFieldClassName}
+        inputMode={inputMode}
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </SettingsFieldShell>
   );
 }

@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from telegram_channels import sanitize_channel_links
 from telegram_accounts_api.models.channel_template import ChannelTemplateSummary
+from telegram_accounts_api.models.proxy import ProxySummary
 
 AccountStatus = Literal["started", "stopped"]
 
@@ -18,8 +19,9 @@ class AccountBase(BaseModel):
     timer_minutes: int = Field(default=5, ge=1, le=1440)
     markup_amount: int | None = Field(default=None, ge=0, le=100000)
     channel_links: list[str] = Field(default_factory=list)
+    proxy_id: str | None = Field(default=None, max_length=255)
 
-    @field_validator("name", "phone", "path", "branch", mode="before")
+    @field_validator("name", "phone", "path", "branch", "proxy_id", mode="before")
     @classmethod
     def strip_text(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
@@ -44,8 +46,9 @@ class AccountUpdate(BaseModel):
     timer_minutes: int | None = Field(default=None, ge=1, le=1440)
     markup_amount: int | None = Field(default=None, ge=0, le=100000)
     channel_links: list[str] | None = None
+    proxy_id: str | None = Field(default=None, max_length=255)
 
-    @field_validator("name", "path", mode="before")
+    @field_validator("name", "path", "proxy_id", mode="before")
     @classmethod
     def strip_text(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
@@ -75,6 +78,7 @@ class AccountRead(AccountBase):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     channel_templates: list[ChannelTemplateSummary] = Field(default_factory=list)
+    proxy_summary: ProxySummary | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)

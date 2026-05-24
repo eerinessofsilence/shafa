@@ -28,6 +28,7 @@ from shafa_control import (
     resolve_project_dir,
 )
 from telegram_accounts_api.models.account import AccountCreate, AccountRead, AccountUpdate
+from telegram_accounts_api.services.proxy_service import ProxyService
 from telegram_accounts_api.utils.account_logging import (
     get_account_log_store,
     is_ignorable_log_message,
@@ -50,6 +51,7 @@ ACCOUNT_KNOWN_FIELDS = {
     "timer_minutes",
     "markup_amount",
     "channel_links",
+    "proxy_id",
     "status",
     "last_run",
     "errors",
@@ -72,6 +74,7 @@ class AccountService:
         accounts_dir: Path,
         channel_template_service=None,
         session_store: AccountSessionStore | None = None,
+        proxy_service: ProxyService | None = None,
     ) -> None:
         self.storage = storage
         self.accounts_dir = accounts_dir
@@ -81,7 +84,11 @@ class AccountService:
             accounts_dir=accounts_dir,
             legacy_state_file=storage.path,
         )
-        self.runtime = AccountRuntimeService(self.session_store)
+        self.proxy_service = proxy_service
+        self.runtime = AccountRuntimeService(
+            self.session_store,
+            proxy_db_path=self.proxy_service.db_path if self.proxy_service else None,
+        )
         self.log_store = LogStore(self.session_store.base_dir / "runtime" / "logs")
         self._records_lock = threading.RLock()
         self._process_lock = threading.RLock()
@@ -104,6 +111,12 @@ class AccountService:
 
         timestamp = datetime.now(UTC).isoformat()
         default_project_path = str(default_project_dir(self.session_store.base_dir))
+        proxy_id = self._normalize_proxy_id(data.proxy_id)
+        self._validate_proxy_assignment(
+            proxy_id,
+            account_id=account_id,
+            requires_telegram=bool(data.channel_links),
+        )
         record = {
             "id": account_id,
             "name": data.name,
@@ -113,6 +126,7 @@ class AccountService:
             "timer_minutes": data.timer_minutes,
             "markup_amount": data.markup_amount,
             "channel_links": data.channel_links,
+            "proxy_id": proxy_id,
             "status": "stopped",
             "last_run": None,
             "errors": 0,
@@ -122,6 +136,7 @@ class AccountService:
         payload.append(record)
         await self._write_payload(payload)
         self._ensure_account_dir(account_id)
+        self._sync_account_runtime_state(record)
         self.session_store.mark_pending_telegram_queue_seed(
             self._record_to_account(record)
         )
@@ -146,6 +161,14 @@ class AccountService:
                 item["markup_amount"] = data.markup_amount
             if data.channel_links is not None:
                 item["channel_links"] = data.channel_links
+            if "proxy_id" in data.model_fields_set:
+                item["proxy_id"] = self._normalize_proxy_id(data.proxy_id)
+
+            self._validate_proxy_assignment(
+                self._normalize_proxy_id(item.get("proxy_id")),
+                account_id=account_id,
+                requires_telegram=bool(item.get("channel_links") or []),
+            )
 
             item["updated_at"] = datetime.now(UTC).isoformat()
             updated_record = item
@@ -155,12 +178,15 @@ class AccountService:
             raise NotFoundError(f"Account '{account_id}' not found.")
 
         await self._write_payload(payload)
+        self._sync_account_runtime_state(updated_record)
         LOGGER.info("Updated account %s", account_id)
         log(account_id, "INFO", "Account settings updated.")
         return await self._to_model(updated_record)
 
     async def delete_account(self, account_id: str) -> None:
         await self.stop_account(account_id)
+        account_record = await self._get_record(account_id)
+        self._clear_account_runtime_state(account_record)
         self._delete_record_sync(account_id)
         account_dir = self.accounts_dir / account_id
         if account_dir.exists():
@@ -292,6 +318,7 @@ class AccountService:
             timer_minutes=runtime_account.timer_minutes,
             markup_amount=runtime_account.markup_amount,
             channel_links=runtime_account.channel_links,
+            proxy_id=runtime_account.proxy_id,
             status=status,
             last_run=item.get("last_run"),
             errors=int(item.get("errors", 0)),
@@ -301,6 +328,11 @@ class AccountService:
             created_at=self._parse_datetime(item.get("created_at")),
             updated_at=self._parse_datetime(item.get("updated_at")),
             channel_templates=channel_templates,
+            proxy_summary=(
+                self.proxy_service.get_proxy_summary(runtime_account.proxy_id)
+                if self.proxy_service is not None
+                else None
+            ),
             extra=extra,
         )
 
@@ -366,6 +398,7 @@ class AccountService:
     def _normalize_record(self, item: dict) -> dict:
         normalized = dict(item)
         normalized.pop("open_browser", None)
+        normalized["proxy_id"] = self._normalize_proxy_id(normalized.get("proxy_id"))
         path = str(normalized.get("path") or "").strip()
         default_path = default_project_dir(self.session_store.base_dir)
         default_project_path = str(default_path).strip()
@@ -402,6 +435,7 @@ class AccountService:
             timer_minutes=int(item.get("timer_minutes", 5)),
             markup_amount=self._parse_markup_amount(item.get("markup_amount")),
             channel_links=item.get("channel_links") or [],
+            proxy_id=self._normalize_proxy_id(item.get("proxy_id")),
             status="started" if str(item.get("status")).strip().lower() in {"started", "running"} else "stopped",
             last_run=item.get("last_run") or "—",
             errors=int(item.get("errors", 0)),
@@ -431,6 +465,11 @@ class AccountService:
             raise BadRequestError(
                 "Сессия Telegram отсутствует или недействительна. Перед синхронизацией каналов выполни вход в Telegram.",
             )
+        self._validate_proxy_assignment(
+            account.proxy_id,
+            account_id=account.id,
+            requires_telegram=bool(account.channel_links),
+        )
 
         env = self.runtime.account_env(account)
         if account.channel_links:
@@ -598,3 +637,39 @@ class AccountService:
             return datetime.fromisoformat(value)
         except ValueError:
             return None
+
+    @staticmethod
+    def _normalize_proxy_id(value: object) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    def _validate_proxy_assignment(
+        self,
+        proxy_id: str | None,
+        *,
+        account_id: str | None,
+        requires_telegram: bool,
+    ) -> None:
+        if self.proxy_service is None:
+            return
+        self.proxy_service.ensure_account_proxy_assignment(
+            proxy_id,
+            account_id=account_id,
+            requires_telegram=requires_telegram,
+        )
+
+    def _sync_account_runtime_state(self, record: dict) -> None:
+        account = self._record_to_account(record)
+        self.session_store.write_account_manifest(account)
+        if self.proxy_service is not None:
+            self.proxy_service.sync_account_proxy_snapshot(record)
+
+    def _clear_account_runtime_state(self, record: dict) -> None:
+        if self.proxy_service is None:
+            return
+        self.proxy_service.sync_account_proxy_snapshot(
+            {
+                "id": record.get("id"),
+                "proxy_id": None,
+            }
+        )

@@ -83,6 +83,7 @@ import type {
   AccountRow,
   ApiAccountRead,
   ApiChannelTemplateRead,
+  ApiProxyRead,
   ApiShafaAuthStatus,
   ApiTelegramAuthStatus,
   ChannelTemplateType,
@@ -136,6 +137,7 @@ interface AccountsPageProps {
   isMutationPending: boolean;
   itemsPerPage: TablePageSize;
   loadError: string;
+  proxies: ApiProxyRead[];
   onBulkAction: (
     action: AccountBulkActionId,
     accountIds: string[],
@@ -159,6 +161,7 @@ function AccountsPage({
   isMutationPending,
   itemsPerPage,
   loadError,
+  proxies,
   onBulkAction,
   onCreateAccount,
   onCurrentPageChange,
@@ -763,6 +766,7 @@ function AccountsPage({
         accounts={accounts}
         isOpen={isDetailsDialogOpen}
         isSubmitting={isMutationPending}
+        proxies={proxies}
         onClose={() => {
           setIsDetailsDialogOpen(false);
           setDetailsAccountId(null);
@@ -783,6 +787,7 @@ function AccountsPage({
       <CreateAccountDialog
         isOpen={isCreateDialogOpen}
         isSubmitting={isMutationPending}
+        proxies={proxies}
         onClose={() => setIsCreateDialogOpen(false)}
         onCreateAccount={onCreateAccount}
       />
@@ -2530,6 +2535,7 @@ interface AccountDetailsDialogProps {
   accounts: AccountRow[];
   isOpen: boolean;
   isSubmitting: boolean;
+  proxies: ApiProxyRead[];
   onClose: () => void;
   onSyncAccountChannels: (
     accountId: string,
@@ -2544,6 +2550,7 @@ function AccountDetailsDialog({
   accounts,
   isOpen,
   isSubmitting,
+  proxies,
   onClose,
   onSyncAccountChannels,
   onUpdateAccount,
@@ -2593,6 +2600,7 @@ function AccountDetailsDialog({
     >
       <div className="space-y-6 pt-6">
         <AccountFormFields
+          proxies={proxies}
           values={draft}
           onFieldChange={(field, value) =>
             setDraft((currentDraft) => ({
@@ -2658,6 +2666,7 @@ function AccountDetailsDialog({
 interface CreateAccountDialogProps {
   isOpen: boolean;
   isSubmitting: boolean;
+  proxies: ApiProxyRead[];
   onClose: () => void;
   onCreateAccount: (draft: AccountDraft) => Promise<void>;
 }
@@ -2665,6 +2674,7 @@ interface CreateAccountDialogProps {
 function CreateAccountDialog({
   isOpen,
   isSubmitting,
+  proxies,
   onClose,
   onCreateAccount,
 }: CreateAccountDialogProps) {
@@ -2697,6 +2707,7 @@ function CreateAccountDialog({
         </div>
 
         <AccountFormFields
+          proxies={proxies}
           values={draft}
           onFieldChange={(field, value) =>
             setDraft((currentDraft) => ({
@@ -4401,11 +4412,16 @@ interface EditableFieldProps {
 }
 
 interface AccountFormFieldsProps {
+  proxies: ApiProxyRead[];
   values: AccountDraft;
   onFieldChange: (field: AccountEditableField, value: string) => void;
 }
 
-function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
+function AccountFormFields({
+  proxies,
+  values,
+  onFieldChange,
+}: AccountFormFieldsProps) {
   return (
     <div className="grid grid-cols-2 gap-3">
       <div className="col-span-2">
@@ -4418,6 +4434,13 @@ function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
             </div>
           }
           onChange={(value) => onFieldChange('name', value)}
+        />
+      </div>
+      <div className="col-span-2">
+        <ProxySelectField
+          proxies={proxies}
+          value={values.proxyId}
+          onChange={(value) => onFieldChange('proxyId', value)}
         />
       </div>
       <MinutesTimePickerField
@@ -4441,6 +4464,49 @@ function AccountFormFields({ values, onFieldChange }: AccountFormFieldsProps) {
         onChange={(value) => onFieldChange('markup', value)}
       />
     </div>
+  );
+}
+
+interface ProxySelectFieldProps {
+  proxies: ApiProxyRead[];
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function ProxySelectField({
+  proxies,
+  value,
+  onChange,
+}: ProxySelectFieldProps) {
+  return (
+    <label className="flex flex-col gap-3">
+      <span className={fieldLabelClassName}>
+        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary/50">
+          <ShieldCheck className="h-3.5 w-3.5 text-info/75" />
+        </div>
+        Прокси для аккаунта
+      </span>
+      <div className="relative overflow-hidden rounded-xl border border-border/25 bg-secondary transition-all duration-200 focus-within:border-info/55 focus-within:ring-4 focus-within:ring-info/10">
+        <select
+          className="h-12 w-full appearance-none bg-transparent px-4 pr-11 text-[16px] text-text outline-none"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="">Без прокси</option>
+          {proxies.map((proxy) => (
+            <option key={proxy.id} value={proxy.id}>
+              {`${proxy.name} · ${proxy.scheme.toUpperCase()} · ${proxy.host}:${proxy.port}`}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-text-faint" />
+      </div>
+      <span className="text-[12px] text-text-muted">
+        {value
+          ? 'Выбранный прокси будет использоваться для запросов Shafa и Telegram этого аккаунта.'
+          : 'Оставь пустым, если аккаунт должен работать без выделенного прокси.'}
+      </span>
+    </label>
   );
 }
 

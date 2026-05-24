@@ -19,6 +19,7 @@ class Account:
     timer_minutes: int = 5
     markup_amount: Optional[int] = None
     channel_links: list[str] = field(default_factory=list)
+    proxy_id: Optional[str] = None
     status: str = "stopped"
     last_run: str = "—"
     errors: int = 0
@@ -35,6 +36,7 @@ class Account:
             "timer_minutes": self.timer_minutes,
             "markup_amount": self.markup_amount,
             "channel_links": self.channel_links,
+            "proxy_id": self.proxy_id,
             "status": self.status,
             "last_run": self.last_run,
             "errors": self.errors,
@@ -52,6 +54,7 @@ class Account:
             timer_minutes=int(data.get("timer_minutes", 5)),
             markup_amount=cls._parse_markup_amount(data.get("markup_amount")),
             channel_links=sanitize_channel_links(data.get("channel_links", [])),
+            proxy_id=str(data.get("proxy_id") or "").strip() or None,
             status=data.get("status", "stopped"),
             last_run=data.get("last_run", "—"),
             errors=int(data.get("errors", 0)),

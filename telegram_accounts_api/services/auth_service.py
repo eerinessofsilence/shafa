@@ -25,6 +25,11 @@ from shafa_control import (
     project_main_path,
     resolve_project_dir,
 )
+from shafa_logic.utils.proxy import (
+    load_runtime_proxy_config,
+    open_url,
+    record_proxy_request_result,
+)
 from shafa_logic.data.const import API_BATCH_URL, APP_PLATFORM, APP_VERSION, ORIGIN_URL
 from shafa_logic.telegram_subscription.client import (
     TelegramSessionInUseError,
@@ -118,7 +123,8 @@ class AccountAuthService:
         self.shafa_login_launcher = shafa_login_launcher or self._launch_shafa_login
         self.telegram_auth = TelegramAuthService(store, self.runner)
         self.shafa_auth = ShafaAuthService(store)
-        self.runtime = AccountRuntimeService(store)
+        proxy_db_path = getattr(getattr(account_service, "proxy_service", None), "db_path", None)
+        self.runtime = AccountRuntimeService(store, proxy_db_path=proxy_db_path)
 
 
     async def get_telegram_status(self, account_id: str) -> TelegramAuthStatusResponse:
@@ -391,7 +397,7 @@ class AccountAuthService:
 
         if connected and cookies:
             try:
-                profile = self._fetch_shafa_profile(cookies)
+                profile = self._fetch_shafa_profile(account, cookies)
             except Exception as exc:
                 log(account_id, "WARNING", f"Failed to fetch Shafa profile data: {exc}")
             else:
@@ -469,6 +475,7 @@ class AccountAuthService:
             timer_minutes=account.timer_minutes,
             markup_amount=account.markup_amount,
             channel_links=account.channel_links,
+            proxy_id=account.proxy_id,
             status=account.status,
             last_run=account.last_run or "—",
             errors=account.errors,
@@ -486,37 +493,14 @@ class AccountAuthService:
             timer_minutes=account.timer_minutes,
             markup_amount=account.markup_amount,
             channel_links=list(account.channel_links),
+            proxy_id=account.proxy_id,
             status=account.status,
             last_run=account.last_run,
             errors=account.errors,
         )
 
     def _account_env(self, account: Account) -> dict[str, str]:
-        env = os.environ.copy()
-        state_dir = self.store.account_dir(account)
-        project_path = _preferred_project_dir(Path(account.path).expanduser())
-        api_id, api_hash = self._resolve_telegram_credentials(account)
-        env.setdefault("PYTHONUNBUFFERED", "1")
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env["SHAFA_ACCOUNT_ID"] = account.id
-        env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
-        env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
-        env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
-        env["SHAFA_SHARED_TELEGRAM_DB_PATH"] = str(self.store.shared_telegram_db_file())
-        env["SHAFA_MEDIA_DIR_PATH"] = str(self.store.media_dir(account))
-        env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
-        env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
-        env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
-        if api_id:
-            env["SHAFA_TELEGRAM_API_ID"] = api_id
-        else:
-            env.pop("SHAFA_TELEGRAM_API_ID", None)
-        if api_hash:
-            env["SHAFA_TELEGRAM_API_HASH"] = api_hash
-        else:
-            env.pop("SHAFA_TELEGRAM_API_HASH", None)
-        return env
+        return self.runtime.account_env(account, base_env=os.environ.copy())
 
     def _account_python(self, account: Account) -> str:
         project_path = _preferred_project_dir(Path(account.path).expanduser())
@@ -623,6 +607,9 @@ class AccountAuthService:
                 api_hash,
                 save_entities=False,
                 telegram_client_cls=TelegramClient,
+                proxy_config=self._proxy_config_for_account(account),
+                proxy_db_path=self.runtime.proxy_db_path,
+                account_id=account.id,
             )
             await client.connect()
 
@@ -652,7 +639,11 @@ class AccountAuthService:
             else f"+{normalized_phone}"
         )
 
-    def _fetch_shafa_profile(self, cookies: list[dict[str, Any]]) -> dict[str, Any]:
+    def _fetch_shafa_profile(
+        self,
+        account: Account,
+        cookies: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         csrftoken = self._get_csrftoken_from_cookies(cookies)
         if not csrftoken:
             raise BadRequestError("Cookies Shafa должны содержать csrftoken.")
@@ -688,16 +679,46 @@ class AccountAuthService:
             headers=request_headers,
             method="POST",
         )
+        proxy_config = self._proxy_config_for_account(account)
 
         try:
-            with request.urlopen(http_request, timeout=20) as response:
+            with open_url(
+                http_request,
+                config=proxy_config,
+                timeout=20,
+            ) as response:
                 response_body = response.read().decode("utf-8", errors="replace")
+            record_proxy_request_result(
+                proxy_config.proxy_id if proxy_config else None,
+                account_id=account.id,
+                target="shafa_profile",
+                success=True,
+                db_path=self.runtime.proxy_db_path,
+            )
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            record_proxy_request_result(
+                proxy_config.proxy_id if proxy_config else None,
+                account_id=account.id,
+                target="shafa_profile",
+                success=False,
+                db_path=self.runtime.proxy_db_path,
+                error_type=exc.__class__.__name__,
+                error_message=f"HTTP {exc.code}",
+            )
             raise RuntimeError(
                 f"Запрос профиля Shafa завершился HTTP {exc.code}: {detail[:300]}"
             ) from exc
         except error.URLError as exc:
+            record_proxy_request_result(
+                proxy_config.proxy_id if proxy_config else None,
+                account_id=account.id,
+                target="shafa_profile",
+                success=False,
+                db_path=self.runtime.proxy_db_path,
+                error_type=exc.__class__.__name__,
+                error_message=str(exc.reason),
+            )
             raise RuntimeError(f"Не удалось запросить профиль Shafa: {exc.reason}") from exc
 
         try:
@@ -737,6 +758,9 @@ class AccountAuthService:
                 continue
             parts.append(f"{name}={value}")
         return "; ".join(parts)
+
+    def _proxy_config_for_account(self, account: Account):
+        return load_runtime_proxy_config(self.store.proxy_config_file(account))
 
     def _run_account_command(self, account: Account, args: list[str]):
         project_path = resolve_project_dir(Path(account.path).expanduser())
@@ -841,13 +865,19 @@ class AccountAuthService:
 
     async def _connect_direct_telegram_client(self, account: Account):
         telegram_client_cls, api_id, api_hash, session_file = self._telegram_client_config(account)
-        client = create_telegram_client(
-            session_file,
-            api_id,
-            api_hash,
-            save_entities=True,
-            telegram_client_cls=telegram_client_cls,
-        )
+        try:
+            client = create_telegram_client(
+                session_file,
+                api_id,
+                api_hash,
+                save_entities=True,
+                telegram_client_cls=telegram_client_cls,
+                proxy_config=self._proxy_config_for_account(account),
+                proxy_db_path=self.runtime.proxy_db_path,
+                account_id=account.id,
+            )
+        except RuntimeError as exc:
+            raise TelegramOperationError(str(exc), status_code=400) from exc
         try:
             await client.connect()
         except TelegramSessionInUseError as exc:

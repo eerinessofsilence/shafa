@@ -1,5 +1,6 @@
 from .account import AccountCreate, AccountRead
 from .common import ActionResponse, HealthResponse
+from .proxy import ProxyCreate, ProxyRead, ProxySummary, ProxyUpdate
 from .channel_template import (
     ChannelTemplateCreate,
     ChannelTemplateRead,
@@ -26,6 +27,10 @@ __all__ = [
     "AccountRead",
     "ActionResponse",
     "HealthResponse",
+    "ProxyCreate",
+    "ProxyRead",
+    "ProxySummary",
+    "ProxyUpdate",
     "ChannelTemplateCreate",
     "ChannelTemplateRead",
     "ChannelTemplateResolveRequest",

@@ -12,6 +12,7 @@ class AppSettings:
     accounts_file: Path
     templates_file: Path
     channel_templates_file: Path
+    proxies_db_file: Path
     accounts_dir: Path
     log_level: str
     app_name: str = "Telegram Accounts API"
@@ -43,6 +44,9 @@ def get_settings() -> AppSettings:
         if legacy_channel_templates_file.exists() and not channel_templates_file.exists():
             channel_templates_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(legacy_channel_templates_file, channel_templates_file)
+    proxies_db_file = Path(
+        os.getenv("PROXIES_DB_FILE", base_dir / "proxies.sqlite3")
+    ).resolve()
     accounts_dir = Path(os.getenv("ACCOUNTS_DIR", base_dir / "accounts")).resolve()
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     return AppSettings(
@@ -50,6 +54,7 @@ def get_settings() -> AppSettings:
         accounts_file=accounts_file,
         templates_file=templates_file,
         channel_templates_file=channel_templates_file,
+        proxies_db_file=proxies_db_file,
         accounts_dir=accounts_dir,
         log_level=log_level,
     )

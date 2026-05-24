@@ -417,7 +417,9 @@ def _bootstrap_project() -> None:
 
 
 def _launch_visible_browser(playwright, *, headless: bool):
-    launch_kwargs = {"headless": headless}
+    from core.context import browser_launch_kwargs
+
+    launch_kwargs = browser_launch_kwargs(headless=headless)
     last_error: Exception | None = None
 
     if os.name == "nt" and not headless:

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
+from shafa_logic.utils.proxy import PROXY_CONFIG_ENV, PROXY_DB_ENV
 from telegram_channels import export_runtime_config
 
 from .models import Account
@@ -134,8 +135,14 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 
 class AccountRuntimeService:
-    def __init__(self, store: AccountSessionStore) -> None:
+    def __init__(
+        self,
+        store: AccountSessionStore,
+        *,
+        proxy_db_path: Path | None = None,
+    ) -> None:
         self.store = store
+        self.proxy_db_path = proxy_db_path
 
     @staticmethod
     def root_env_path() -> Path:
@@ -158,13 +165,27 @@ class AccountRuntimeService:
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        env["SHAFA_ACCOUNT_ID"] = account.id
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
         env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
+        env["SHAFA_SHARED_TELEGRAM_DB_PATH"] = str(self.store.shared_telegram_db_file())
         env["SHAFA_MEDIA_DIR_PATH"] = str(self.store.media_dir(account))
         env["SHAFA_TELEGRAM_SESSION_PATH"] = str(self.store.telegram_session_file(account))
         env["SHAFA_TELEGRAM_LOGIN_STATE_PATH"] = str(self.store.telegram_login_state_file(account))
         env["SHAFA_TELEGRAM_CHANNELS_PATH"] = str(self.store.channels_file(account))
+        env["SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH"] = str(
+            self.store.telegram_queue_seed_marker_file(account)
+        )
+        if self.store.has_pending_telegram_queue_seed(account):
+            env["SHAFA_TELEGRAM_QUEUE_SEED_PENDING"] = "1"
+        else:
+            env.pop("SHAFA_TELEGRAM_QUEUE_SEED_PENDING", None)
+        env[PROXY_CONFIG_ENV] = str(self.store.proxy_config_file(account))
+        if self.proxy_db_path is not None:
+            env[PROXY_DB_ENV] = str(self.proxy_db_path)
+        else:
+            env.pop(PROXY_DB_ENV, None)
         if account.markup_amount is None:
             env.pop("SHAFA_PRICE_MARKUP", None)
         else:

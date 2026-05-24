@@ -4,7 +4,7 @@ from pathlib import Path
 from playwright.sync_api import BrowserContext, TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from core.context import new_context_with_storage, storage_state_has_cookies
+from core.context import browser_launch_kwargs, new_context_with_storage, storage_state_has_cookies
 from core.core import base_headers, get_csrftoken_from_context, read_response_json
 from data.const import API_V5_URL, HEADLESS, REFERER_URL, STORAGE_STATE_PATH
 
@@ -233,7 +233,7 @@ def save_materials_dump(
 
 def main() -> None:
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
+        browser = p.chromium.launch(**browser_launch_kwargs(headless=HEADLESS))
         try:
             ctx = new_context_with_storage(browser)
             page = ctx.new_page()

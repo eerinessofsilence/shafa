@@ -55,6 +55,13 @@ export interface TelegramChannel {
 }
 
 export type ApiAccountStatus = 'started' | 'stopped';
+export type ApiProxyScheme = 'http' | 'https' | 'socks5';
+export type ApiProxyStatus =
+  | 'unknown'
+  | 'healthy'
+  | 'degraded'
+  | 'failing'
+  | 'disabled';
 
 export interface ApiResolvedTelegramChannel {
   channel_id: number;
@@ -81,6 +88,39 @@ export interface ApiChannelTemplateRead extends ApiChannelTemplateSummary {
   updated_at: string;
 }
 
+export interface ApiProxySummary {
+  id: string;
+  name: string;
+  scheme: ApiProxyScheme;
+  status: ApiProxyStatus;
+  assigned_accounts_count: number;
+  max_accounts: number;
+  enabled: boolean;
+}
+
+export interface ApiProxyRead {
+  id: string;
+  name: string;
+  scheme: ApiProxyScheme;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  max_accounts: number;
+  enabled: boolean;
+  notes: string;
+  status: ApiProxyStatus;
+  assigned_accounts_count: number;
+  total_requests: number;
+  total_failures: number;
+  consecutive_failures: number;
+  last_used_at: string | null;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface ApiAccountRead {
   id: string;
   name: string;
@@ -90,6 +130,7 @@ export interface ApiAccountRead {
   timer_minutes: number;
   markup_amount: number | null;
   channel_links: string[];
+  proxy_id: string | null;
   status: ApiAccountStatus;
   last_run: string | null;
   errors: number;
@@ -99,6 +140,7 @@ export interface ApiAccountRead {
   created_at: string | null;
   updated_at: string | null;
   channel_templates: ApiChannelTemplateSummary[];
+  proxy_summary: ApiProxySummary | null;
   extra: Record<string, unknown>;
 }
 
@@ -140,6 +182,7 @@ export interface ApiAccountCreate {
   timer_minutes: number;
   markup_amount?: number | null;
   channel_links: string[];
+  proxy_id?: string | null;
   branch?: string;
 }
 
@@ -149,6 +192,31 @@ export interface ApiAccountUpdate {
   timer_minutes?: number;
   markup_amount?: number | null;
   channel_links?: string[];
+  proxy_id?: string | null;
+}
+
+export interface ApiProxyCreate {
+  name: string;
+  scheme: ApiProxyScheme;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  max_accounts?: number;
+  enabled?: boolean;
+  notes?: string;
+}
+
+export interface ApiProxyUpdate {
+  name?: string;
+  scheme?: ApiProxyScheme;
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  max_accounts?: number;
+  enabled?: boolean;
+  notes?: string;
 }
 
 export interface ApiChannelTemplateCreate {
@@ -223,6 +291,8 @@ export interface AccountRow {
   branch: string;
   timer: string;
   markup: string;
+  proxyId: string;
+  proxySummary?: ApiProxySummary | null;
   errors: string;
   statusLabel: string;
   statusTone: StatusTone;

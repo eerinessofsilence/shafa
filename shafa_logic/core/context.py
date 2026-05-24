@@ -3,6 +3,17 @@ import json
 from data.const import ORIGIN_URL, STORAGE_STATE_PATH
 from data.db import load_cookies
 
+try:
+    from shafa_logic.utils.proxy import (
+        build_playwright_proxy_settings,
+        load_runtime_proxy_config,
+    )
+except ImportError:  # pragma: no cover - runtime script path fallback
+    from utils.proxy import (  # type: ignore[no-redef]
+        build_playwright_proxy_settings,
+        load_runtime_proxy_config,
+    )
+
 
 def new_context_with_storage(browser):
     if STORAGE_STATE_PATH.exists():
@@ -23,3 +34,11 @@ def storage_state_has_cookies(path=STORAGE_STATE_PATH) -> bool:
         return False
     cookies = data.get("cookies")
     return isinstance(cookies, list) and bool(cookies)
+
+
+def browser_launch_kwargs(*, headless: bool) -> dict:
+    launch_kwargs = {"headless": headless}
+    proxy_settings = build_playwright_proxy_settings(load_runtime_proxy_config())
+    if proxy_settings is not None:
+        launch_kwargs["proxy"] = proxy_settings
+    return launch_kwargs

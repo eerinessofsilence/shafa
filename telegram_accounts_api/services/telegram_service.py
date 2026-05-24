@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from telegram_channels import extract_telegram_invite_hash, parse_id_bot_response, sanitize_channel_links
+from shafa_logic.utils.proxy import load_runtime_proxy_config
 from shafa_logic.telegram_subscription.client import (
     TelegramSessionInUseError,
     create_telegram_client,
@@ -138,13 +139,21 @@ class TelegramService:
             raise TelegramOperationError("Telethon не установлен.") from exc
 
         api_id, api_hash, session_file = await self._resolve_credentials(account_id)
-        client = create_telegram_client(
-            session_file,
-            api_id,
-            api_hash,
-            save_entities=False,
-            telegram_client_cls=TelegramClient,
-        )
+        try:
+            client = create_telegram_client(
+                session_file,
+                api_id,
+                api_hash,
+                save_entities=False,
+                telegram_client_cls=TelegramClient,
+                proxy_config=load_runtime_proxy_config(
+                    self.account_service.account_dir(account_id) / "proxy.json"
+                ),
+                proxy_db_path=getattr(self.account_service.runtime, "proxy_db_path", None),
+                account_id=account_id,
+            )
+        except RuntimeError as exc:
+            raise TelegramOperationError(str(exc), status_code=400) from exc
         try:
             await client.connect()
         except TelegramSessionInUseError as exc:

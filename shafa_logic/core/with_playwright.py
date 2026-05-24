@@ -19,7 +19,7 @@ from controller.data_controller import (
     mark_product_created,
     should_run_first_fetch,
 )
-from core.context import new_context_with_storage, storage_state_has_cookies
+from core.context import browser_launch_kwargs, new_context_with_storage, storage_state_has_cookies
 from core.core import get_csrftoken_from_context
 from core.product_failures import (
     handle_retryable_product_failure,
@@ -140,7 +140,7 @@ def _main_impl() -> None:
         )
         return
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
+        browser = p.chromium.launch(**browser_launch_kwargs(headless=HEADLESS))
         try:
             ctx = new_context_with_storage(browser)
             page = ctx.new_page()

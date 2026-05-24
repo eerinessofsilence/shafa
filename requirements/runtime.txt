@@ -2,8 +2,10 @@ fastapi
 inquirer
 playwright
 pydantic
+PySocks
 python-dotenv
 python-Levenshtein
 python-multipart
+python-socks
 telethon
 uvicorn[standard]

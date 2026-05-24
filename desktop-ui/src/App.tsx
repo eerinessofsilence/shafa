@@ -7,6 +7,12 @@ import {
   updateAccount as updateAccountRequest,
 } from './api/accounts';
 import {
+  createProxy as createProxyRequest,
+  deleteProxy as deleteProxyRequest,
+  listProxies,
+  updateProxy as updateProxyRequest,
+} from './api/proxies';
+import {
   AccountBulkActionId,
   AccountDraft,
   AppPreferences,
@@ -36,7 +42,7 @@ import DashboardPage from './pages/DashboardPage';
 import LogsPage from './pages/LogsPage';
 import SettingsPage from './pages/SettingsPage';
 import TemplatesPage from './pages/TemplatesPage';
-import type { AccountRow, PageId } from './types';
+import type { AccountRow, ApiProxyCreate, ApiProxyRead, PageId } from './types';
 import { useCallback, useEffect, useState } from 'react';
 
 function App() {
@@ -49,6 +55,10 @@ function App() {
   const [accountsError, setAccountsError] = useState('');
   const [isAccountMutationPending, setIsAccountMutationPending] =
     useState(false);
+  const [proxies, setProxies] = useState<ApiProxyRead[]>([]);
+  const [isProxiesLoading, setIsProxiesLoading] = useState(false);
+  const [proxiesError, setProxiesError] = useState('');
+  const [isProxyMutationPending, setIsProxyMutationPending] = useState(false);
   const [appPreferences, setAppPreferences] = useState<AppPreferences>(() =>
     loadStoredAppPreferences(),
   );
@@ -183,14 +193,45 @@ function App() {
     }
   };
 
+  const loadProxies = async () => {
+    setProxiesError('');
+    setIsProxiesLoading(true);
+
+    try {
+      setProxies(await listProxies());
+    } catch (error) {
+      setProxiesError(
+        formatApiError(error, 'Не удалось загрузить список прокси.'),
+      );
+    } finally {
+      setIsProxiesLoading(false);
+    }
+  };
+
   useEffect(() => {
-    if (activePage !== 'accounts' && activePage !== 'logs') {
+    if (
+      activePage !== 'accounts' &&
+      activePage !== 'logs' &&
+      activePage !== 'settings'
+    ) {
       return;
     }
 
-    void loadAccounts();
+    if (activePage === 'accounts' || activePage === 'logs') {
+      void loadAccounts();
+    }
+    if (activePage === 'accounts' || activePage === 'settings') {
+      void loadProxies();
+    }
     const intervalId = window.setInterval(
-      () => void loadAccounts(),
+      () => {
+        if (activePage === 'accounts' || activePage === 'logs') {
+          void loadAccounts();
+        }
+        if (activePage === 'accounts' || activePage === 'settings') {
+          void loadProxies();
+        }
+      },
       appPreferences.autoRefreshSeconds * 1000,
     );
 
@@ -257,6 +298,42 @@ function App() {
 
   const handleSavePreferences = () => {
     setAppPreferences(settingsDraft);
+  };
+
+  const handleCreateProxy = async (payload: ApiProxyCreate) => {
+    setIsProxyMutationPending(true);
+
+    try {
+      await createProxyRequest(payload);
+      await loadProxies();
+    } finally {
+      setIsProxyMutationPending(false);
+    }
+  };
+
+  const handleUpdateProxy = async (
+    proxyId: string,
+    payload: ApiProxyCreate,
+  ) => {
+    setIsProxyMutationPending(true);
+
+    try {
+      await updateProxyRequest(proxyId, payload);
+      await Promise.all([loadProxies(), loadAccounts()]);
+    } finally {
+      setIsProxyMutationPending(false);
+    }
+  };
+
+  const handleDeleteProxy = async (proxyId: string) => {
+    setIsProxyMutationPending(true);
+
+    try {
+      await deleteProxyRequest(proxyId);
+      await Promise.all([loadProxies(), loadAccounts()]);
+    } finally {
+      setIsProxyMutationPending(false);
+    }
   };
 
   const handleResetPreferences = () => {
@@ -360,12 +437,19 @@ function App() {
     return (
       <SettingsPage
         hasUnsavedChanges={hasUnsavedChanges}
+        isProxyMutationPending={isProxyMutationPending}
+        isProxiesLoading={isProxiesLoading}
         onChangePreference={handleUpdatePreference}
+        onCreateProxy={handleCreateProxy}
+        onDeleteProxy={handleDeleteProxy}
         onNavigateToPage={setActivePage}
         onResetPreferences={handleResetPreferences}
         onSavePreferences={handleSavePreferences}
         onToggleTheme={handleToggleTheme}
+        onUpdateProxy={handleUpdateProxy}
         preferences={settingsDraft}
+        proxies={proxies}
+        proxiesError={proxiesError}
         themeMode={themeMode}
       />
     );
@@ -402,6 +486,7 @@ function App() {
                   onSelectAccount={setSelectedAccountId}
                   onSyncAccountChannels={handleSyncAccountChannels}
                   onUpdateAccount={handleSaveAccount}
+                  proxies={proxies}
                 />
               )}
               {activePage === 'logs' && (
