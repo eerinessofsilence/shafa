@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import controller.data_controller as dc
@@ -12,6 +13,117 @@ import data.db as db
 
 
 class OldTelegramProductDeactivationTests(unittest.TestCase):
+    def test_backfill_created_product_message_date_from_existing_db(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+            ):
+                parsed = {"name": "Item", "price": "1600", "size": "41"}
+                db.save_telegram_product(11, 401, "target", parsed, account_id="acc-1")
+                db.mark_telegram_product_created(
+                    11,
+                    401,
+                    created_product_id="product-401",
+                    account_id="acc-1",
+                )
+                db.save_telegram_product(
+                    11,
+                    401,
+                    "source",
+                    parsed,
+                    account_id="acc-2",
+                    telegram_message_date=now - timedelta(days=200),
+                )
+
+                result = dc.backfill_created_product_message_dates(
+                    limit=10,
+                    account_id="acc-1",
+                )
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    row = conn.execute(
+                        """
+                        SELECT telegram_message_date
+                        FROM telegram_products
+                        WHERE account_id = ? AND channel_id = ? AND message_id = ?
+                        """,
+                        ("acc-1", 11, 401),
+                    ).fetchone()
+
+        self.assertEqual(result["updated_from_db"], 1)
+        self.assertEqual(result["updated_from_telegram"], 0)
+        self.assertEqual(result["remaining"], 0)
+        self.assertIsNotNone(row[0])
+
+    def test_backfill_created_product_message_date_from_telegram(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+
+            class _FakeClient:
+                def __init__(self, *_args, **_kwargs) -> None:
+                    pass
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, tb):
+                    return False
+
+                async def get_messages(self, peer, ids):
+                    return [
+                        SimpleNamespace(id=int(message_id), date=now - timedelta(days=190))
+                        for message_id in ids
+                    ]
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "SHAFA_ACCOUNT_ID": "acc-1",
+                        "SHAFA_TELEGRAM_API_ID": "1",
+                        "SHAFA_TELEGRAM_API_HASH": "hash",
+                    },
+                    clear=False,
+                ),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch.object(dc, "api_id", 1),
+                patch.object(dc, "api_hash", "hash"),
+            ):
+                parsed = {"name": "Item", "price": "1600", "size": "41"}
+                db.save_telegram_product(11, 402, "target", parsed, account_id="acc-1")
+                db.mark_telegram_product_created(
+                    11,
+                    402,
+                    created_product_id="product-402",
+                    account_id="acc-1",
+                )
+
+                result = dc.backfill_created_product_message_dates(
+                    limit=10,
+                    account_id="acc-1",
+                    telegram_client_cls=_FakeClient,
+                )
+
+                with sqlite3.connect(telegram_db_path) as conn:
+                    row = conn.execute(
+                        """
+                        SELECT telegram_message_date
+                        FROM telegram_products
+                        WHERE account_id = ? AND channel_id = ? AND message_id = ?
+                        """,
+                        ("acc-1", 11, 402),
+                    ).fetchone()
+
+        self.assertEqual(result["updated_from_db"], 0)
+        self.assertEqual(result["updated_from_telegram"], 1)
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertIsNotNone(row[0])
+
     def test_expired_created_products_are_selected_by_telegram_message_date(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"

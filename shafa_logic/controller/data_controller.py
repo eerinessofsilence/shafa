@@ -5,7 +5,7 @@ import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 try:
     from telethon import TelegramClient
@@ -45,6 +45,7 @@ from data.const import (
     TELEGRAM_SESSION_PATH,
 )
 from data.db import (
+    backfill_telegram_product_message_dates_from_existing_db,
     claim_telegram_fetch,
     find_size_mapping_candidates,
     finish_telegram_fetch,
@@ -55,6 +56,7 @@ from data.db import (
     get_size_id_by_name,
     increment_telegram_product_attempt,
     list_expired_created_telegram_products,
+    list_created_telegram_products_missing_date,
     list_brand_names,
     load_telegram_channels,
     mark_telegram_product_deactivated_on_shafa,
@@ -66,6 +68,7 @@ from data.db import (
     record_telegram_product_shafa_deactivate_failure,
     save_telegram_channels,
     save_telegram_product,
+    set_telegram_product_message_date,
     size_id_exists,
     telegram_products_exist,
 )
@@ -4548,6 +4551,124 @@ def register_product_failure(
     return attempts, False
 
 
+async def backfill_created_product_message_dates_async(
+    *,
+    limit: int = 100,
+    account_id: Optional[str] = None,
+    telegram_client_cls: Any | None = None,
+) -> dict[str, object]:
+    normalized_limit = max(int(limit), 1)
+    updated_from_db = backfill_telegram_product_message_dates_from_existing_db(
+        limit=normalized_limit,
+        account_id=account_id,
+    )
+    remaining = list_created_telegram_products_missing_date(
+        limit=normalized_limit,
+        account_id=account_id,
+    )
+    result: dict[str, object] = {
+        "limit": normalized_limit,
+        "updated_from_db": updated_from_db,
+        "updated_from_telegram": 0,
+        "remaining": len(remaining),
+        "failed": 0,
+    }
+    if not remaining:
+        return result
+
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    client_factory = telegram_client_cls or TelegramClient
+    updated_from_telegram = 0
+    failed = 0
+
+    async with create_telegram_client(
+        TELEGRAM_SESSION_PATH,
+        api_id_value,
+        api_hash_value,
+        save_entities=False,
+        telegram_client_cls=client_factory,
+        account_id=account_id or _current_account_id(),
+    ) as client:
+        grouped_by_channel: dict[int, list[dict[str, object]]] = {}
+        for item in remaining:
+            grouped_by_channel.setdefault(int(item["channel_id"]), []).append(item)
+
+        for channel_id, candidates in grouped_by_channel.items():
+            try:
+                channel_peer = await _resolve_channel_peer(client, channel_id)
+                fetched_messages = await client.get_messages(
+                    channel_peer,
+                    ids=[int(item["message_id"]) for item in candidates],
+                )
+            except Exception as exc:
+                failed += len(candidates)
+                log(
+                    "WARN",
+                    "Не удалось добрать даты созданных товаров из Telegram. "
+                    f"channel_id={channel_id}. error={exc}",
+                )
+                continue
+
+            if fetched_messages is None:
+                fetched_list: list[object] = []
+            elif isinstance(fetched_messages, list):
+                fetched_list = fetched_messages
+            else:
+                fetched_list = [fetched_messages]
+
+            messages_by_id = {
+                int(getattr(message, "id", 0)): message
+                for message in fetched_list
+                if getattr(message, "id", None) is not None
+            }
+            for candidate in candidates:
+                message_id = int(candidate["message_id"])
+                message = messages_by_id.get(message_id)
+                message_date = _message_datetime_utc(message) if message is not None else None
+                if message_date is None:
+                    failed += 1
+                    continue
+                if set_telegram_product_message_date(
+                    channel_id,
+                    message_id,
+                    message_date,
+                    account_id=str(candidate["account_id"]),
+                ):
+                    updated_from_telegram += 1
+
+    result["updated_from_telegram"] = updated_from_telegram
+    result["failed"] = failed
+    result["remaining"] = len(
+        list_created_telegram_products_missing_date(
+            limit=normalized_limit,
+            account_id=account_id,
+        )
+    )
+    return result
+
+
+def backfill_created_product_message_dates(
+    *,
+    limit: int = 100,
+    account_id: Optional[str] = None,
+    telegram_client_cls: Any | None = None,
+) -> dict[str, object]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            backfill_created_product_message_dates_async(
+                limit=limit,
+                account_id=account_id,
+                telegram_client_cls=telegram_client_cls,
+            )
+        )
+    raise RuntimeError(
+        "backfill_created_product_message_dates cannot be called when an event loop is running. "
+        "Use backfill_created_product_message_dates_async."
+    )
+
+
 def deactivate_old_telegram_products(
     *,
     older_than_days: Optional[int] = None,
@@ -4557,6 +4678,10 @@ def deactivate_old_telegram_products(
     account_id: Optional[str] = None,
     deactivate_product_func=None,
 ) -> dict[str, object]:
+    backfill_created_product_message_dates(
+        limit=max(int(limit or _old_product_deactivate_batch_size()), 1) * 5,
+        account_id=account_id,
+    )
     age_days = (
         _telegram_product_max_age_days()
         if older_than_days is None

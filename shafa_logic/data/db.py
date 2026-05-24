@@ -2183,6 +2183,145 @@ def mark_telegram_product_created(
         )
 
 
+def list_created_telegram_products_missing_date(
+    *,
+    limit: int = 100,
+    account_id: Optional[str] = None,
+) -> list[dict]:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    row_limit = max(int(limit), 1)
+    with _connect(telegram_db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                account_id,
+                channel_id,
+                message_id,
+                created_product_id
+            FROM telegram_products
+            WHERE account_id = ?
+              AND status = ?
+              AND created = 1
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              AND (
+                    telegram_message_date IS NULL
+                    OR TRIM(telegram_message_date) = ''
+              )
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+            ORDER BY datetime(created_at) ASC, message_id ASC
+            LIMIT ?
+            """,
+            (
+                normalized_account_id,
+                TELEGRAM_PRODUCT_STATUS_CREATED,
+                row_limit,
+            ),
+        ).fetchall()
+    return [
+        {
+            "account_id": str(row["account_id"]),
+            "channel_id": int(row["channel_id"]),
+            "message_id": int(row["message_id"]),
+            "created_product_id": str(row["created_product_id"]),
+        }
+        for row in rows
+    ]
+
+
+def set_telegram_product_message_date(
+    channel_id: int,
+    message_id: int,
+    telegram_message_date: object,
+    *,
+    account_id: Optional[str] = None,
+) -> bool:
+    normalized_account_id = _current_account_id(account_id)
+    normalized_telegram_message_date = _normalize_datetime_text(telegram_message_date)
+    if normalized_telegram_message_date is None:
+        return False
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE telegram_products
+            SET telegram_message_date = ?,
+                updated_at = datetime('now')
+            WHERE account_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (
+                normalized_telegram_message_date,
+                normalized_account_id,
+                channel_id,
+                message_id,
+            ),
+        )
+    return cursor.rowcount == 1
+
+
+def backfill_telegram_product_message_dates_from_existing_db(
+    *,
+    limit: int = 100,
+    account_id: Optional[str] = None,
+) -> int:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    row_limit = max(int(limit), 1)
+    with _connect(telegram_db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT target.channel_id, target.message_id, source.telegram_message_date
+            FROM telegram_products AS target
+            JOIN telegram_products AS source
+              ON source.channel_id = target.channel_id
+             AND source.message_id = target.message_id
+             AND source.account_id != target.account_id
+            WHERE target.account_id = ?
+              AND (
+                    target.telegram_message_date IS NULL
+                    OR TRIM(target.telegram_message_date) = ''
+              )
+              AND source.telegram_message_date IS NOT NULL
+              AND TRIM(source.telegram_message_date) != ''
+            GROUP BY target.channel_id, target.message_id
+            ORDER BY datetime(source.telegram_message_date) ASC, target.message_id ASC
+            LIMIT ?
+            """,
+            (
+                normalized_account_id,
+                row_limit,
+            ),
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            cursor = conn.execute(
+                """
+                UPDATE telegram_products
+                SET telegram_message_date = ?,
+                    updated_at = datetime('now')
+                WHERE account_id = ? AND channel_id = ? AND message_id = ?
+                  AND (
+                        telegram_message_date IS NULL
+                        OR TRIM(telegram_message_date) = ''
+                  )
+                """,
+                (
+                    row["telegram_message_date"],
+                    normalized_account_id,
+                    int(row["channel_id"]),
+                    int(row["message_id"]),
+                ),
+            )
+            updated += int(cursor.rowcount or 0)
+    return updated
+
+
 def list_expired_created_telegram_products(
     *,
     older_than_days: int,
