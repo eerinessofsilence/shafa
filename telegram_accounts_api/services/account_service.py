@@ -97,7 +97,7 @@ class AccountService:
 
     async def list_accounts(self) -> list[AccountRead]:
         payload = await self._read_payload()
-        return [await self._to_model(item) for item in payload]
+        return [await self._to_model(item, include_channel_templates=False) for item in payload]
 
     async def get_account(self, account_id: str) -> AccountRead:
         item = await self._get_record(account_id)
@@ -297,7 +297,12 @@ class AccountService:
     def _ensure_account_dir(self, account_id: str) -> None:
         self.account_dir(account_id).mkdir(parents=True, exist_ok=True)
 
-    async def _to_model(self, item: dict) -> AccountRead:
+    async def _to_model(
+        self,
+        item: dict,
+        *,
+        include_channel_templates: bool = True,
+    ) -> AccountRead:
         phone = str(item.get("phone") or item.get("phone_number") or "").strip()
         extra = {key: value for key, value in item.items() if key not in ACCOUNT_KNOWN_FIELDS}
         account_id = str(item.get("id") or "")
@@ -307,7 +312,7 @@ class AccountService:
         else:
             status = "stopped"
         channel_templates = []
-        if self.channel_template_service is not None and account_id:
+        if include_channel_templates and self.channel_template_service is not None and account_id:
             channel_templates = await self.channel_template_service.list_template_summaries(account_id)
         return AccountRead(
             id=account_id,
