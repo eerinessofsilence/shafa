@@ -1351,6 +1351,8 @@ def _is_garbage_name_line(line: str) -> bool:
         return True
     if _looks_like_model_code_line(text):
         return True
+    if _looks_like_size_details_line(text):
+        return True
     lower = text.casefold()
     compact = re.sub(r"[\s()]+", "", lower)
     if re.fullmatch(r"\d+", compact):
@@ -1363,6 +1365,19 @@ def _is_garbage_name_line(line: str) -> bool:
     ):
         return True
     return False
+
+
+def _looks_like_size_details_line(line: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", line)
+    compact = normalized.casefold()
+    if not re.search(r"\b\d{2,3}\s*[йыі]?\s*\(\s*\d{1,2}(?:[.,]\d+)?\s*(?:см|cm)\s*\)", compact):
+        return False
+    return len(
+        re.findall(
+            r"\b\d{2,3}\s*[йыі]?\s*\(\s*\d{1,2}(?:[.,]\d+)?\s*(?:см|cm)\s*\)",
+            compact,
+        )
+    ) >= 2
 
 
 def _format_model_name(text: str) -> str:

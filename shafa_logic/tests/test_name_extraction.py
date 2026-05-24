@@ -83,3 +83,17 @@ def test_extract_name_returns_empty_when_only_model_code_is_present() -> None:
     )
 
     assert parsed["name"] == ""
+
+
+def test_extract_name_ignores_dense_size_details_line_for_shoes() -> None:
+    parsed = dc.parse_message(
+        "👉зниження ціни👉нова СУПЕр ціна 1650 грн⭐️чоловічі арт 11692\n"
+        "Adidas Climacool Ventania темно сірі з чорним\n"
+        "Виробник В'єтнам, якість ТОП\n"
+        "Ціна на дроп - 1650 грн\n"
+        "Верх текстиль/сітка, підошва піна\n"
+        "Розміри 41-45\n"
+        "41й(26см), 42й(26,5см), 43й(27,5см), 44й(28см), 45й(28,5см)\n"
+    )
+
+    assert parsed["name"] == "Adidas Climacool Ventania темно сірі з чорним"
