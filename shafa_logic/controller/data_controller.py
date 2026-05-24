@@ -1679,11 +1679,11 @@ def _extract_word_for_slack(lines: list[str], name: str = "") -> str:
 def _is_strong_name_candidate(candidate: str, word_for_slack: str) -> bool:
     if not candidate:
         return False
-    if len(candidate.split()) >= 2 or any(ch.isdigit() for ch in candidate):
+    if _contains_catalog_word(candidate):
         return True
-    if _find_best_brand_in_text(candidate):
+    if _has_brand_signal_in_text(candidate):
         return True
-    return bool(word_for_slack) and candidate.casefold() == word_for_slack.casefold()
+    return False
 
 
 def _is_clothing_catalog_slug(catalog_slug: Optional[str]) -> bool:
@@ -1861,6 +1861,12 @@ def _extract_probable_clothing_brand(line: str) -> str:
     flush_current()
 
     return best_candidate if best_score >= 0.5 else ""
+
+
+def _has_brand_signal_in_text(text: str) -> bool:
+    if _find_best_brand_in_text(text):
+        return True
+    return bool(_extract_probable_clothing_brand(text))
 
 
 def _should_skip_clothing_brand_line(line: str) -> bool:

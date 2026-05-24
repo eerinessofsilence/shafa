@@ -97,3 +97,14 @@ def test_extract_name_ignores_dense_size_details_line_for_shoes() -> None:
     )
 
     assert parsed["name"] == "Adidas Climacool Ventania темно сірі з чорним"
+
+
+def test_extract_name_rejects_generic_line_without_clothing_word_or_brand() -> None:
+    parsed = dc.parse_message(
+        "Новинка\n"
+        "Дуже стильна модель у топовому кольорі\n"
+        "Ціна: 1650 грн\n"
+        "Розміри 41-45\n"
+    )
+
+    assert parsed["name"] == ""
