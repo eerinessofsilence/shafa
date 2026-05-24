@@ -681,13 +681,15 @@ def normalize_log_timestamp(timestamp: datetime) -> datetime:
 def load_account_log_file_entries(
     account_id: str | int,
     log_file: Path,
+    *,
+    tail_limit: int = _MAX_LOG_ENTRIES_PER_ACCOUNT,
 ) -> list[AccountLogEntry]:
     if not log_file.exists() or not log_file.is_file():
         return []
 
     entries: list[AccountLogEntry] = []
     try:
-        raw_lines = log_file.read_text(encoding="utf-8").splitlines()
+        raw_lines = _read_log_tail_lines(log_file, limit=tail_limit)
     except OSError:
         return []
 
@@ -726,6 +728,27 @@ def load_account_log_file_entries(
         )
         for offset, entry in enumerate(entries)
     ]
+
+
+def _read_log_tail_lines(log_file: Path, *, limit: int) -> list[str]:
+    bounded_limit = max(1, int(limit))
+    chunk_size = 64 * 1024
+    buffer = bytearray()
+    newline_count = 0
+
+    with log_file.open("rb") as handle:
+        handle.seek(0, 2)
+        position = handle.tell()
+
+        while position > 0 and newline_count <= bounded_limit:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            buffer[:0] = chunk
+            newline_count = buffer.count(b"\n")
+
+    return buffer.decode("utf-8", errors="replace").splitlines()[-bounded_limit:]
 
 
 def merge_account_log_entries(*groups: list[AccountLogEntry]) -> list[AccountLogEntry]:

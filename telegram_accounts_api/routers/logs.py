@@ -31,9 +31,14 @@ async def get_account_logs(
 ) -> list[AccountLogEntryRead]:
     await service.get_account(account_id)
     since_index, since_timestamp = _parse_since(since)
+    history_tail_limit = min(
+        store.max_entries_per_account,
+        max(limit * 4, limit),
+    )
     history_entries = load_account_log_file_entries(
         account_id,
         service.account_dir(account_id) / "logs" / "app.log",
+        tail_limit=history_tail_limit,
     )
     runtime_entries = store.list_entries(
         account_id,
