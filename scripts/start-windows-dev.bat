@@ -72,12 +72,13 @@ if not exist "%HIDDEN_RUNNER%" (
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 if not exist "%DESKTOP_DATA_DIR%" mkdir "%DESKTOP_DATA_DIR%"
-break > "%BACKEND_LOG%"
-break > "%FRONTEND_LOG%"
 
 echo Releasing dev ports if needed...
 call :kill_port %BACKEND_PORT%
 call :kill_port %FRONTEND_PORT%
+
+break > "%BACKEND_LOG%"
+break > "%FRONTEND_LOG%"
 
 :start_backend
 echo Starting backend in background...
@@ -107,6 +108,7 @@ for /L %%N in (1,1,60) do (
 
 echo Backend did not become ready at %API_BASE_URL%/health
 echo See backend log: %BACKEND_LOG%
+call :show_log_tail "%BACKEND_LOG%"
 exit /b 1
 
 :kill_port
@@ -120,4 +122,13 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%TARGET_PORT% .*LISTE
   )
 )
 
+exit /b 0
+
+:show_log_tail
+set "TARGET_LOG=%~1"
+if not exist "%TARGET_LOG%" exit /b 0
+
+echo --- backend log tail ---
+powershell -NoProfile -Command "Get-Content -Path '%TARGET_LOG%' -Tail 40" 2>nul
+echo --- end backend log tail ---
 exit /b 0
