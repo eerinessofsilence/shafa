@@ -682,14 +682,18 @@ def load_account_log_file_entries(
     account_id: str | int,
     log_file: Path,
     *,
-    tail_limit: int = _MAX_LOG_ENTRIES_PER_ACCOUNT,
+    tail_limit: int | None = _MAX_LOG_ENTRIES_PER_ACCOUNT,
 ) -> list[AccountLogEntry]:
     if not log_file.exists() or not log_file.is_file():
         return []
 
     entries: list[AccountLogEntry] = []
     try:
-        raw_lines = _read_log_tail_lines(log_file, limit=tail_limit)
+        raw_lines = (
+            _read_all_log_lines(log_file)
+            if tail_limit is None
+            else _read_log_tail_lines(log_file, limit=tail_limit)
+        )
     except OSError:
         return []
 
@@ -728,6 +732,10 @@ def load_account_log_file_entries(
         )
         for offset, entry in enumerate(entries)
     ]
+
+
+def _read_all_log_lines(log_file: Path) -> list[str]:
+    return log_file.read_text(encoding="utf-8", errors="replace").splitlines()
 
 
 def _read_log_tail_lines(log_file: Path, *, limit: int) -> list[str]:

@@ -149,6 +149,7 @@ class DashboardService:
         history_entries = load_account_log_file_entries(
             account_id,
             self.account_service.account_dir(account_id) / "logs" / "app.log",
+            tail_limit=None,
         )
         runtime_entries = self.log_store.list_entries(
             account_id,

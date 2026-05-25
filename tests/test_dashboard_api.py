@@ -220,6 +220,34 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Дата начала", response.json()["detail"])
 
+    def test_dashboard_summary_reads_full_history_not_only_log_tail(self) -> None:
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        history_entries = []
+        for offset in range(130):
+            timestamp = self.now - timedelta(days=129 - offset)
+            history_entries.append(
+                (
+                    timestamp,
+                    "SUCCESS",
+                    f"Товар создан успешно. ID: {offset + 1000}.",
+                )
+            )
+        self._write_history_log("acc-1", history_entries)
+
+        self.dashboard_service.log_store = AccountLogStore(max_entries_per_account=5)
+
+        response = self.client.get("/dashboard/summary")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["range_start"],
+            (self.now.date() - timedelta(days=129)).isoformat(),
+        )
+        self.assertEqual(payload["item_successes_in_range"], 130)
+        self.assertEqual(len(payload["series"]), 130)
+
 
 if __name__ == "__main__":
     unittest.main()

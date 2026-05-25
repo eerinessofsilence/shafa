@@ -453,6 +453,9 @@ _PRICE_EXCLUDE_HINTS = (
 )
 _BRAND_PATTERNS: Optional[list[tuple[str, re.Pattern]]] = None
 _MASKED_BRAND_INDEX: Optional[dict[int, list[tuple[str, str]]]] = None
+_MULTIWORD_MASKED_BRAND_INDEX: Optional[
+    dict[int, list[tuple[str, tuple[str, ...]]]]
+] = None
 _SIZE_EXCLUDE_HINTS = (
     "артикул",
     "код",
@@ -2240,6 +2243,29 @@ def _load_masked_brand_index() -> dict[int, list[tuple[str, str]]]:
     return index
 
 
+def _load_multiword_masked_brand_index() -> dict[int, list[tuple[str, tuple[str, ...]]]]:
+    global _MULTIWORD_MASKED_BRAND_INDEX
+    if _MULTIWORD_MASKED_BRAND_INDEX is not None:
+        return _MULTIWORD_MASKED_BRAND_INDEX
+    index: dict[int, list[tuple[str, tuple[str, ...]]]] = {}
+    seen: set[tuple[str, ...]] = set()
+    for raw_name in list_brand_names():
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        parts = tuple(
+            normalized
+            for normalized in (_normalize_masked_brand_token(part) for part in name.split())
+            if normalized and normalized.isalnum()
+        )
+        if len(parts) < 2 or parts in seen:
+            continue
+        seen.add(parts)
+        index.setdefault(len(parts), []).append((name, parts))
+    _MULTIWORD_MASKED_BRAND_INDEX = index
+    return index
+
+
 def _find_exact_brand_match_in_text(
     text: str,
 ) -> tuple[int, int, int, str] | None:
@@ -2269,7 +2295,7 @@ def _trim_masked_brand_token(raw_token: str) -> tuple[str, int]:
 
 _LEET_BRAND_CHAR_SUBSTITUTIONS = {
     "0": frozenset({"o"}),
-    "1": frozenset({"i", "l"}),
+    "1": frozenset({"i", "l", "e"}),
     "2": frozenset({"z"}),
     "3": frozenset({"e"}),
     "4": frozenset({"a"}),
@@ -2278,6 +2304,7 @@ _LEET_BRAND_CHAR_SUBSTITUTIONS = {
     "7": frozenset({"t"}),
     "8": frozenset({"b"}),
     "9": frozenset({"g", "q"}),
+    "y": frozenset({"u"}),
 }
 
 
@@ -2358,6 +2385,63 @@ def _find_masked_brand_match_in_text(
     return best_match
 
 
+def _token_matches_brand_part(token: str, brand_part: str) -> bool:
+    normalized_token = _normalize_masked_brand_token(token)
+    if not normalized_token or not brand_part:
+        return False
+    if normalized_token == brand_part:
+        return True
+    if _is_masked_brand_token(token):
+        return _matches_masked_brand_token(normalized_token, brand_part)
+    return False
+
+
+def _find_multiword_masked_brand_match_in_text(
+    text: str,
+) -> tuple[int, int, int, str] | None:
+    if not text:
+        return None
+    best_match: tuple[int, int, int, str] | None = None
+    token_matches = list(re.finditer(r"[^\s|,/]+", text))
+    if len(token_matches) < 2:
+        return None
+    multiword_brand_index = _load_multiword_masked_brand_index()
+    for part_count, brands in multiword_brand_index.items():
+        if len(token_matches) < part_count:
+            continue
+        for start in range(len(token_matches) - part_count + 1):
+            window = token_matches[start : start + part_count]
+            cleaned_tokens = []
+            for match in window:
+                token, _ = _trim_masked_brand_token(match.group(0))
+                if not token:
+                    break
+                cleaned_tokens.append(token)
+            if len(cleaned_tokens) != part_count:
+                continue
+            candidates = [
+                display_name
+                for display_name, brand_parts in brands
+                if all(
+                    _token_matches_brand_part(token, brand_part)
+                    for token, brand_part in zip(cleaned_tokens, brand_parts)
+                )
+            ]
+            unique_candidates = list(dict.fromkeys(candidates))
+            if len(unique_candidates) != 1:
+                continue
+            display_name = unique_candidates[0]
+            candidate = (
+                window[0].start(),
+                1,
+                -len(display_name),
+                display_name,
+            )
+            if best_match is None or candidate < best_match:
+                best_match = candidate
+    return best_match
+
+
 def _find_best_brand_in_text(text: str) -> str:
     if not text:
         return ""
@@ -2366,6 +2450,7 @@ def _find_best_brand_in_text(text: str) -> str:
         for candidate in (
             _find_exact_brand_match_in_text(text),
             _find_masked_brand_match_in_text(text),
+            _find_multiword_masked_brand_match_in_text(text),
         )
         if candidate is not None
     ]
@@ -2587,6 +2672,7 @@ def parse_message(message: str) -> dict:
     slug = find_slug_by_word(word_for_slack)
     description = extract_description(lines)
     brand = extract_brand(lines, name, word_for_slack)
+    normalized_name = _canonicalize_name_brand(name, brand)
     size, additional_sizes = extract_sizes(
         lines,
         even_range_step=_should_use_even_clothing_size_ranges(slug),
@@ -2599,7 +2685,7 @@ def parse_message(message: str) -> dict:
 
     return {
         "description": description,
-        "name": name,
+        "name": normalized_name,
         "word_for_slack": word_for_slack,
         "brand": brand,
         "size": size,

@@ -12,12 +12,17 @@ import { PageHeader } from '../components/PageHeader';
 import { Panel } from '../components/Panel';
 import type { ApiDashboardSummary, DashboardRangePreset } from '../types';
 import { getButtonClassName } from '../ui';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+const DASHBOARD_AUTO_REFRESH_INTERVAL_MS = 30_000;
 
 function DashboardPage() {
   const [summary, setSummary] = useState<ApiDashboardSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const latestRequestIdRef = useRef(0);
+  const backgroundRequestInFlightRef = useRef(false);
+  const foregroundRequestCountRef = useRef(0);
   const defaultCustomRange = createDefaultDashboardCustomRange();
   const [dashboardRangePreset, setDashboardRangePreset] =
     useState<DashboardRangePreset>('all');
@@ -39,29 +44,71 @@ function DashboardPage() {
   const loadDashboard = async (
     preset: DashboardRangePreset,
     customRange: { end: string; start: string },
+    options: { silent?: boolean } = {},
   ) => {
-    setIsLoading(true);
-    setLoadError('');
+    const isSilent = options.silent === true;
+    if (isSilent) {
+      if (
+        backgroundRequestInFlightRef.current ||
+        foregroundRequestCountRef.current > 0
+      ) {
+        return;
+      }
+      backgroundRequestInFlightRef.current = true;
+    } else {
+      foregroundRequestCountRef.current += 1;
+      setIsLoading(true);
+      setLoadError('');
+    }
+    const requestId = latestRequestIdRef.current + 1;
+    latestRequestIdRef.current = requestId;
 
     try {
-      setSummary(
-        await getDashboardSummary({
+      const nextSummary = await getDashboardSummary({
           period: preset,
           dateFrom: preset === 'custom' ? customRange.start : undefined,
           dateTo: preset === 'custom' ? customRange.end : undefined,
-        }),
-      );
+      });
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
+      setSummary(nextSummary);
+      setLoadError('');
     } catch (error) {
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
+      if (isSilent) {
+        return;
+      }
       setLoadError(
         formatApiError(error, 'Не удалось загрузить сводку дэшборда из API.'),
       );
     } finally {
-      setIsLoading(false);
+      if (isSilent) {
+        backgroundRequestInFlightRef.current = false;
+        return;
+      }
+      foregroundRequestCountRef.current = Math.max(
+        0,
+        foregroundRequestCountRef.current - 1,
+      );
+      setIsLoading(foregroundRequestCountRef.current > 0);
     }
   };
 
   useEffect(() => {
     void loadDashboard(dashboardRangePreset, appliedCustomRange);
+  }, [appliedCustomRange, dashboardRangePreset]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void loadDashboard(dashboardRangePreset, appliedCustomRange, {
+        silent: true,
+      });
+    }, DASHBOARD_AUTO_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(intervalId);
   }, [appliedCustomRange, dashboardRangePreset]);
 
   const handleApplyCustomRange = () => {
