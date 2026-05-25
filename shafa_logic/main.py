@@ -222,6 +222,19 @@ def _background_old_product_deactivate_interval_seconds() -> int:
     return min(max(value, 60), 86400)
 
 
+def _background_old_product_deactivate_busy_interval_seconds() -> int:
+    raw = os.getenv(
+        "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_BUSY_INTERVAL_SECONDS", ""
+    ).strip()
+    if not raw:
+        return 120
+    try:
+        value = int(raw)
+    except ValueError:
+        return 120
+    return min(max(value, 30), 3600)
+
+
 def _bootstrap_new_account_telegram_queue_if_needed() -> int:
     marker_value = os.getenv("SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH", "").strip()
     if not marker_value:
@@ -299,6 +312,7 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
 
     stop_event = threading.Event()
     interval_seconds = _background_old_product_deactivate_interval_seconds()
+    busy_interval_seconds = _background_old_product_deactivate_busy_interval_seconds()
 
     def _worker() -> None:
         backend_unavailable_reported = False
@@ -330,8 +344,13 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
                         return
                     backend_unavailable_reported = True
                     return
+                next_wait_seconds = interval_seconds
+            else:
+                next_wait_seconds = (
+                    busy_interval_seconds if found > 0 else interval_seconds
+                )
             elapsed = time.time() - started_at
-            wait_seconds = max(1.0, interval_seconds - elapsed)
+            wait_seconds = max(1.0, next_wait_seconds - elapsed)
             if stop_event.wait(wait_seconds):
                 return
 
