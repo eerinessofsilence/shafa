@@ -5502,6 +5502,15 @@ def deactivate_old_telegram_products(
             f"threshold_days={age_days}. decision={decision}. "
             f"action={action}. lookup={lookup_reason}.",
         )
+        log(
+            "INFO",
+            "Проверен товар для деактивации: "
+            f'name="{candidate_name}". product_id={product_id}. '
+            f"message_id={message_id if message_id is not None else 'unknown'}. "
+            f"telegram_date={telegram_message_date}. "
+            f"age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
+            f"threshold_days={age_days}. action={action}. reason={lookup_reason}.",
+        )
         _log_old_product_check(
             level=log_level,
             account_label=account_label,

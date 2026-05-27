@@ -22,4 +22,4 @@ def format_tag(level: str) -> str:
 
 
 def log(level: str, message: str) -> None:
-    print(f"{format_tag(level)} {message}")
+    print(f"{format_tag(level)} {message}", flush=True)
