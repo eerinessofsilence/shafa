@@ -347,8 +347,9 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
         backend_unavailable_reported = False
         while not stop_event.is_set():
             if is_product_pipeline_active():
-                print(
-                    "[INFO] Фоновая деактивация старых товаров ждёт: "
+                log(
+                    "INFO",
+                    "Фоновая деактивация старых товаров ждёт: "
                     "сейчас активен пайплайн создания товара."
                 )
                 if stop_event.wait(5.0):
@@ -356,7 +357,7 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
                 continue
             started_at = time.time()
             try:
-                print("[INFO] Фоновая деактивация старых товаров: начинаю проверку.")
+                log("INFO", "Фоновая деактивация старых товаров: начинаю проверку.")
                 result = deactivate_old_telegram_products(
                     dry_run=False,
                     limit=_background_old_product_deactivate_limit(),
@@ -368,8 +369,9 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
                 active = int(result.get("active") or 0)
                 skipped = int(result.get("skipped") or 0)
                 not_found = int(result.get("not_found") or 0)
-                print(
-                    "[INFO] Фоновая деактивация старых товаров завершена. "
+                log(
+                    "INFO",
+                    "Фоновая деактивация старых товаров завершена. "
                     f"Проверено: {checked}. Активных: {active}. "
                     f"Пропущено: {skipped}. Без связи Telegram: {not_found}. "
                     f"Найдено к деактивации: {found}. "

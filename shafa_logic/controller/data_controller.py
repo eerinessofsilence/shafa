@@ -5372,6 +5372,19 @@ def deactivate_old_telegram_products(
         f"total_products={len(source_products)}. "
         f"dry_run={dry_run}.",
     )
+    log(
+        "INFO",
+        "Деактивация: выбраны товары для проверки. "
+        f"source={source_label}. всего_товаров={len(source_products)}. "
+        f"будет_проверено={len(checked_products)}. threshold_days={age_days}.",
+    )
+    if not checked_products:
+        log(
+            "INFO",
+            "Деактивация: нет товаров для проверки. "
+            f"uploaded_products={len(uploaded_products)}. "
+            f"telegram_products={len(telegram_products)}.",
+        )
     for checked_product in checked_products:
         tracking_allowed = True
         lookup_method = "telegram_product"
@@ -5505,10 +5518,8 @@ def deactivate_old_telegram_products(
         log(
             "INFO",
             "Проверен товар для деактивации: "
-            f'name="{candidate_name}". product_id={product_id}. '
-            f"message_id={message_id if message_id is not None else 'unknown'}. "
-            f"telegram_date={telegram_message_date}. "
-            f"age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
+            f"id_товара={product_id}. "
+            f"дней={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
             f"threshold_days={age_days}. action={action}. reason={lookup_reason}.",
         )
         _log_old_product_check(
