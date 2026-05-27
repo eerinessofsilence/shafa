@@ -3474,6 +3474,44 @@ def _table_exists_simple(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _extract_message_id_from_raw_payload_text(raw_payload: object) -> Optional[int]:
+    text = str(raw_payload or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+    def _walk(value: object) -> Optional[int]:
+        if isinstance(value, dict):
+            for key in (
+                "message_id",
+                "messageId",
+                "telegram_message_id",
+                "telegramMessageId",
+            ):
+                raw_message_id = value.get(key)
+                if raw_message_id is None or str(raw_message_id).strip() == "":
+                    continue
+                try:
+                    return int(raw_message_id)
+                except (TypeError, ValueError):
+                    continue
+            for nested in value.values():
+                found = _walk(nested)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = _walk(item)
+                if found is not None:
+                    return found
+        return None
+
+    return _walk(payload)
+
+
 def _log_old_product_sql_snapshot(
     *,
     account_id: str,
@@ -3483,7 +3521,8 @@ def _log_old_product_sql_snapshot(
     uploaded_count: object = "unknown"
     telegram_count: object = "unknown"
     expired_count: object = "unknown"
-    preview_rows: list[sqlite3.Row] = []
+    uploaded_rows: list[sqlite3.Row] = []
+    telegram_rows: list[sqlite3.Row] = []
 
     try:
         uploaded_db_path = Path(DB_PATH)
@@ -3500,6 +3539,19 @@ def _log_old_product_sql_snapshot(
                         """
                     ).fetchone()
                     uploaded_count = int(row["count"] or 0) if row else 0
+                    uploaded_rows = conn.execute(
+                        """
+                        SELECT
+                            product_id,
+                            name,
+                            raw_payload
+                        FROM uploaded_products
+                        WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
+                          AND COALESCE(is_active, 1) = 1
+                        ORDER BY COALESCE(shafa_created_at, created_at) ASC,
+                                 product_id ASC
+                        """
+                    ).fetchall()
                 else:
                     uploaded_count = "no_table"
         else:
@@ -3550,7 +3602,7 @@ def _log_old_product_sql_snapshot(
                     ).fetchone()
                     expired_count = int(row["count"] or 0) if row else 0
 
-                    preview_rows = conn.execute(
+                    telegram_rows = conn.execute(
                         """
                         SELECT
                             created_product_id,
@@ -3570,9 +3622,8 @@ def _log_old_product_sql_snapshot(
                           AND shafa_deactivated_at IS NULL
                           AND shafa_deleted_at IS NULL
                         ORDER BY datetime(telegram_message_date) ASC, message_id ASC
-                        LIMIT ?
                         """,
-                        (account_id, max(int(preview_limit), 1)),
+                        (account_id,),
                     ).fetchall()
                 else:
                     telegram_count = "no_table"
@@ -3584,26 +3635,80 @@ def _log_old_product_sql_snapshot(
         telegram_count = f"error:{exc}"
         expired_count = f"error:{exc}"
 
+    telegram_by_product_id = {
+        str(row["created_product_id"]): row
+        for row in telegram_rows
+        if str(row["created_product_id"] or "").strip()
+    }
+    telegram_by_message_id = {
+        int(row["message_id"]): row
+        for row in telegram_rows
+        if str(row["message_id"] or "").strip()
+    }
+    now_utc = datetime.now(timezone.utc)
+    preview_items: list[dict[str, object]] = []
+    expired_uploaded_count = 0
+    for uploaded_row in uploaded_rows:
+        product_id = str(uploaded_row["product_id"] or "").strip()
+        message_id = _extract_message_id_from_raw_payload_text(uploaded_row["raw_payload"])
+        telegram_row = (
+            telegram_by_message_id.get(message_id)
+            if message_id is not None
+            else None
+        )
+        if telegram_row is None:
+            telegram_row = telegram_by_product_id.get(product_id)
+        if telegram_row is None:
+            continue
+        telegram_date = str(telegram_row["telegram_message_date"] or "").strip()
+        telegram_dt = _parse_datetime_text_utc(telegram_date)
+        if telegram_dt is None:
+            continue
+        age_days = round((now_utc - telegram_dt).total_seconds() / 86400.0, 1)
+        if age_days >= threshold_days:
+            expired_uploaded_count += 1
+        preview_items.append(
+            {
+                "product_id": product_id,
+                "name": str(uploaded_row["name"] or "").strip(),
+                "message_id": int(telegram_row["message_id"]),
+                "telegram_date": telegram_date,
+                "age_days": age_days,
+            }
+        )
+    preview_items.sort(
+        key=lambda item: (
+            str(item["telegram_date"]),
+            str(item["product_id"]),
+        )
+    )
+
     log(
         "INFO",
         "SQL диагностика деактивации: "
         f"account_id={account_id}. "
         f"uploaded_active={uploaded_count}. "
         f"telegram_created={telegram_count}. "
-        f"telegram_older_than_{threshold_days}_days={expired_count}.",
+        f"telegram_older_than_{threshold_days}_days={expired_count}. "
+        f"uploaded_linked_older_than_{threshold_days}_days={expired_uploaded_count}.",
     )
-    if not preview_rows:
-        log("INFO", "SQL диагностика деактивации: preview товаров пустой.")
+    if not preview_items:
+        log("INFO", "SQL диагностика деактивации: preview товаров аккаунта пустой.")
         return
-    for row in preview_rows:
+    for item in preview_items[: max(int(preview_limit), 1)]:
         log(
             "INFO",
-            "SQL preview товара для деактивации: "
-            f"id_товара={row['created_product_id']}. "
-            f"message_id={row['message_id']}. "
-            f"дней={row['age_days'] if row['age_days'] is not None else 'unknown'}. "
-            f"telegram_date={row['telegram_message_date']}.",
+            "SQL preview товара аккаунта для деактивации: "
+            f"id_товара={item['product_id']}. "
+            f"name=\"{_log_value(item['name'])}\". "
+            f"message_id={item['message_id']}. "
+            f"дней={item['age_days']}. "
+            f"telegram_date={item['telegram_date']}.",
         )
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip() in {"1", "true", "TRUE", "yes", "YES"}
 
 
 def _is_backfill_history_window_complete(
@@ -5454,22 +5559,30 @@ def _deactivate_old_telegram_products_impl(
         account_id=resolved_account_id,
         threshold_days=age_days,
     )
-    try:
-        backfill_limit_base = (
-            _old_product_deactivate_batch_size()
-            if batch_limit is None
-            else max(int(batch_limit), 1)
+    deactivate_only = _env_flag_enabled("SHAFA_DEACTIVATE_ONLY")
+    if deactivate_only:
+        log(
+            "INFO",
+            "Режим только деактивации: пропускаю Telegram backfill дат, "
+            "использую даты из локальной базы.",
         )
-        backfill_created_product_message_dates(
-            limit=backfill_limit_base * 5,
-            account_id=account_id,
-        )
-    except Exception as exc:
-        _safe_old_product_log(
-            "WARN",
-            "Не удалось обновить даты созданных товаров перед деактивацией. "
-            f"account={account_label}. account_id={resolved_account_id}. error={exc}",
-        )
+    else:
+        try:
+            backfill_limit_base = (
+                _old_product_deactivate_batch_size()
+                if batch_limit is None
+                else max(int(batch_limit), 1)
+            )
+            backfill_created_product_message_dates(
+                limit=backfill_limit_base * 5,
+                account_id=account_id,
+            )
+        except Exception as exc:
+            _safe_old_product_log(
+                "WARN",
+                "Не удалось обновить даты созданных товаров перед деактивацией. "
+                f"account={account_label}. account_id={resolved_account_id}. error={exc}",
+            )
 
     try:
         uploaded_products = list_uploaded_products_for_age_check()
@@ -5487,12 +5600,69 @@ def _deactivate_old_telegram_products_impl(
         )
         return _finish_result()
 
-    source_products = uploaded_products if uploaded_products else telegram_products
-    source_label = (
-        "uploaded_products(account_db)"
-        if uploaded_products
-        else "telegram_products(account_db_fallback)"
-    )
+    telegram_by_product_id = {
+        str(item["created_product_id"]): item for item in telegram_products
+    }
+    telegram_by_message_id: dict[int, list[dict]] = {}
+    for item in telegram_products:
+        telegram_by_message_id.setdefault(int(item["message_id"]), []).append(item)
+    uploaded_by_product_id = {
+        str(item["product_id"]): item for item in uploaded_products
+    }
+    uploaded_by_message_id: dict[int, dict] = {}
+    for item in uploaded_products:
+        uploaded_message_id = _old_product_int(item.get("message_id"))
+        if uploaded_message_id is not None:
+            uploaded_by_message_id[uploaded_message_id] = item
+    cutoff_utc = datetime.now(timezone.utc) - timedelta(days=age_days)
+    if deactivate_only and uploaded_products:
+        expired_uploaded_products: list[dict] = []
+        for uploaded_product in uploaded_products:
+            product_id = str(uploaded_product["product_id"])
+            product_name = str(uploaded_product.get("name") or "").strip()
+            explicit_message_id = _old_product_int(uploaded_product.get("message_id"))
+            linked_product = _select_telegram_product_by_message_id(
+                explicit_message_id,
+                product_name,
+                telegram_by_message_id,
+            )
+            if linked_product is None:
+                linked_product = telegram_by_product_id.get(product_id)
+            if linked_product is None:
+                linked_product, ambiguous_title = _select_telegram_product_by_title(
+                    product_name,
+                    telegram_products,
+                )
+                if ambiguous_title:
+                    continue
+            telegram_message_dt = (
+                _parse_datetime_text_utc(linked_product.get("telegram_message_date"))
+                if linked_product is not None
+                else None
+            )
+            if telegram_message_dt is None or telegram_message_dt > cutoff_utc:
+                continue
+            enriched_product = dict(uploaded_product)
+            enriched_product["_deactivate_linked_telegram_product"] = linked_product
+            enriched_product["_deactivate_telegram_message_date"] = (
+                telegram_message_dt.isoformat()
+            )
+            expired_uploaded_products.append(enriched_product)
+        expired_uploaded_products.sort(
+            key=lambda item: (
+                str(item.get("_deactivate_telegram_message_date") or ""),
+                str(item.get("product_id") or ""),
+            )
+        )
+        source_products = expired_uploaded_products
+        source_label = "uploaded_products(expired_by_telegram_message_date)"
+    else:
+        source_products = uploaded_products if uploaded_products else telegram_products
+        source_label = (
+            "uploaded_products(account_db)"
+            if uploaded_products
+            else "telegram_products(account_db_fallback)"
+        )
     checked_products = (
         list(source_products)
         if batch_limit is None
@@ -5504,13 +5674,6 @@ def _deactivate_old_telegram_products_impl(
         )
     )
     result["checked"] = len(checked_products)
-    telegram_by_product_id = {
-        str(item["created_product_id"]): item for item in telegram_products
-    }
-    telegram_by_message_id: dict[int, list[dict]] = {}
-    for item in telegram_products:
-        telegram_by_message_id.setdefault(int(item["message_id"]), []).append(item)
-    cutoff_utc = datetime.now(timezone.utc) - timedelta(days=age_days)
     candidates: list[dict[str, object]] = []
     _safe_old_product_log(
         "INFO",
@@ -5537,19 +5700,23 @@ def _deactivate_old_telegram_products_impl(
         tracking_allowed = True
         lookup_method = "telegram_product"
         lookup_reason: Optional[str] = None
-        if uploaded_products:
+        if source_label.startswith("uploaded_products"):
             product_id = str(checked_product["product_id"])
             candidate_name = (
                 str(checked_product.get("name") or "").strip() or "нет названия"
             )
             explicit_message_id = _old_product_int(checked_product.get("message_id"))
-            linked_product = _select_telegram_product_by_message_id(
-                explicit_message_id,
-                candidate_name,
-                telegram_by_message_id,
-            )
+            linked_product = checked_product.get("_deactivate_linked_telegram_product")
             if linked_product is not None:
-                lookup_method = "message_id"
+                lookup_method = "prelinked_telegram_age"
+            if linked_product is None:
+                linked_product = _select_telegram_product_by_message_id(
+                    explicit_message_id,
+                    candidate_name,
+                    telegram_by_message_id,
+                )
+                if linked_product is not None:
+                    lookup_method = "message_id"
             if linked_product is None:
                 linked_product = telegram_by_product_id.get(product_id)
                 if linked_product is not None:
@@ -5594,6 +5761,15 @@ def _deactivate_old_telegram_products_impl(
             channel_id = int(checked_product["channel_id"])
             message_id = int(checked_product["message_id"])
             candidate_account_id = str(checked_product["account_id"])
+            uploaded_link = uploaded_by_message_id.get(message_id)
+            if uploaded_link is None:
+                uploaded_link = uploaded_by_product_id.get(product_id)
+            if uploaded_link is not None:
+                product_id = str(uploaded_link["product_id"])
+                candidate_name = (
+                    str(uploaded_link.get("name") or "").strip() or candidate_name
+                )
+                lookup_method = "uploaded_product_link"
             telegram_message_date = (
                 str(checked_product.get("telegram_message_date") or "").strip() or "-"
             )
@@ -5619,7 +5795,7 @@ def _deactivate_old_telegram_products_impl(
             if telegram_message_dt is not None
             else None
         )
-        if uploaded_products and channel_id is None:
+        if source_label.startswith("uploaded_products") and channel_id is None:
             decision = "missing_telegram_product_link"
             action = "NOT_FOUND"
             result["not_found"] = int(result["not_found"]) + 1
@@ -5667,6 +5843,7 @@ def _deactivate_old_telegram_products_impl(
             "INFO",
             "Проверен товар для деактивации: "
             f"id_товара={product_id}. "
+            f"name=\"{_log_value(candidate_name)}\". "
             f"дней={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
             f"threshold_days={age_days}. action={action}. reason={lookup_reason}.",
         )
@@ -5700,6 +5877,15 @@ def _deactivate_old_telegram_products_impl(
         candidates = candidates[:batch_limit]
     result["found"] = len(candidates)
     result["candidates"] = candidates
+    for candidate in candidates:
+        log(
+            "INFO",
+            "Кандидат на немедленную деактивацию: "
+            f"account_id={candidate.get('account_id')}. "
+            f"id_товара={candidate.get('created_product_id')}. "
+            f"message_id={candidate.get('message_id')}. "
+            f"telegram_date={candidate.get('telegram_message_date')}.",
+        )
     if dry_run or not candidates:
         return _finish_result()
 
@@ -5726,6 +5912,14 @@ def _deactivate_old_telegram_products_impl(
             int(telegram_age_days) if telegram_age_days is not None else None
         )
         try:
+            log(
+                "INFO",
+                "Отправляю запрос деактивации Shafa: "
+                f"account_id={candidate_account_id}. "
+                f"id_товара={product_id}. "
+                f"message_id={message_id}. "
+                f"дней={telegram_age_days if telegram_age_days is not None else 'unknown'}.",
+            )
             deactivator(product_id)
         except Exception as exc:
             failed += 1
