@@ -172,3 +172,30 @@ class ShafaProductSyncTests(unittest.TestCase):
             ],
         )
         self.assertEqual(product_111_count, 1)
+
+    def test_add_column_if_missing_ignores_duplicate_column_race(self) -> None:
+        class _FakeRows:
+            def __init__(self, rows: list[dict]) -> None:
+                self._rows = rows
+
+            def fetchall(self) -> list[dict]:
+                return self._rows
+
+        class _FakeConnection:
+            def __init__(self) -> None:
+                self._pragma_calls = 0
+
+            def execute(self, sql: str):
+                if sql.startswith("PRAGMA table_info"):
+                    self._pragma_calls += 1
+                    if self._pragma_calls == 1:
+                        return _FakeRows([{"name": "id"}])
+                    return _FakeRows([{"name": "id"}, {"name": "status_title"}])
+                raise sqlite3.OperationalError("duplicate column name: status_title")
+
+        db._add_column_if_missing(
+            _FakeConnection(),  # type: ignore[arg-type]
+            "uploaded_products",
+            "status_title",
+            "TEXT",
+        )

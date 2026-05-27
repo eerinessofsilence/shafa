@@ -522,19 +522,42 @@ def _load_brands_cache() -> tuple[dict[str, int], list[str]]:
 
 
 def _ensure_uploaded_products_schema(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        conn,
+        "uploaded_products",
+        "is_active",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    _add_column_if_missing(conn, "uploaded_products", "shafa_created_at", "TEXT")
+    _add_column_if_missing(conn, "uploaded_products", "status_title", "TEXT")
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
     columns = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(uploaded_products)").fetchall()
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     }
-    if "is_active" not in columns:
+    if column_name in columns:
+        return
+    try:
         conn.execute(
-            "ALTER TABLE uploaded_products ADD COLUMN is_active "
-            "INTEGER NOT NULL DEFAULT 1"
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
         )
-    if "shafa_created_at" not in columns:
-        conn.execute("ALTER TABLE uploaded_products ADD COLUMN shafa_created_at TEXT")
-    if "status_title" not in columns:
-        conn.execute("ALTER TABLE uploaded_products ADD COLUMN status_title TEXT")
+    except sqlite3.OperationalError as exc:
+        message = str(exc).casefold()
+        if "duplicate column name" not in message:
+            raise
+        columns = {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name not in columns:
+            raise
 
 
 def _ensure_invalid_uploaded_products_schema(conn: sqlite3.Connection) -> None:
