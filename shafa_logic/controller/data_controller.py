@@ -5527,6 +5527,9 @@ def _deactivate_old_telegram_products_impl(
         except (TypeError, ValueError):
             parsed_limit = _old_product_deactivate_batch_size()
         batch_limit = None if parsed_limit <= 0 else max(parsed_limit, 1)
+    deactivate_only = _env_flag_enabled("SHAFA_DEACTIVATE_ONLY")
+    if deactivate_only:
+        batch_limit = 1
     delay_seconds = (
         _old_product_deactivate_sleep_seconds()
         if sleep_seconds is None
@@ -5571,8 +5574,8 @@ def _deactivate_old_telegram_products_impl(
     _log_old_product_sql_snapshot(
         account_id=resolved_account_id,
         threshold_days=age_days,
+        preview_limit=1 if deactivate_only else 10,
     )
-    deactivate_only = _env_flag_enabled("SHAFA_DEACTIVATE_ONLY")
     if deactivate_only:
         log(
             "INFO",
@@ -5900,6 +5903,13 @@ def _deactivate_old_telegram_products_impl(
             f"telegram_date={candidate.get('telegram_message_date')}.",
         )
     if dry_run or not candidates:
+        if not candidates:
+            log(
+                "INFO",
+                "Деактивация: после проверки товара нет кандидата для запроса Shafa. "
+                f"checked={result['checked']}. active={result['active']}. "
+                f"skipped={result['skipped']}. not_found={result['not_found']}.",
+            )
         return _finish_result()
 
     deactivator = deactivate_product_func or _deactivate_product_backend_not_configured
