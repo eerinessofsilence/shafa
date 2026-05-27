@@ -3524,7 +3524,7 @@ def _log_old_product_sql_snapshot(
     account_id: str,
     threshold_days: int,
     preview_limit: int = 10,
-) -> None:
+) -> list[dict[str, object]]:
     uploaded_count: object = "unknown"
     telegram_count: object = "unknown"
     expired_count: object = "unknown"
@@ -3618,6 +3618,7 @@ def _log_old_product_sql_snapshot(
                     telegram_rows = conn.execute(
                         """
                         SELECT
+                            channel_id,
                             created_product_id,
                             message_id,
                             telegram_message_date,
@@ -3684,6 +3685,7 @@ def _log_old_product_sql_snapshot(
             {
                 "product_id": product_id,
                 "name": str(uploaded_row["name"] or "").strip(),
+                "channel_id": int(telegram_row["channel_id"]),
                 "message_id": int(telegram_row["message_id"]),
                 "telegram_date": telegram_date,
                 "age_days": age_days,
@@ -3707,7 +3709,7 @@ def _log_old_product_sql_snapshot(
     )
     if not preview_items:
         log("INFO", "SQL диагностика деактивации: preview товаров аккаунта пустой.")
-        return
+        return []
     for item in preview_items[: max(int(preview_limit), 1)]:
         log(
             "INFO",
@@ -3718,6 +3720,7 @@ def _log_old_product_sql_snapshot(
             f"дней={item['age_days']}. "
             f"telegram_date={item['telegram_date']}.",
         )
+    return preview_items
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -5571,7 +5574,7 @@ def _deactivate_old_telegram_products_impl(
         f"account={account_label}. account_id={resolved_account_id}. "
         f"threshold_days={age_days}. limit={result['limit']}. dry_run={dry_run}.",
     )
-    _log_old_product_sql_snapshot(
+    sql_snapshot_items = _log_old_product_sql_snapshot(
         account_id=resolved_account_id,
         threshold_days=age_days,
         preview_limit=1 if deactivate_only else 10,
@@ -5600,21 +5603,25 @@ def _deactivate_old_telegram_products_impl(
                 f"account={account_label}. account_id={resolved_account_id}. error={exc}",
             )
 
-    try:
-        uploaded_products = list_uploaded_products_for_age_check()
-        telegram_products = list_created_telegram_products_for_age_check(
-            account_id=account_id
-        )
-    except Exception as exc:
-        result["failed"] = 1
-        _safe_old_product_log(
-            "ERROR",
-            f'{account_label} Product="unknown" message_id=unknown '
-            'telegram_found=false telegram_channel="unknown" '
-            "message_date=unknown age=unknown operation=deactivate action=ERROR "
-            f'reason="database unavailable: {_log_value(exc)}"',
-        )
-        return _finish_result()
+    if deactivate_only:
+        uploaded_products = []
+        telegram_products = []
+    else:
+        try:
+            uploaded_products = list_uploaded_products_for_age_check()
+            telegram_products = list_created_telegram_products_for_age_check(
+                account_id=account_id
+            )
+        except Exception as exc:
+            result["failed"] = 1
+            _safe_old_product_log(
+                "ERROR",
+                f'{account_label} Product="unknown" message_id=unknown '
+                'telegram_found=false telegram_channel="unknown" '
+                "message_date=unknown age=unknown operation=deactivate action=ERROR "
+                f'reason="database unavailable: {_log_value(exc)}"',
+            )
+            return _finish_result()
 
     telegram_by_product_id = {
         str(item["created_product_id"]): item for item in telegram_products
@@ -5631,47 +5638,28 @@ def _deactivate_old_telegram_products_impl(
         if uploaded_message_id is not None:
             uploaded_by_message_id[uploaded_message_id] = item
     cutoff_utc = datetime.now(timezone.utc) - timedelta(days=age_days)
-    if deactivate_only and uploaded_products:
-        expired_uploaded_products: list[dict] = []
-        for uploaded_product in uploaded_products:
-            product_id = str(uploaded_product["product_id"])
-            product_name = str(uploaded_product.get("name") or "").strip()
-            explicit_message_id = _old_product_int(uploaded_product.get("message_id"))
-            linked_product = _select_telegram_product_by_message_id(
-                explicit_message_id,
-                product_name,
-                telegram_by_message_id,
-            )
-            if linked_product is None:
-                linked_product = telegram_by_product_id.get(product_id)
-            if linked_product is None:
-                linked_product, ambiguous_title = _select_telegram_product_by_title(
-                    product_name,
-                    telegram_products,
-                )
-                if ambiguous_title:
-                    continue
-            telegram_message_dt = (
-                _parse_datetime_text_utc(linked_product.get("telegram_message_date"))
-                if linked_product is not None
-                else None
-            )
-            if telegram_message_dt is None or telegram_message_dt > cutoff_utc:
+    if deactivate_only:
+        source_products = []
+        for item in sql_snapshot_items:
+            if float(item.get("age_days") or 0.0) < float(age_days):
                 continue
-            enriched_product = dict(uploaded_product)
-            enriched_product["_deactivate_linked_telegram_product"] = linked_product
-            enriched_product["_deactivate_telegram_message_date"] = (
-                telegram_message_dt.isoformat()
+            source_products.append(
+                {
+                    "product_id": item["product_id"],
+                    "name": item["name"],
+                    "message_id": item["message_id"],
+                    "_deactivate_linked_telegram_product": {
+                        "account_id": resolved_account_id,
+                        "channel_id": item["channel_id"],
+                        "message_id": item["message_id"],
+                        "created_product_id": item["product_id"],
+                        "product_name": item["name"],
+                        "telegram_message_date": item["telegram_date"],
+                    },
+                    "_deactivate_telegram_message_date": item["telegram_date"],
+                }
             )
-            expired_uploaded_products.append(enriched_product)
-        expired_uploaded_products.sort(
-            key=lambda item: (
-                str(item.get("_deactivate_telegram_message_date") or ""),
-                str(item.get("product_id") or ""),
-            )
-        )
-        source_products = expired_uploaded_products
-        source_label = "uploaded_products(expired_by_telegram_message_date)"
+        source_label = "uploaded_products(sql_preview_expired_by_telegram_message_date)"
     else:
         source_products = uploaded_products if uploaded_products else telegram_products
         source_label = (
