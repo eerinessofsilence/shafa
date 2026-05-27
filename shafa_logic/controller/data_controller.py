@@ -90,6 +90,7 @@ from utils.progress import ProgressBar, verbose_photo_logs_enabled
 from telegram_subscription import get_telegram_channels, set_telegram_channels
 from telegram_subscription.sync import get_telegram_channel_records
 from telegram_subscription.client import create_telegram_client
+from utils.pipeline_activity import enter_product_pipeline, exit_product_pipeline
 
 APP_MODE_ENV = "SHAFA_APP_MODE"
 MODE_CLOTHES = "clothes"
@@ -5385,7 +5386,7 @@ def backfill_created_product_message_dates(
     )
 
 
-def deactivate_old_telegram_products(
+def _deactivate_old_telegram_products_impl(
     *,
     older_than_days: Optional[int] = None,
     limit: Optional[int] = None,
@@ -5823,6 +5824,32 @@ def deactivate_old_telegram_products(
     result["deactivated"] = deactivated
     result["failed"] = failed
     return _finish_result()
+
+
+def deactivate_old_telegram_products(
+    *,
+    older_than_days: Optional[int] = None,
+    limit: Optional[int] = None,
+    sleep_seconds: Optional[float] = None,
+    dry_run: bool = False,
+    account_id: Optional[str] = None,
+    deactivate_product_func=None,
+) -> dict[str, object]:
+    log("INFO", "Деактивация ждёт очередь выполнения.")
+    enter_product_pipeline()
+    try:
+        log("INFO", "Деактивация вошла в очередь выполнения.")
+        return _deactivate_old_telegram_products_impl(
+            older_than_days=older_than_days,
+            limit=limit,
+            sleep_seconds=sleep_seconds,
+            dry_run=dry_run,
+            account_id=account_id,
+            deactivate_product_func=deactivate_product_func,
+        )
+    finally:
+        exit_product_pipeline()
+        log("INFO", "Деактивация освободила очередь выполнения.")
 
 
 def delete_old_telegram_products(

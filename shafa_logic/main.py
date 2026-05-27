@@ -21,6 +21,11 @@ _ADD_CHANNEL = object()
 SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
 APP_MODE_ENV = "SHAFA_APP_MODE"
 DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV = "SHAFA_DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR"
+DEACTIVATE_ONLY_ENV = "SHAFA_DEACTIVATE_ONLY"
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip() in {"1", "true", "TRUE", "yes", "YES"}
 
 
 def _load_inquirer():
@@ -216,7 +221,7 @@ def _background_invalid_products_interval_seconds() -> int:
 
 
 def _background_old_product_deactivate_interval_range_seconds() -> tuple[int, int]:
-    min_allowed_seconds = 1
+    min_allowed_seconds = 60
     fixed_interval = os.getenv(
         "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS", ""
     ).strip()
@@ -224,7 +229,7 @@ def _background_old_product_deactivate_interval_range_seconds() -> tuple[int, in
         try:
             value = int(fixed_interval)
         except ValueError:
-            return 1, 5
+            return 60, 180
         value = min(max(value, min_allowed_seconds), 86400)
         return value, value
 
@@ -235,13 +240,13 @@ def _background_old_product_deactivate_interval_range_seconds() -> tuple[int, in
         "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_MAX_INTERVAL_SECONDS", ""
     ).strip()
     try:
-        min_value = int(min_raw) if min_raw else 1
+        min_value = int(min_raw) if min_raw else 60
     except ValueError:
-        min_value = 1
+        min_value = 60
     try:
-        max_value = int(max_raw) if max_raw else 5
+        max_value = int(max_raw) if max_raw else 180
     except ValueError:
-        max_value = 5
+        max_value = 180
     min_value = min(max(min_value, min_allowed_seconds), 86400)
     max_value = min(max(max_value, min_allowed_seconds), 86400)
     if max_value < min_value:
@@ -259,11 +264,11 @@ def _next_background_old_product_deactivate_wait_seconds() -> float:
 def _background_old_product_deactivate_limit() -> int:
     raw = os.getenv("SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_LIMIT", "").strip()
     if not raw:
-        return 0
+        return 1
     try:
         return int(raw)
     except ValueError:
-        return 0
+        return 1
 
 
 def _bootstrap_new_account_telegram_queue_if_needed() -> int:
@@ -353,15 +358,6 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
     def _worker() -> None:
         backend_unavailable_reported = False
         while not stop_event.is_set():
-            if is_product_pipeline_active():
-                log(
-                    "INFO",
-                    "Фоновая деактивация старых товаров ждёт: "
-                    "сейчас активен пайплайн создания товара."
-                )
-                if stop_event.wait(5.0):
-                    return
-                continue
             started_at = time.time()
             try:
                 log("INFO", "Фоновая деактивация старых товаров: начинаю проверку.")
@@ -1225,17 +1221,35 @@ def main(
     if shafa:
         _bootstrap_new_account_telegram_queue_if_needed()
         sync_channels_from_runtime_config()
+        if _env_flag_enabled(DEACTIVATE_ONLY_ENV):
+            if _env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV):
+                raise RuntimeError(
+                    "SHAFA_DEACTIVATE_ONLY=1, но деактиватор отключён через "
+                    f"{DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV}."
+                )
+            deactivate_stop_event, deactivate_thread = (
+                _start_background_old_product_deactivator()
+            )
+            log(
+                "INFO",
+                "Запущен режим только деактивации. "
+                "Создание товаров и фоновое сканирование Telegram отключены.",
+            )
+            try:
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                deactivate_stop_event.set()
+                deactivate_thread.join(timeout=5)
+            return
+
         os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
         stop_event, scanner_thread = _start_background_telegram_scanner()
         deactivate_stop_event = None
         deactivate_thread = None
-        if os.getenv(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV, "").strip() not in {
-            "1",
-            "true",
-            "TRUE",
-            "yes",
-            "YES",
-        }:
+        if not _env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV):
             deactivate_stop_event, deactivate_thread = _start_background_old_product_deactivator()
         try:
             _auto_create_product(shafa=shafa)
