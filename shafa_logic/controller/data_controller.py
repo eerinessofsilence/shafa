@@ -3474,6 +3474,13 @@ def _table_exists_simple(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _table_columns_simple(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+
+
 def _extract_message_id_from_raw_payload_text(raw_payload: object) -> Optional[int]:
     text = str(raw_payload or "").strip()
     if not text:
@@ -3530,6 +3537,12 @@ def _log_old_product_sql_snapshot(
             with sqlite3.connect(uploaded_db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 if _table_exists_simple(conn, "uploaded_products"):
+                    uploaded_columns = _table_columns_simple(conn, "uploaded_products")
+                    created_order_expr = (
+                        "COALESCE(shafa_created_at, created_at)"
+                        if "shafa_created_at" in uploaded_columns
+                        else "created_at"
+                    )
                     row = conn.execute(
                         """
                         SELECT COUNT(*) AS count
@@ -3548,9 +3561,9 @@ def _log_old_product_sql_snapshot(
                         FROM uploaded_products
                         WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
                           AND COALESCE(is_active, 1) = 1
-                        ORDER BY COALESCE(shafa_created_at, created_at) ASC,
-                                 product_id ASC
+                        ORDER BY {created_order_expr} ASC, product_id ASC
                         """
+                        .format(created_order_expr=created_order_expr)
                     ).fetchall()
                 else:
                     uploaded_count = "no_table"
