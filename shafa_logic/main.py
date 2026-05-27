@@ -216,6 +216,7 @@ def _background_invalid_products_interval_seconds() -> int:
 
 
 def _background_old_product_deactivate_interval_range_seconds() -> tuple[int, int]:
+    min_allowed_seconds = 1
     fixed_interval = os.getenv(
         "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS", ""
     ).strip()
@@ -223,8 +224,8 @@ def _background_old_product_deactivate_interval_range_seconds() -> tuple[int, in
         try:
             value = int(fixed_interval)
         except ValueError:
-            return 60, 180
-        value = min(max(value, 60), 86400)
+            return 1, 5
+        value = min(max(value, min_allowed_seconds), 86400)
         return value, value
 
     min_raw = os.getenv(
@@ -234,15 +235,15 @@ def _background_old_product_deactivate_interval_range_seconds() -> tuple[int, in
         "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_MAX_INTERVAL_SECONDS", ""
     ).strip()
     try:
-        min_value = int(min_raw) if min_raw else 60
+        min_value = int(min_raw) if min_raw else 1
     except ValueError:
-        min_value = 60
+        min_value = 1
     try:
-        max_value = int(max_raw) if max_raw else 180
+        max_value = int(max_raw) if max_raw else 5
     except ValueError:
-        max_value = 180
-    min_value = min(max(min_value, 60), 86400)
-    max_value = min(max(max_value, 60), 86400)
+        max_value = 5
+    min_value = min(max(min_value, min_allowed_seconds), 86400)
+    max_value = min(max(max_value, min_allowed_seconds), 86400)
     if max_value < min_value:
         max_value = min_value
     return min_value, max_value
@@ -346,11 +347,16 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
         backend_unavailable_reported = False
         while not stop_event.is_set():
             if is_product_pipeline_active():
+                print(
+                    "[INFO] Фоновая деактивация старых товаров ждёт: "
+                    "сейчас активен пайплайн создания товара."
+                )
                 if stop_event.wait(5.0):
                     return
                 continue
             started_at = time.time()
             try:
+                print("[INFO] Фоновая деактивация старых товаров: начинаю проверку.")
                 result = deactivate_old_telegram_products(
                     dry_run=False,
                     limit=_background_old_product_deactivate_limit(),
@@ -359,12 +365,16 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
                 deactivated = int(result.get("deactivated") or 0)
                 failed = int(result.get("failed") or 0)
                 checked = int(result.get("checked") or 0)
-                if found or deactivated or failed:
-                    print(
-                        "[INFO] Фоновая деактивация старых товаров завершена. "
-                        f"Проверено: {checked}. Найдено: {found}. "
-                        f"Деактивировано: {deactivated}. Ошибок: {failed}."
-                    )
+                active = int(result.get("active") or 0)
+                skipped = int(result.get("skipped") or 0)
+                not_found = int(result.get("not_found") or 0)
+                print(
+                    "[INFO] Фоновая деактивация старых товаров завершена. "
+                    f"Проверено: {checked}. Активных: {active}. "
+                    f"Пропущено: {skipped}. Без связи Telegram: {not_found}. "
+                    f"Найдено к деактивации: {found}. "
+                    f"Деактивировано: {deactivated}. Ошибок: {failed}."
+                )
                 backend_unavailable_reported = False
             except Exception as exc:
                 message = str(exc)
