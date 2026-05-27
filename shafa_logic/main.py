@@ -342,6 +342,13 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
     from controller.data_controller import deactivate_old_telegram_products
 
     stop_event = threading.Event()
+    min_seconds, max_seconds = _background_old_product_deactivate_interval_range_seconds()
+    log(
+        "INFO",
+        "Фоновая деактивация старых товаров запущена. "
+        f"interval_seconds={min_seconds}-{max_seconds}. "
+        f"limit={_background_old_product_deactivate_limit()}.",
+    )
 
     def _worker() -> None:
         backend_unavailable_reported = False

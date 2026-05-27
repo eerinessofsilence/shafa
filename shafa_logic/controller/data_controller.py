@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -38,9 +39,11 @@ from data.const import (
     ACCOUNT_ID,
     BRAND_NAME_TO_ID,
     COLOR_NAME_TO_ENUM,
+    DB_PATH,
     DEFAULT_MESSAGE_PARSE_LIMIT,
     MAX_PRODUCT_CREATE_ATTEMPTS,
     MAX_UPLOAD_BYTES,
+    TELEGRAM_PRODUCTS_DB_PATH,
     TELEGRAM_API_HASH,
     TELEGRAM_API_ID,
     TELEGRAM_SESSION_PATH,
@@ -3462,6 +3465,146 @@ def _deactivate_product_backend_not_configured(product_id: str) -> None:
     deactivate_product(product_id)
 
 
+def _table_exists_simple(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _log_old_product_sql_snapshot(
+    *,
+    account_id: str,
+    threshold_days: int,
+    preview_limit: int = 10,
+) -> None:
+    uploaded_count: object = "unknown"
+    telegram_count: object = "unknown"
+    expired_count: object = "unknown"
+    preview_rows: list[sqlite3.Row] = []
+
+    try:
+        uploaded_db_path = Path(DB_PATH)
+        if uploaded_db_path.exists():
+            with sqlite3.connect(uploaded_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                if _table_exists_simple(conn, "uploaded_products"):
+                    row = conn.execute(
+                        """
+                        SELECT COUNT(*) AS count
+                        FROM uploaded_products
+                        WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
+                          AND COALESCE(is_active, 1) = 1
+                        """
+                    ).fetchone()
+                    uploaded_count = int(row["count"] or 0) if row else 0
+                else:
+                    uploaded_count = "no_table"
+        else:
+            uploaded_count = "db_missing"
+    except Exception as exc:
+        uploaded_count = f"error:{exc}"
+
+    try:
+        telegram_db_path = Path(TELEGRAM_PRODUCTS_DB_PATH)
+        if telegram_db_path.exists():
+            with sqlite3.connect(telegram_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                if _table_exists_simple(conn, "telegram_products"):
+                    row = conn.execute(
+                        """
+                        SELECT COUNT(*) AS count
+                        FROM telegram_products
+                        WHERE account_id = ?
+                          AND status = 'created'
+                          AND created = 1
+                          AND created_product_id IS NOT NULL
+                          AND TRIM(created_product_id) != ''
+                          AND created_product_id NOT LIKE 'SKIPPED_%'
+                          AND shafa_deactivated_at IS NULL
+                          AND shafa_deleted_at IS NULL
+                        """,
+                        (account_id,),
+                    ).fetchone()
+                    telegram_count = int(row["count"] or 0) if row else 0
+
+                    row = conn.execute(
+                        """
+                        SELECT COUNT(*) AS count
+                        FROM telegram_products
+                        WHERE account_id = ?
+                          AND status = 'created'
+                          AND created = 1
+                          AND created_product_id IS NOT NULL
+                          AND TRIM(created_product_id) != ''
+                          AND created_product_id NOT LIKE 'SKIPPED_%'
+                          AND telegram_message_date IS NOT NULL
+                          AND TRIM(telegram_message_date) != ''
+                          AND shafa_deactivated_at IS NULL
+                          AND shafa_deleted_at IS NULL
+                          AND datetime(telegram_message_date) <= datetime('now', ?)
+                        """,
+                        (account_id, f"-{threshold_days} days"),
+                    ).fetchone()
+                    expired_count = int(row["count"] or 0) if row else 0
+
+                    preview_rows = conn.execute(
+                        """
+                        SELECT
+                            created_product_id,
+                            message_id,
+                            telegram_message_date,
+                            ROUND(julianday('now') - julianday(telegram_message_date), 1)
+                                AS age_days
+                        FROM telegram_products
+                        WHERE account_id = ?
+                          AND status = 'created'
+                          AND created = 1
+                          AND created_product_id IS NOT NULL
+                          AND TRIM(created_product_id) != ''
+                          AND created_product_id NOT LIKE 'SKIPPED_%'
+                          AND telegram_message_date IS NOT NULL
+                          AND TRIM(telegram_message_date) != ''
+                          AND shafa_deactivated_at IS NULL
+                          AND shafa_deleted_at IS NULL
+                        ORDER BY datetime(telegram_message_date) ASC, message_id ASC
+                        LIMIT ?
+                        """,
+                        (account_id, max(int(preview_limit), 1)),
+                    ).fetchall()
+                else:
+                    telegram_count = "no_table"
+                    expired_count = "no_table"
+        else:
+            telegram_count = "db_missing"
+            expired_count = "db_missing"
+    except Exception as exc:
+        telegram_count = f"error:{exc}"
+        expired_count = f"error:{exc}"
+
+    log(
+        "INFO",
+        "SQL диагностика деактивации: "
+        f"account_id={account_id}. "
+        f"uploaded_active={uploaded_count}. "
+        f"telegram_created={telegram_count}. "
+        f"telegram_older_than_{threshold_days}_days={expired_count}.",
+    )
+    if not preview_rows:
+        log("INFO", "SQL диагностика деактивации: preview товаров пустой.")
+        return
+    for row in preview_rows:
+        log(
+            "INFO",
+            "SQL preview товара для деактивации: "
+            f"id_товара={row['created_product_id']}. "
+            f"message_id={row['message_id']}. "
+            f"дней={row['age_days'] if row['age_days'] is not None else 'unknown'}. "
+            f"telegram_date={row['telegram_message_date']}.",
+        )
+
+
 def _is_backfill_history_window_complete(
     cursor: dict,
     *,
@@ -5305,6 +5448,10 @@ def deactivate_old_telegram_products(
         "cleanup cycle start "
         f"account={account_label}. account_id={resolved_account_id}. "
         f"threshold_days={age_days}. limit={result['limit']}. dry_run={dry_run}.",
+    )
+    _log_old_product_sql_snapshot(
+        account_id=resolved_account_id,
+        threshold_days=age_days,
     )
     try:
         backfill_limit_base = (
