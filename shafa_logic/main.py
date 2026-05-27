@@ -4,6 +4,7 @@ import random
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 import argparse
@@ -13,6 +14,7 @@ from utils.stdio import install_safe_stdio
 install_safe_stdio()
 
 from telegram_subscription import complete_login, send_code, session_status, submit_password, sync_channels_from_runtime_config
+from utils.logging import log
 from utils.pipeline_activity import is_product_pipeline_active
 
 _ADD_CHANNEL = object()
@@ -211,28 +213,44 @@ def _background_invalid_products_interval_seconds() -> int:
     return min(max(value, 10), 3600)
 
 
-def _background_old_product_deactivate_interval_seconds() -> int:
-    raw = os.getenv("SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS", "").strip()
-    if not raw:
-        return 300
-    try:
-        value = int(raw)
-    except ValueError:
-        return 300
-    return min(max(value, 60), 86400)
-
-
-def _background_old_product_deactivate_busy_interval_seconds() -> int:
-    raw = os.getenv(
-        "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_BUSY_INTERVAL_SECONDS", ""
+def _background_old_product_deactivate_interval_range_seconds() -> tuple[int, int]:
+    fixed_interval = os.getenv(
+        "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS", ""
     ).strip()
-    if not raw:
-        return 120
+    if fixed_interval:
+        try:
+            value = int(fixed_interval)
+        except ValueError:
+            return 60, 180
+        value = min(max(value, 60), 86400)
+        return value, value
+
+    min_raw = os.getenv(
+        "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_MIN_INTERVAL_SECONDS", ""
+    ).strip()
+    max_raw = os.getenv(
+        "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_MAX_INTERVAL_SECONDS", ""
+    ).strip()
     try:
-        value = int(raw)
+        min_value = int(min_raw) if min_raw else 60
     except ValueError:
-        return 120
-    return min(max(value, 30), 3600)
+        min_value = 60
+    try:
+        max_value = int(max_raw) if max_raw else 180
+    except ValueError:
+        max_value = 180
+    min_value = min(max(min_value, 60), 86400)
+    max_value = min(max(max_value, 60), 86400)
+    if max_value < min_value:
+        max_value = min_value
+    return min_value, max_value
+
+
+def _next_background_old_product_deactivate_wait_seconds() -> float:
+    min_seconds, max_seconds = _background_old_product_deactivate_interval_range_seconds()
+    if min_seconds == max_seconds:
+        return float(min_seconds)
+    return random.uniform(min_seconds, max_seconds)
 
 
 def _bootstrap_new_account_telegram_queue_if_needed() -> int:
@@ -311,8 +329,6 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
     from controller.data_controller import deactivate_old_telegram_products
 
     stop_event = threading.Event()
-    interval_seconds = _background_old_product_deactivate_interval_seconds()
-    busy_interval_seconds = _background_old_product_deactivate_busy_interval_seconds()
 
     def _worker() -> None:
         backend_unavailable_reported = False
@@ -323,14 +339,16 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
                 continue
             started_at = time.time()
             try:
-                result = deactivate_old_telegram_products(dry_run=False)
+                result = deactivate_old_telegram_products(dry_run=False, limit=1)
                 found = int(result.get("found") or 0)
                 deactivated = int(result.get("deactivated") or 0)
                 failed = int(result.get("failed") or 0)
+                checked = int(result.get("checked") or 0)
                 if found or deactivated or failed:
                     print(
                         "[INFO] Фоновая деактивация старых товаров завершена. "
-                        f"Найдено: {found}. Деактивировано: {deactivated}. Ошибок: {failed}."
+                        f"Проверено: {checked}. Найдено: {found}. "
+                        f"Деактивировано: {deactivated}. Ошибок: {failed}."
                     )
                 backend_unavailable_reported = False
             except Exception as exc:
@@ -344,11 +362,9 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
                         return
                     backend_unavailable_reported = True
                     return
-                next_wait_seconds = interval_seconds
+                next_wait_seconds = _next_background_old_product_deactivate_wait_seconds()
             else:
-                next_wait_seconds = (
-                    busy_interval_seconds if found > 0 else interval_seconds
-                )
+                next_wait_seconds = _next_background_old_product_deactivate_wait_seconds()
             elapsed = time.time() - started_at
             wait_seconds = max(1.0, next_wait_seconds - elapsed)
             if stop_event.wait(wait_seconds):
@@ -536,6 +552,329 @@ def _print_products(limit: int = 20) -> list[dict]:
         product_id = row.get("product_id") or "нет данных"
         print(f"{idx}. {name} | {product_id}")
     return products
+
+
+def _load_active_shafa_products(limit: int = 200) -> list[dict]:
+    from data.db import sync_uploaded_products_from_shafa
+    from core.requests.get_my_clothes_products_feed import get_my_clothes_products_feed
+
+    normalized_limit = max(int(limit), 1)
+    products: list[dict] = []
+    seen_ids: set[str] = set()
+    after: Optional[str] = None
+    fetched_from_shafa = False
+    fetch_failed = False
+    while len(products) < normalized_limit:
+        feed = get_my_clothes_products_feed(
+            first=min(50, normalized_limit - len(products)),
+            products_type="ACTIVE",
+            after=after,
+        )
+        if not feed or feed.get("errors"):
+            fetch_failed = True
+            break
+        fetched_from_shafa = True
+        edges = feed.get("edges") or []
+        for edge in edges:
+            node = edge.get("node") or {}
+            product_id = str(node.get("id") or "").strip()
+            name = str(node.get("name") or "").strip()
+            if not product_id or not name or product_id in seen_ids:
+                continue
+            seen_ids.add(product_id)
+            products.append(
+                {
+                    "product_id": product_id,
+                    "name": name,
+                    "created_at": node.get("createdAt"),
+                    "status_title": node.get("statusTitle"),
+                    "size": node.get("size"),
+                    "price": node.get("price"),
+                    "raw_payload": node,
+                }
+            )
+            if len(products) >= normalized_limit:
+                break
+        page_info = feed.get("pageInfo") or {}
+        after = str(page_info.get("endCursor") or "").strip() or None
+        if not page_info.get("hasNextPage") or after is None:
+            break
+    if fetched_from_shafa and not fetch_failed:
+        sync_result = sync_uploaded_products_from_shafa(products)
+        log(
+            "INFO",
+            "Товары загружены с Shafa и синхронизированы с локальной БД. "
+            f"total={sync_result.get('total')}. "
+            f"inserted={sync_result.get('inserted')}. "
+            f"updated={sync_result.get('updated')}. "
+            f"deactivated_local={sync_result.get('deactivated')}.",
+        )
+    elif fetch_failed:
+        log(
+            "WARN",
+            "Не удалось полностью загрузить товары с Shafa, локальная БД не обновлялась.",
+        )
+    return products
+
+
+def _parse_datetime_text_utc(value: object) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_days_from_datetime(moment: Optional[datetime]) -> Optional[float]:
+    if moment is None:
+        return None
+    now_utc = datetime.now(timezone.utc)
+    return round((now_utc - moment).total_seconds() / 86400.0, 1)
+
+
+def _format_age_days(age_days: Optional[float]) -> str:
+    if age_days is None:
+        return "unknown"
+    return f"{age_days:.1f}"
+
+
+def _choose_active_shafa_product(limit: int = 200) -> Optional[dict]:
+    products = _load_active_shafa_products(limit=limit)
+    if not products:
+        print("Активные товары Shafa не найдены.")
+        return None
+    return _prompt_list(
+        "Выберите товар Shafa",
+        [
+            (f"{item['name']} | {item['product_id']}", item)
+            for item in products
+        ],
+    )
+
+
+def _resolve_product_name_for_telegram_search() -> Optional[str]:
+    source = _prompt_list(
+        "Откуда взять название товара?",
+        [
+            ("Выбрать из активных товаров Shafa", "shafa_active"),
+            ("Ввести название вручную", "manual"),
+        ],
+    )
+    if source is None:
+        return None
+    if source == "manual":
+        value = _prompt_text(
+            "Название товара для поиска в Telegram",
+            required=True,
+        )
+        return str(value or "").strip() or None
+
+    selection = _choose_active_shafa_product(limit=200)
+    if selection is None:
+        return None
+    name = str(selection.get("name") or "").strip()
+    product_id = str(selection.get("product_id") or "").strip()
+    if name and product_id:
+        print(f"Ищу в Telegram: {name} | {product_id}")
+    return name or None
+
+
+def _print_telegram_search_matches(product_name: str, matches: list[dict]) -> None:
+    if not matches:
+        print(f"Совпадения в Telegram для «{product_name}» не найдены.")
+        return
+    print(f"Совпадения в Telegram для «{product_name}»:")
+    for idx, row in enumerate(matches, start=1):
+        channel_name = row.get("channel_name") or row.get("channel_id") or "-"
+        parsed_name = row.get("parsed_name") or "нет данных"
+        message_id = row.get("message_id") or "-"
+        score = float(row.get("score") or 0.0)
+        message_date = row.get("telegram_message_date") or "-"
+        preview = row.get("raw_message_preview") or ""
+        print(
+            f"{idx}. {parsed_name} | channel={channel_name} | "
+            f"message_id={message_id} | score={score:.2f} | date={message_date}"
+        )
+        if preview:
+            print(f"   {preview}")
+
+
+def _find_product_in_telegram_by_name(product_name: Optional[str] = None) -> None:
+    from controller.data_controller import find_telegram_matches_by_product_name
+
+    resolved_name = str(product_name or "").strip() or _resolve_product_name_for_telegram_search()
+    if not resolved_name:
+        return
+    per_channel_limit = 5
+    if product_name is None:
+        user_limit = _prompt_int(
+            "Сколько совпадений показывать на канал?",
+            default=5,
+            min_value=1,
+        )
+        if user_limit is not None:
+            per_channel_limit = user_limit
+    matches = find_telegram_matches_by_product_name(
+        resolved_name,
+        per_channel_limit=per_channel_limit,
+    )
+    _print_telegram_search_matches(resolved_name, matches)
+
+
+def _print_telegram_age_inspection(product: dict, inspection: dict) -> None:
+    name = str(product.get("name") or "").strip() or "нет названия"
+    product_id = str(product.get("product_id") or "").strip() or "нет id"
+    status = str(inspection.get("status") or "")
+    print(f"Товар Shafa: {name} | {product_id}")
+    print(
+        "Порог по возрасту Telegram: "
+        f"{int(inspection.get('older_than_days') or 0)} дней."
+    )
+    if status == "not_found":
+        print("Совпадения в Telegram не найдены.")
+        return
+    if status == "low_confidence":
+        print("Найдены только слабые совпадения. Автодеактивация не выполнена.")
+        best_match = inspection.get("best_match")
+        if isinstance(best_match, dict):
+            _print_telegram_search_matches(name, [best_match])
+        return
+    if status == "missing_message_date":
+        print("Совпадение найдено, но у сообщения нет даты. Деактивация отменена.")
+        best_match = inspection.get("best_match")
+        if isinstance(best_match, dict):
+            _print_telegram_search_matches(name, [best_match])
+        return
+    if status == "not_old_enough":
+        best_match = inspection.get("best_match")
+        if isinstance(best_match, dict):
+            age_days = best_match.get("message_age_days")
+            print(
+                "Совпадение найдено, но товар в Telegram ещё недостаточно старый. "
+                f"Возраст: {age_days} дней."
+            )
+            _print_telegram_search_matches(name, [best_match])
+        return
+    if status == "eligible":
+        best_match = inspection.get("best_match")
+        if isinstance(best_match, dict):
+            age_days = best_match.get("message_age_days")
+            print(
+                "Совпадение найдено и подходит для деактивации. "
+                f"Возраст сообщения в Telegram: {age_days} дней."
+            )
+            _print_telegram_search_matches(name, [best_match])
+        return
+    print("Не удалось определить состояние товара для деактивации.")
+
+
+def _log_telegram_age_inspection(product: dict, inspection: dict) -> None:
+    name = str(product.get("name") or "").strip() or "нет названия"
+    product_id = str(product.get("product_id") or "").strip() or "нет id"
+    threshold_days = int(inspection.get("older_than_days") or 0)
+    status = str(inspection.get("status") or "")
+    reason = str(inspection.get("decision_reason") or "").strip() or "-"
+    shafa_created_at = _parse_datetime_text_utc(product.get("created_at"))
+    shafa_age_days = _age_days_from_datetime(shafa_created_at)
+    log(
+        "INFO",
+        "Проверяю возраст товара для деактивации. "
+        f"name={name}. product_id={product_id}. "
+        f"shafa_created_at={product.get('created_at') or '-'}. "
+        f"shafa_age_days={_format_age_days(shafa_age_days)}. "
+        f"threshold_days={threshold_days}.",
+    )
+    best_match = inspection.get("best_match")
+    if isinstance(best_match, dict):
+        telegram_age_days = best_match.get("message_age_days")
+        log(
+            "INFO",
+            "Найдено совпадение в Telegram. "
+            f"name={name}. product_id={product_id}. "
+            f"channel_id={best_match.get('channel_id')}. "
+            f"message_id={best_match.get('message_id')}. "
+            f"telegram_created_at={best_match.get('telegram_message_date') or '-'}. "
+            f"telegram_age_days={_format_age_days(float(telegram_age_days) if telegram_age_days is not None else None)}. "
+            f"score={float(best_match.get('score') or 0.0):.2f}.",
+        )
+    if status == "eligible":
+        log(
+            "INFO",
+            "Товар подходит под деактивацию по возрасту Telegram. "
+            f"name={name}. product_id={product_id}. "
+            f"telegram_age_days={_format_age_days(inspection.get('telegram_age_days'))}. "
+            f"threshold_days={threshold_days}. "
+            f"reason={reason}",
+        )
+        return
+    level = "WARN" if status in {"not_found", "low_confidence", "missing_message_date"} else "INFO"
+    log(
+        level,
+        "Товар не будет деактивирован. "
+        f"name={name}. product_id={product_id}. "
+        f"status={status or 'unknown'}. "
+        f"telegram_age_days={_format_age_days(inspection.get('telegram_age_days'))}. "
+        f"threshold_days={threshold_days}. "
+        f"reason={reason}",
+    )
+
+
+def _deactivate_shafa_product_if_old_in_telegram() -> None:
+    from controller.data_controller import inspect_shafa_product_telegram_age
+    from core.requests.deactivate_product import deactivate_product
+
+    product = _choose_active_shafa_product(limit=200)
+    if product is None:
+        return
+    older_than_days = _prompt_int(
+        "Деактивировать, если товар в Telegram старше скольких дней?",
+        default=183,
+        min_value=1,
+    )
+    if older_than_days is None:
+        return
+    inspection = inspect_shafa_product_telegram_age(
+        str(product.get("name") or ""),
+        older_than_days=older_than_days,
+        per_channel_limit=5,
+    )
+    _log_telegram_age_inspection(product, inspection)
+    _print_telegram_age_inspection(product, inspection)
+    if not bool(inspection.get("eligible_for_deactivation")):
+        return
+    product_id = str(product.get("product_id") or "").strip()
+    if not product_id:
+        print("У товара Shafa отсутствует product_id.")
+        return
+    try:
+        deactivate_product(product_id)
+    except Exception as exc:
+        log(
+            "ERROR",
+            "Не удалось деактивировать товар на Shafa. "
+            f"name={product.get('name') or '-'}. product_id={product_id}. "
+            f"telegram_age_days={_format_age_days(inspection.get('telegram_age_days'))}. "
+            f"threshold_days={int(inspection.get('older_than_days') or 0)}. "
+            f"error={exc}",
+        )
+        print(f"Не удалось деактивировать товар на Shafa: {exc}")
+        return
+    log(
+        "OK",
+        "Товар деактивирован на Shafa. "
+        f"name={product.get('name') or '-'}. product_id={product_id}. "
+        f"telegram_age_days={_format_age_days(inspection.get('telegram_age_days'))}. "
+        f"threshold_days={int(inspection.get('older_than_days') or 0)}. "
+        f"reason={inspection.get('decision_reason') or '-'}",
+    )
+    print(f"Товар деактивирован на Shafa: {product_id}.")
 
 
 def _prompt_action_menu(
@@ -745,6 +1084,11 @@ def _product_management_menu() -> None:
         ("Создать товар", _create_product),
         ("Автосоздание товара", _auto_create_product),
         ("Список товаров", _print_products),
+        ("Найти товар в Telegram по названию", _find_product_in_telegram_by_name),
+        (
+            "Найти в Telegram и деактивировать на Shafa, если товар старый",
+            _deactivate_shafa_product_if_old_in_telegram,
+        ),
     ]
     while True:
         action = _prompt_action_menu("Управление товарами", actions, "Назад")
@@ -781,6 +1125,7 @@ def main(
     shafa: bool = False,
     login_shafa: bool = False,
     mode: Optional[str] = None,
+    find_telegram_by_name: Optional[str] = None,
     telegram_send_code_phone: Optional[str] = None,
     telegram_login_phone: Optional[str] = None,
     telegram_login_code: Optional[str] = None,
@@ -789,6 +1134,9 @@ def main(
 ) -> None:
     if mode:
         os.environ[APP_MODE_ENV] = mode
+    if find_telegram_by_name:
+        _find_product_in_telegram_by_name(find_telegram_by_name)
+        return
     if login_shafa:
         _login_account()
         return
@@ -845,6 +1193,7 @@ def parse_args():
     parser.add_argument("--shafa", action="store_true")
     parser.add_argument("--login-shafa", action="store_true")
     parser.add_argument("--mode", choices=["clothes", "sneakers"])
+    parser.add_argument("--find-telegram-by-name")
     parser.add_argument("--telegram-send-code")
     parser.add_argument("--telegram-login-phone")
     parser.add_argument("--telegram-login-code")
@@ -860,6 +1209,7 @@ if __name__ == "__main__":
             shafa=args.shafa,
             login_shafa=args.login_shafa,
             mode=args.mode,
+            find_telegram_by_name=args.find_telegram_by_name,
             telegram_send_code_phone=args.telegram_send_code,
             telegram_login_phone=args.telegram_login_phone,
             telegram_login_code=args.telegram_login_code,

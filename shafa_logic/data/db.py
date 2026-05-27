@@ -531,6 +531,10 @@ def _ensure_uploaded_products_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE uploaded_products ADD COLUMN is_active "
             "INTEGER NOT NULL DEFAULT 1"
         )
+    if "shafa_created_at" not in columns:
+        conn.execute("ALTER TABLE uploaded_products ADD COLUMN shafa_created_at TEXT")
+    if "status_title" not in columns:
+        conn.execute("ALTER TABLE uploaded_products ADD COLUMN status_title TEXT")
 
 
 def _ensure_invalid_uploaded_products_schema(conn: sqlite3.Connection) -> None:
@@ -1276,12 +1280,174 @@ def save_uploaded_product(
         )
 
 
+def sync_uploaded_products_from_shafa(products: list[dict]) -> dict[str, int]:
+    normalized_products: list[dict] = []
+    seen_ids: set[str] = set()
+    for product in products:
+        product_id = str(product.get("product_id") or product.get("id") or "").strip()
+        name = str(product.get("name") or "").strip()
+        if not product_id or not name or product_id in seen_ids:
+            continue
+        seen_ids.add(product_id)
+        raw_payload = product.get("raw_payload")
+        if not isinstance(raw_payload, dict):
+            raw_payload = dict(product)
+        brand_payload = raw_payload.get("brand") or {}
+        brand_id = None
+        if isinstance(brand_payload, dict):
+            brand_value = brand_payload.get("id")
+            if brand_value is not None and str(brand_value).strip() != "":
+                try:
+                    brand_id = int(brand_value)
+                except (TypeError, ValueError):
+                    brand_id = None
+        normalized_products.append(
+            {
+                "product_id": product_id,
+                "name": name,
+                "brand": brand_id,
+                "size": product.get("size"),
+                "price": product.get("price"),
+                "photo_ids": json.dumps([], ensure_ascii=True),
+                "raw_payload": json.dumps(raw_payload, ensure_ascii=True),
+                "shafa_created_at": _normalize_datetime_text(
+                    product.get("created_at") or raw_payload.get("createdAt")
+                ),
+                "status_title": str(product.get("status_title") or "").strip() or None,
+            }
+        )
+
+    _ensure_db_initialized()
+    inserted = 0
+    updated = 0
+    deactivated = 0
+    with _connect() as conn:
+        active_ids = [item["product_id"] for item in normalized_products]
+        if active_ids:
+            placeholders = ",".join(["?"] * len(active_ids))
+            cursor = conn.execute(
+                f"""
+                UPDATE uploaded_products
+                SET is_active = 0
+                WHERE product_id IS NOT NULL
+                  AND TRIM(product_id) != ''
+                  AND product_id NOT IN ({placeholders})
+                  AND COALESCE(is_active, 1) != 0
+                """,
+                active_ids,
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE uploaded_products
+                SET is_active = 0
+                WHERE product_id IS NOT NULL
+                  AND TRIM(product_id) != ''
+                  AND COALESCE(is_active, 1) != 0
+                """
+            )
+        deactivated = int(cursor.rowcount or 0)
+
+        for item in normalized_products:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM uploaded_products
+                WHERE product_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (item["product_id"],),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO uploaded_products (
+                        product_id,
+                        name,
+                        brand,
+                        size,
+                        price,
+                        photo_ids,
+                        raw_payload,
+                        created_at,
+                        shafa_created_at,
+                        status_title,
+                        is_active
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), ?, ?, 1)
+                    """,
+                    (
+                        item["product_id"],
+                        item["name"],
+                        item["brand"],
+                        item["size"],
+                        item["price"],
+                        item["photo_ids"],
+                        item["raw_payload"],
+                        item["shafa_created_at"],
+                        item["shafa_created_at"],
+                        item["status_title"],
+                    ),
+                )
+                inserted += 1
+                continue
+
+            conn.execute(
+                """
+                UPDATE uploaded_products
+                SET name = ?,
+                    brand = ?,
+                    size = ?,
+                    price = ?,
+                    photo_ids = ?,
+                    raw_payload = ?,
+                    created_at = COALESCE(?, created_at),
+                    shafa_created_at = COALESCE(?, shafa_created_at),
+                    status_title = ?,
+                    is_active = 1
+                WHERE id = ?
+                """,
+                (
+                    item["name"],
+                    item["brand"],
+                    item["size"],
+                    item["price"],
+                    item["photo_ids"],
+                    item["raw_payload"],
+                    item["shafa_created_at"],
+                    item["shafa_created_at"],
+                    item["status_title"],
+                    int(existing["id"]),
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE uploaded_products
+                SET is_active = 0
+                WHERE product_id = ? AND id != ?
+                """,
+                (item["product_id"], int(existing["id"])),
+            )
+            updated += 1
+
+    return {
+        "total": len(normalized_products),
+        "inserted": inserted,
+        "updated": updated,
+        "deactivated": deactivated,
+    }
+
+
 def list_uploaded_products(limit: int = 20) -> list[dict]:
     _ensure_db_initialized()
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT product_id, name, created_at
+            SELECT
+                product_id,
+                name,
+                COALESCE(shafa_created_at, created_at) AS created_at
             FROM uploaded_products
             WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
               AND COALESCE(is_active, 1) = 1
@@ -1300,13 +1466,69 @@ def list_uploaded_products(limit: int = 20) -> list[dict]:
     ]
 
 
+def list_uploaded_products_for_age_check() -> list[dict]:
+    _ensure_db_initialized()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                product_id,
+                name,
+                COALESCE(shafa_created_at, created_at) AS created_at,
+                status_title
+            FROM uploaded_products
+            WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
+              AND COALESCE(is_active, 1) = 1
+            ORDER BY created_at ASC, product_id ASC
+            """
+        ).fetchall()
+    return [
+        {
+            "product_id": str(row["product_id"]),
+            "name": str(row["name"] or "").strip() or None,
+            "created_at": row["created_at"],
+            "status_title": row["status_title"],
+        }
+        for row in rows
+    ]
+
+
+def mark_uploaded_product_inactive(
+    product_id: str,
+    *,
+    status_title: Optional[str] = None,
+) -> bool:
+    normalized_product_id = str(product_id or "").strip()
+    if not normalized_product_id:
+        return False
+    _ensure_db_initialized()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE uploaded_products
+            SET is_active = 0,
+                status_title = COALESCE(?, status_title)
+            WHERE product_id = ?
+              AND COALESCE(is_active, 1) != 0
+            """,
+            (str(status_title or "").strip() or None, normalized_product_id),
+        )
+    return bool(cursor.rowcount)
+
+
 def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
     _ensure_db_initialized()
     with _connect() as conn:
         if limit is None:
             rows = conn.execute(
                 """
-                SELECT id, product_id, name, photo_ids, raw_payload, created_at
+                SELECT
+                    id,
+                    product_id,
+                    name,
+                    photo_ids,
+                    raw_payload,
+                    COALESCE(shafa_created_at, created_at) AS created_at
                 FROM uploaded_products
                 WHERE raw_payload IS NOT NULL AND TRIM(raw_payload) != ''
                 ORDER BY id
@@ -1315,7 +1537,13 @@ def list_uploaded_product_payloads(limit: Optional[int] = None) -> list[dict]:
         else:
             rows = conn.execute(
                 """
-                SELECT id, product_id, name, photo_ids, raw_payload, created_at
+                SELECT
+                    id,
+                    product_id,
+                    name,
+                    photo_ids,
+                    raw_payload,
+                    COALESCE(shafa_created_at, created_at) AS created_at
                 FROM uploaded_products
                 WHERE raw_payload IS NOT NULL AND TRIM(raw_payload) != ''
                 ORDER BY id
@@ -2322,6 +2550,83 @@ def backfill_telegram_product_message_dates_from_existing_db(
     return updated
 
 
+def _extract_product_name_from_parsed_data(parsed_data: object) -> Optional[str]:
+    text = str(parsed_data or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    name = str(payload.get("name") or "").strip()
+    return name or None
+
+
+def _serialize_created_telegram_product_row(row: sqlite3.Row) -> dict:
+    return {
+        "account_id": str(row["account_id"]),
+        "channel_id": int(row["channel_id"]),
+        "message_id": int(row["message_id"]),
+        "created_product_id": str(row["created_product_id"]),
+        "product_name": _extract_product_name_from_parsed_data(row["parsed_data"]),
+        "telegram_message_date": row["telegram_message_date"],
+        "shafa_deactivate_attempts": int(row["shafa_deactivate_attempts"] or 0),
+        "last_shafa_deactivate_error": row["last_shafa_deactivate_error"],
+        "shafa_delete_attempts": int(row["shafa_delete_attempts"] or 0),
+        "last_shafa_delete_error": row["last_shafa_delete_error"],
+    }
+
+
+def list_created_telegram_products_for_age_check(
+    *,
+    account_id: Optional[str] = None,
+) -> list[dict]:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                account_id,
+                channel_id,
+                message_id,
+                created_product_id,
+                parsed_data,
+                telegram_message_date,
+                shafa_deactivate_attempts,
+                last_shafa_deactivate_error,
+                shafa_delete_attempts,
+                last_shafa_delete_error
+            FROM telegram_products
+            WHERE account_id = ?
+              AND status = ?
+              AND created = 1
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+            ORDER BY
+                CASE
+                    WHEN telegram_message_date IS NULL OR TRIM(telegram_message_date) = ''
+                        THEN 1
+                    ELSE 0
+                END,
+                datetime(telegram_message_date) ASC,
+                message_id ASC
+            """
+            ,
+            (
+                normalized_account_id,
+                TELEGRAM_PRODUCT_STATUS_CREATED,
+            ),
+        ).fetchall()
+    return [_serialize_created_telegram_product_row(row) for row in rows]
+
+
 def list_expired_created_telegram_products(
     *,
     older_than_days: int,
@@ -2341,6 +2646,7 @@ def list_expired_created_telegram_products(
                 channel_id,
                 message_id,
                 created_product_id,
+                parsed_data,
                 telegram_message_date,
                 shafa_deactivate_attempts,
                 last_shafa_deactivate_error,
@@ -2368,20 +2674,7 @@ def list_expired_created_telegram_products(
                 row_limit,
             ),
         ).fetchall()
-    return [
-        {
-            "account_id": row["account_id"],
-            "channel_id": int(row["channel_id"]),
-            "message_id": int(row["message_id"]),
-            "created_product_id": str(row["created_product_id"]),
-            "telegram_message_date": row["telegram_message_date"],
-            "shafa_deactivate_attempts": int(row["shafa_deactivate_attempts"] or 0),
-            "last_shafa_deactivate_error": row["last_shafa_deactivate_error"],
-            "shafa_delete_attempts": int(row["shafa_delete_attempts"] or 0),
-            "last_shafa_delete_error": row["last_shafa_delete_error"],
-        }
-        for row in rows
-    ]
+    return [_serialize_created_telegram_product_row(row) for row in rows]
 
 
 def mark_telegram_product_deactivated_on_shafa(

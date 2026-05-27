@@ -55,6 +55,32 @@ def test_noninteractive_shafa_mode_does_not_require_inquirer(monkeypatch) -> Non
     ]
 
 
+def test_old_product_deactivate_interval_defaults_to_one_to_three_minutes(
+    monkeypatch,
+) -> None:
+    module = _reload_shafa_main()
+    monkeypatch.delenv("SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv(
+        "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_MIN_INTERVAL_SECONDS",
+        raising=False,
+    )
+    monkeypatch.delenv(
+        "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_MAX_INTERVAL_SECONDS",
+        raising=False,
+    )
+
+    assert module._background_old_product_deactivate_interval_range_seconds() == (60, 180)
+
+
+def test_old_product_deactivate_fixed_interval_keeps_compatibility(
+    monkeypatch,
+) -> None:
+    module = _reload_shafa_main()
+    monkeypatch.setenv("SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS", "90")
+
+    assert module._background_old_product_deactivate_interval_range_seconds() == (90, 90)
+
+
 def test_prompt_list_reports_missing_inquirer(monkeypatch) -> None:
     module = _reload_shafa_main()
 

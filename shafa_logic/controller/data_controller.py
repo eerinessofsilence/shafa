@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,10 +56,12 @@ from data.db import (
     get_telegram_scan_cursor,
     get_size_id_by_name,
     increment_telegram_product_attempt,
-    list_expired_created_telegram_products,
+    list_created_telegram_products_for_age_check,
     list_created_telegram_products_missing_date,
     list_brand_names,
+    list_uploaded_products_for_age_check,
     load_telegram_channels,
+    mark_uploaded_product_inactive,
     mark_telegram_product_deactivated_on_shafa,
     mark_telegram_backfill_started,
     mark_telegram_scan_started,
@@ -95,10 +98,12 @@ DEFAULT_TELEGRAM_SCAN_BATCH_SIZE = 150
 DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS = 180
 DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS = 360
 DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS = 183
-DEFAULT_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE = 10
+DEFAULT_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE = 1
 DEFAULT_OLD_PRODUCT_DEACTIVATE_SLEEP_SECONDS = 3.0
+DEFAULT_AUTO_DEACTIVATE_TELEGRAM_MATCH_SCORE = 0.85
 MIN_PRODUCT_PRICE_DIGITS = 3
 MAX_PRODUCT_PRICE_DIGITS = 4
+_OLD_PRODUCT_AGE_CHECK_CURSOR: dict[tuple[str, str], int] = {}
 
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
@@ -2980,6 +2985,351 @@ def _message_datetime_utc(message) -> Optional[datetime]:
     return value.astimezone(timezone.utc)
 
 
+def _parse_datetime_text_utc(value: object) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_age_duration(delta: timedelta) -> str:
+    total_seconds = max(int(delta.total_seconds()), 0)
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{days}d {hours}h {minutes}m {seconds}s"
+
+
+def _next_old_product_age_check_batch(
+    products: list[dict],
+    *,
+    limit: int,
+    account_id: str,
+    source_label: str,
+) -> list[dict]:
+    if not products:
+        return []
+    batch_size = min(max(int(limit), 1), len(products))
+    if batch_size >= len(products):
+        _OLD_PRODUCT_AGE_CHECK_CURSOR[(account_id, source_label)] = 0
+        return products[:batch_size]
+
+    cursor_key = (account_id, source_label)
+    start_index = _OLD_PRODUCT_AGE_CHECK_CURSOR.get(cursor_key, 0) % len(products)
+    selected = [
+        products[(start_index + offset) % len(products)]
+        for offset in range(batch_size)
+    ]
+    _OLD_PRODUCT_AGE_CHECK_CURSOR[cursor_key] = (
+        start_index + batch_size
+    ) % len(products)
+    return selected
+
+
+def _normalize_product_lookup_text(text: object) -> str:
+    value = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    value = re.sub(r"[^\w]+", " ", value, flags=re.UNICODE)
+    return " ".join(part for part in value.split() if part)
+
+
+def _product_lookup_tokens(text: object) -> list[str]:
+    return [
+        token
+        for token in _normalize_product_lookup_text(text).split()
+        if len(token) >= 2 or token.isdigit()
+    ]
+
+
+def _build_telegram_product_name_search_queries(product_name: str) -> list[str]:
+    raw_name = str(product_name or "").strip()
+    if not raw_name:
+        return []
+    queries = [raw_name]
+    seen = {_normalize_product_lookup_text(raw_name)}
+    for token in sorted(
+        re.findall(r"[A-Za-zА-Яа-яІіЇїЄєҐґ0-9]+", raw_name),
+        key=len,
+        reverse=True,
+    ):
+        if len(token) < 4 and not token.isdigit():
+            continue
+        normalized = _normalize_product_lookup_text(token)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        queries.append(token)
+        if len(queries) >= 4:
+            break
+    return queries
+
+
+def _score_product_name_match(expected_name: object, candidate_name: object) -> float:
+    normalized_expected = _normalize_product_lookup_text(expected_name)
+    normalized_candidate = _normalize_product_lookup_text(candidate_name)
+    if not normalized_expected or not normalized_candidate:
+        return 0.0
+    if normalized_expected == normalized_candidate:
+        return 1.0
+    if (
+        normalized_expected in normalized_candidate
+        or normalized_candidate in normalized_expected
+    ):
+        return 0.95
+    expected_tokens = set(_product_lookup_tokens(expected_name))
+    candidate_tokens = set(_product_lookup_tokens(candidate_name))
+    if not expected_tokens or not candidate_tokens:
+        return 0.0
+    overlap = expected_tokens & candidate_tokens
+    if not overlap:
+        return 0.0
+    coverage = len(overlap) / len(expected_tokens)
+    precision = len(overlap) / len(candidate_tokens)
+    return round((coverage * 0.75) + (precision * 0.25), 4)
+
+
+def _message_preview_text(raw_message: object, *, max_length: int = 120) -> str:
+    preview = " ".join(str(raw_message or "").split())
+    if len(preview) <= max_length:
+        return preview
+    return preview[: max_length - 3].rstrip() + "..."
+
+
+async def _find_telegram_name_matches_in_channel(
+    client: TelegramClient,
+    channel_id: int,
+    product_name: str,
+    *,
+    per_channel_limit: int,
+) -> list[dict]:
+    channel_peer = await _resolve_channel_peer(client, channel_id)
+    unique_messages: dict[int, Any] = {}
+    search_limit = max(per_channel_limit * 4, per_channel_limit)
+    for search_query in _build_telegram_product_name_search_queries(product_name):
+        async for msg in client.iter_messages(
+            channel_peer,
+            search=search_query,
+            limit=search_limit,
+        ):
+            message_id = getattr(msg, "id", None)
+            if not isinstance(message_id, int) or message_id in unique_messages:
+                continue
+            unique_messages[message_id] = msg
+
+    channel_record = _get_channel_record(channel_id) or {}
+    matches: list[dict] = []
+    for message_id, msg in unique_messages.items():
+        raw_message = str(getattr(msg, "message", "") or "")
+        if not raw_message.strip():
+            continue
+        try:
+            parsed = parse_message(raw_message)
+        except Exception:
+            parsed = {}
+        parsed_name = _canonicalize_name_brand(parsed.get("name"), parsed.get("brand"))
+        score = _score_product_name_match(product_name, parsed_name)
+        if score <= 0.0:
+            score = _score_product_name_match(product_name, raw_message)
+        if score < 0.55:
+            continue
+        message_date = _message_datetime_utc(msg)
+        matches.append(
+            {
+                "channel_id": channel_id,
+                "channel_name": (
+                    str(channel_record.get("name") or "").strip() or str(channel_id)
+                ),
+                "message_id": message_id,
+                "parsed_name": parsed_name or str(parsed.get("name") or "").strip(),
+                "raw_message_preview": _message_preview_text(raw_message),
+                "score": score,
+                "telegram_message_date": (
+                    message_date.isoformat() if message_date is not None else None
+                ),
+            }
+        )
+
+    matches.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            -int(item["message_id"]),
+        )
+    )
+    return matches[:per_channel_limit]
+
+
+async def find_telegram_matches_by_product_name_async(
+    product_name: str,
+    *,
+    per_channel_limit: int = 5,
+    telegram_client_cls: Any | None = None,
+) -> list[dict]:
+    normalized_name = str(product_name or "").strip()
+    if not normalized_name:
+        return []
+    channel_ids = _get_channel_ids()
+    if not channel_ids:
+        return []
+    normalized_limit = max(int(per_channel_limit), 1)
+    api_id_value, api_hash_value = _require_telegram_credentials()
+    account_id = _current_account_id()
+    client_factory = telegram_client_cls or TelegramClient
+    matches: list[dict] = []
+    async with create_telegram_client(
+        TELEGRAM_SESSION_PATH,
+        api_id_value,
+        api_hash_value,
+        save_entities=False,
+        telegram_client_cls=client_factory,
+        account_id=account_id,
+    ) as client:
+        await _sync_channel_titles(client, channel_ids)
+        for channel_id in channel_ids:
+            try:
+                matches.extend(
+                    await _find_telegram_name_matches_in_channel(
+                        client,
+                        channel_id,
+                        normalized_name,
+                        per_channel_limit=normalized_limit,
+                    )
+                )
+            except Exception as exc:
+                log(
+                    "WARN",
+                    "Не удалось выполнить поиск товара в Telegram. "
+                    f"channel_id={channel_id}. error={exc}",
+                )
+    matches.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            -int(item["message_id"]),
+        )
+    )
+    return matches
+
+
+def find_telegram_matches_by_product_name(
+    product_name: str,
+    *,
+    per_channel_limit: int = 5,
+) -> list[dict]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            find_telegram_matches_by_product_name_async(
+                product_name,
+                per_channel_limit=per_channel_limit,
+            )
+        )
+    raise RuntimeError(
+        "find_telegram_matches_by_product_name cannot be called when an event loop "
+        "is running. Use find_telegram_matches_by_product_name_async."
+    )
+
+
+def inspect_shafa_product_telegram_age(
+    product_name: str,
+    *,
+    older_than_days: Optional[int] = None,
+    per_channel_limit: int = 5,
+    min_match_score: float = DEFAULT_AUTO_DEACTIVATE_TELEGRAM_MATCH_SCORE,
+) -> dict[str, object]:
+    normalized_name = str(product_name or "").strip()
+    age_days = (
+        _telegram_product_max_age_days()
+        if older_than_days is None
+        else max(int(older_than_days), 1)
+    )
+    now_utc = datetime.now(timezone.utc)
+    cutoff_utc = now_utc - timedelta(days=age_days)
+    result: dict[str, object] = {
+        "product_name": normalized_name,
+        "older_than_days": age_days,
+        "min_match_score": float(min_match_score),
+        "evaluated_at_utc": now_utc.isoformat(),
+        "cutoff_utc": cutoff_utc.isoformat(),
+        "matches_found": 0,
+        "eligible_for_deactivation": False,
+        "status": "empty_name",
+        "decision_reason": "Пустое название товара Shafa.",
+        "telegram_age_days": None,
+        "best_match": None,
+        "matches": [],
+    }
+    if not normalized_name:
+        return result
+
+    matches = find_telegram_matches_by_product_name(
+        normalized_name,
+        per_channel_limit=per_channel_limit,
+    )
+    result["matches"] = matches
+    result["matches_found"] = len(matches)
+    if not matches:
+        result["status"] = "not_found"
+        result["decision_reason"] = (
+            "Совпадения по названию товара в Telegram не найдены."
+        )
+        return result
+
+    confident_match = next(
+        (
+            item
+            for item in matches
+            if float(item.get("score") or 0.0) >= float(min_match_score)
+        ),
+        None,
+    )
+    if confident_match is None:
+        result["status"] = "low_confidence"
+        result["best_match"] = matches[0]
+        result["decision_reason"] = (
+            "Найдены только совпадения с низким score, деактивация небезопасна."
+        )
+        return result
+
+    telegram_message_dt = _parse_datetime_text_utc(
+        confident_match.get("telegram_message_date")
+    )
+    enriched_match = dict(confident_match)
+    if telegram_message_dt is not None:
+        enriched_match["telegram_message_date"] = telegram_message_dt.isoformat()
+        enriched_match["message_age_days"] = round(
+            (now_utc - telegram_message_dt).total_seconds() / 86400.0,
+            1,
+        )
+        result["telegram_age_days"] = enriched_match["message_age_days"]
+    result["best_match"] = enriched_match
+    if telegram_message_dt is None:
+        result["status"] = "missing_message_date"
+        result["decision_reason"] = (
+            "Для найденного сообщения Telegram не удалось определить дату."
+        )
+        return result
+    if telegram_message_dt > cutoff_utc:
+        result["status"] = "not_old_enough"
+        result["decision_reason"] = (
+            "Возраст сообщения в Telegram меньше заданного порога."
+        )
+        return result
+
+    result["status"] = "eligible"
+    result["eligible_for_deactivation"] = True
+    result["decision_reason"] = (
+        "Возраст сообщения в Telegram равен или больше порога деактивации."
+    )
+    return result
+
+
 def _deactivate_product_backend_not_configured(product_id: str) -> None:
     from core.requests.deactivate_product import deactivate_product
 
@@ -4792,32 +5142,159 @@ def deactivate_old_telegram_products(
         if sleep_seconds is None
         else min(max(float(sleep_seconds), 0.0), 60.0)
     )
-    deactivator = deactivate_product_func or _deactivate_product_backend_not_configured
-    candidates = list_expired_created_telegram_products(
-        older_than_days=age_days,
-        limit=batch_limit,
-        account_id=account_id,
+    resolved_account_id = str(account_id or _current_account_id()).strip() or "default"
+    uploaded_products = list_uploaded_products_for_age_check()
+    telegram_products = list_created_telegram_products_for_age_check(account_id=account_id)
+    source_products = uploaded_products if uploaded_products else telegram_products
+    source_label = (
+        "uploaded_products(account_db)"
+        if uploaded_products
+        else "telegram_products(account_db_fallback)"
     )
+    checked_products = _next_old_product_age_check_batch(
+        source_products,
+        limit=batch_limit,
+        account_id=resolved_account_id,
+        source_label=source_label,
+    )
+    telegram_by_product_id = {
+        str(item["created_product_id"]): item for item in telegram_products
+    }
+    cutoff_utc = datetime.now(timezone.utc) - timedelta(days=age_days)
+    candidates: list[dict[str, object]] = []
     result: dict[str, object] = {
         "older_than_days": age_days,
         "limit": batch_limit,
         "dry_run": dry_run,
         "sleep_seconds": delay_seconds,
-        "found": len(candidates),
+        "checked": len(checked_products),
+        "found": 0,
         "deactivated": 0,
         "failed": 0,
-        "candidates": candidates,
+        "candidates": [],
     }
+    log(
+        "INFO",
+        "Проверяю созданные товары из базы аккаунта на срок деактивации. "
+        f"account_id={resolved_account_id}. source={source_label}. "
+        f"threshold_days={age_days}. checked_products={len(checked_products)}. "
+        f"total_products={len(source_products)}. "
+        f"dry_run={dry_run}.",
+    )
+    for checked_product in checked_products:
+        if uploaded_products:
+            product_id = str(checked_product["product_id"])
+            candidate_name = (
+                str(checked_product.get("name") or "").strip() or "нет названия"
+            )
+            linked_product = telegram_by_product_id.get(product_id)
+            candidate_account_id = resolved_account_id
+            channel_id = (
+                int(linked_product["channel_id"]) if linked_product is not None else None
+            )
+            message_id = (
+                int(linked_product["message_id"]) if linked_product is not None else None
+            )
+            telegram_message_date = (
+                str(linked_product.get("telegram_message_date") or "").strip() or "-"
+                if linked_product is not None
+                else "-"
+            )
+            telegram_message_dt = (
+                _parse_datetime_text_utc(linked_product.get("telegram_message_date"))
+                if linked_product is not None
+                else None
+            )
+        else:
+            candidate_name = (
+                str(checked_product.get("product_name") or "").strip() or "нет названия"
+            )
+            product_id = str(checked_product["created_product_id"])
+            channel_id = int(checked_product["channel_id"])
+            message_id = int(checked_product["message_id"])
+            candidate_account_id = str(checked_product["account_id"])
+            telegram_message_date = (
+                str(checked_product.get("telegram_message_date") or "").strip() or "-"
+            )
+            telegram_message_dt = _parse_datetime_text_utc(
+                checked_product.get("telegram_message_date")
+            )
+        now_utc = datetime.now(timezone.utc)
+        product_age = (
+            _format_age_duration(now_utc - telegram_message_dt)
+            if telegram_message_dt is not None
+            else "unknown"
+        )
+        telegram_age_days = (
+            round(
+                (now_utc - telegram_message_dt).total_seconds() / 86400.0,
+                1,
+            )
+            if telegram_message_dt is not None
+            else None
+        )
+        if uploaded_products and channel_id is None:
+            decision = "missing_telegram_product_link"
+        elif telegram_message_dt is None:
+            decision = "missing_message_date"
+        else:
+            decision = (
+                "eligible_for_deactivation"
+                if telegram_message_dt <= cutoff_utc
+                else "not_old_enough"
+            )
+        log(
+            "INFO",
+            "Проверяю созданный товар из базы аккаунта. "
+            f"account_id={candidate_account_id}. "
+            f"source={source_label}. "
+            "telegram_source=telegram_products(shared_account_db). "
+            f"name={candidate_name}. product_id={product_id}. "
+            f"channel_id={channel_id if channel_id is not None else 'unknown'}. "
+            f"message_id={message_id if message_id is not None else 'unknown'}. "
+            f"checked_at_utc={now_utc.isoformat()}. "
+            f"telegram_message_date={telegram_message_date}. "
+            f"product_age={product_age}. "
+            f"telegram_age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
+            f"threshold_days={age_days}. decision={decision}.",
+        )
+        if decision == "eligible_for_deactivation":
+            candidates.append(
+                {
+                    "account_id": candidate_account_id,
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "created_product_id": product_id,
+                    "product_name": candidate_name,
+                    "telegram_message_date": telegram_message_date,
+                }
+            )
+
+    candidates = candidates[:batch_limit]
+    result["found"] = len(candidates)
+    result["candidates"] = candidates
     if dry_run or not candidates:
         return result
 
+    deactivator = deactivate_product_func or _deactivate_product_backend_not_configured
     deactivated = 0
     failed = 0
     for index, candidate in enumerate(candidates, start=1):
+        candidate_name = str(candidate.get("product_name") or "").strip() or "нет названия"
         product_id = str(candidate["created_product_id"])
         channel_id = int(candidate["channel_id"])
         message_id = int(candidate["message_id"])
         candidate_account_id = str(candidate["account_id"])
+        telegram_message_dt = _parse_datetime_text_utc(candidate.get("telegram_message_date"))
+        telegram_age_days = (
+            round(
+                (datetime.now(timezone.utc) - telegram_message_dt).total_seconds()
+                / 86400.0,
+                1,
+            )
+            if telegram_message_dt is not None
+            else None
+        )
         try:
             deactivator(product_id)
         except Exception as exc:
@@ -4831,22 +5308,26 @@ def deactivate_old_telegram_products(
             log(
                 "ERROR",
                 "Не удалось деактивировать старый товар Shafa. "
-                f"product_id={product_id}. "
+                f"name={candidate_name}. product_id={product_id}. "
                 f"channel_id={channel_id}. message_id={message_id}. "
+                f"telegram_age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
                 f"Попытка деактивации: {attempts}. Ошибка: {exc}",
             )
         else:
             deactivated += 1
-            mark_telegram_product_deactivated_on_shafa(
-                channel_id,
-                message_id,
-                account_id=candidate_account_id,
-            )
+            mark_uploaded_product_inactive(product_id, status_title="Деактивовано")
+            if channel_id is not None and message_id is not None:
+                mark_telegram_product_deactivated_on_shafa(
+                    channel_id,
+                    message_id,
+                    account_id=candidate_account_id,
+                )
             log(
                 "OK",
                 "Деактивирован старый товар Shafa. "
-                f"product_id={product_id}. channel_id={channel_id}. "
-                f"message_id={message_id}.",
+                f"name={candidate_name}. product_id={product_id}. "
+                f"channel_id={channel_id}. message_id={message_id}. "
+                f"telegram_age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}.",
             )
         if index < len(candidates) and delay_seconds > 0:
             time.sleep(delay_seconds)
