@@ -1498,7 +1498,8 @@ def list_uploaded_products_for_age_check() -> list[dict]:
                 product_id,
                 name,
                 COALESCE(shafa_created_at, created_at) AS created_at,
-                status_title
+                status_title,
+                raw_payload
             FROM uploaded_products
             WHERE product_id IS NOT NULL AND TRIM(product_id) != ''
               AND COALESCE(is_active, 1) = 1
@@ -1511,6 +1512,7 @@ def list_uploaded_products_for_age_check() -> list[dict]:
             "name": str(row["name"] or "").strip() or None,
             "created_at": row["created_at"],
             "status_title": row["status_title"],
+            "message_id": _extract_message_id_from_payload(row["raw_payload"]),
         }
         for row in rows
     ]
@@ -2585,6 +2587,44 @@ def _extract_product_name_from_parsed_data(parsed_data: object) -> Optional[str]
         return None
     name = str(payload.get("name") or "").strip()
     return name or None
+
+
+def _extract_message_id_from_payload(raw_payload: object) -> Optional[int]:
+    text = str(raw_payload or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    def _walk(value: object) -> Optional[int]:
+        if isinstance(value, dict):
+            for key in (
+                "message_id",
+                "messageId",
+                "telegram_message_id",
+                "telegramMessageId",
+            ):
+                raw_message_id = value.get(key)
+                if raw_message_id is None or str(raw_message_id).strip() == "":
+                    continue
+                try:
+                    return int(raw_message_id)
+                except (TypeError, ValueError):
+                    continue
+            for nested in value.values():
+                found = _walk(nested)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = _walk(item)
+                if found is not None:
+                    return found
+        return None
+
+    return _walk(payload)
 
 
 def _serialize_created_telegram_product_row(row: sqlite3.Row) -> dict:

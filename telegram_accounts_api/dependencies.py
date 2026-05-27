@@ -7,6 +7,7 @@ from shafa_control import AccountSessionStore
 from telegram_accounts_api.services.account_service import AccountService
 from telegram_accounts_api.services.auth_service import AccountAuthService
 from telegram_accounts_api.services.channel_template_service import ChannelTemplateService
+from telegram_accounts_api.services.cleanup_service import OutdatedProductCleanupService
 from telegram_accounts_api.services.dashboard_service import DashboardService
 from telegram_accounts_api.services.proxy_service import ProxyService
 from telegram_accounts_api.services.telegram_service import TelegramService
@@ -122,3 +123,14 @@ def _get_dashboard_service_cached() -> DashboardService:
 
 async def get_dashboard_service() -> DashboardService:
     return _get_dashboard_service_cached()
+
+
+@lru_cache
+def _get_outdated_product_cleanup_service_cached() -> OutdatedProductCleanupService:
+    return OutdatedProductCleanupService(
+        account_service=_get_account_service_cached(),
+    )
+
+
+async def get_outdated_product_cleanup_service() -> OutdatedProductCleanupService:
+    return _get_outdated_product_cleanup_service_cached()

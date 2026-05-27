@@ -19,6 +19,8 @@ from utils.pipeline_activity import is_product_pipeline_active
 
 _ADD_CHANNEL = object()
 SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
+APP_MODE_ENV = "SHAFA_APP_MODE"
+DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV = "SHAFA_DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR"
 
 
 def _load_inquirer():
@@ -253,6 +255,16 @@ def _next_background_old_product_deactivate_wait_seconds() -> float:
     return random.uniform(min_seconds, max_seconds)
 
 
+def _background_old_product_deactivate_limit() -> int:
+    raw = os.getenv("SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_LIMIT", "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
 def _bootstrap_new_account_telegram_queue_if_needed() -> int:
     marker_value = os.getenv("SHAFA_TELEGRAM_QUEUE_SEED_MARKER_PATH", "").strip()
     if not marker_value:
@@ -339,7 +351,10 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
                 continue
             started_at = time.time()
             try:
-                result = deactivate_old_telegram_products(dry_run=False, limit=1)
+                result = deactivate_old_telegram_products(
+                    dry_run=False,
+                    limit=_background_old_product_deactivate_limit(),
+                )
                 found = int(result.get("found") or 0)
                 deactivated = int(result.get("deactivated") or 0)
                 failed = int(result.get("failed") or 0)
@@ -377,6 +392,24 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
     )
     thread.start()
     return stop_event, thread
+
+
+def _deactivate_old_products_once(
+    *,
+    older_than_days: Optional[int] = None,
+    limit: Optional[int] = None,
+    sleep_seconds: Optional[float] = None,
+    dry_run: bool = False,
+) -> None:
+    from controller.data_controller import deactivate_old_telegram_products
+
+    result = deactivate_old_telegram_products(
+        older_than_days=older_than_days,
+        limit=limit,
+        sleep_seconds=sleep_seconds,
+        dry_run=dry_run,
+    )
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
 def run_periodic(action: Callable[[], None], label: str, shafa: bool | None = None) -> None:
@@ -1125,6 +1158,11 @@ def main(
     shafa: bool = False,
     login_shafa: bool = False,
     mode: Optional[str] = None,
+    deactivate_old_products_once: bool = False,
+    old_products_age_days: Optional[int] = None,
+    old_products_limit: Optional[int] = None,
+    old_products_sleep_seconds: Optional[float] = None,
+    old_products_dry_run: bool = False,
     find_telegram_by_name: Optional[str] = None,
     telegram_send_code_phone: Optional[str] = None,
     telegram_login_phone: Optional[str] = None,
@@ -1134,6 +1172,14 @@ def main(
 ) -> None:
     if mode:
         os.environ[APP_MODE_ENV] = mode
+    if deactivate_old_products_once:
+        _deactivate_old_products_once(
+            older_than_days=old_products_age_days,
+            limit=old_products_limit,
+            sleep_seconds=old_products_sleep_seconds,
+            dry_run=old_products_dry_run,
+        )
+        return
     if find_telegram_by_name:
         _find_product_in_telegram_by_name(find_telegram_by_name)
         return
@@ -1162,14 +1208,24 @@ def main(
         sync_channels_from_runtime_config()
         os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
         stop_event, scanner_thread = _start_background_telegram_scanner()
-        deactivate_stop_event, deactivate_thread = _start_background_old_product_deactivator()
+        deactivate_stop_event = None
+        deactivate_thread = None
+        if os.getenv(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV, "").strip() not in {
+            "1",
+            "true",
+            "TRUE",
+            "yes",
+            "YES",
+        }:
+            deactivate_stop_event, deactivate_thread = _start_background_old_product_deactivator()
         try:
             _auto_create_product(shafa=shafa)
         finally:
             stop_event.set()
             scanner_thread.join(timeout=5)
-            deactivate_stop_event.set()
-            deactivate_thread.join(timeout=5)
+            if deactivate_stop_event is not None and deactivate_thread is not None:
+                deactivate_stop_event.set()
+                deactivate_thread.join(timeout=5)
         return
 
     _print_ascii_banner()
@@ -1193,6 +1249,11 @@ def parse_args():
     parser.add_argument("--shafa", action="store_true")
     parser.add_argument("--login-shafa", action="store_true")
     parser.add_argument("--mode", choices=["clothes", "sneakers"])
+    parser.add_argument("--deactivate-old-products-once", action="store_true")
+    parser.add_argument("--old-products-age-days", type=int)
+    parser.add_argument("--old-products-limit", type=int)
+    parser.add_argument("--old-products-sleep-seconds", type=float)
+    parser.add_argument("--old-products-dry-run", action="store_true")
     parser.add_argument("--find-telegram-by-name")
     parser.add_argument("--telegram-send-code")
     parser.add_argument("--telegram-login-phone")
@@ -1209,6 +1270,11 @@ if __name__ == "__main__":
             shafa=args.shafa,
             login_shafa=args.login_shafa,
             mode=args.mode,
+            deactivate_old_products_once=args.deactivate_old_products_once,
+            old_products_age_days=args.old_products_age_days,
+            old_products_limit=args.old_products_limit,
+            old_products_sleep_seconds=args.old_products_sleep_seconds,
+            old_products_dry_run=args.old_products_dry_run,
             find_telegram_by_name=args.find_telegram_by_name,
             telegram_send_code_phone=args.telegram_send_code,
             telegram_login_phone=args.telegram_login_phone,
@@ -1219,4 +1285,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(str(exc) or exc.__class__.__name__, file=sys.stderr)
         raise SystemExit(1) from None
-APP_MODE_ENV = "SHAFA_APP_MODE"

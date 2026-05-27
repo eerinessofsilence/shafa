@@ -14,6 +14,7 @@ from telegram_accounts_api.routers import (
     telegram,
     templates,
 )
+from telegram_accounts_api.dependencies import _get_outdated_product_cleanup_service_cached
 from telegram_accounts_api.utils.config import settings
 from telegram_accounts_api.utils.exceptions import register_exception_handlers
 from telegram_accounts_api.utils.logging import configure_logging
@@ -45,3 +46,13 @@ app.include_router(channel_templates.router)
 app.include_router(templates.router)
 app.include_router(telegram.router)
 app.include_router(logs.router)
+
+
+@app.on_event("startup")
+def start_outdated_product_cleanup() -> None:
+    _get_outdated_product_cleanup_service_cached().start()
+
+
+@app.on_event("shutdown")
+def stop_outdated_product_cleanup() -> None:
+    _get_outdated_product_cleanup_service_cached().stop()

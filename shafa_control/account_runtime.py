@@ -166,6 +166,7 @@ class AccountRuntimeService:
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env["SHAFA_ACCOUNT_ID"] = account.id
+        env["SHAFA_ACCOUNT_NAME"] = account.name
         env["SHAFA_ACCOUNT_STATE_DIR"] = str(state_dir)
         env["SHAFA_STORAGE_STATE_PATH"] = str(self.store.auth_file(account))
         env["SHAFA_DB_PATH"] = str(self.store.db_file(account))
