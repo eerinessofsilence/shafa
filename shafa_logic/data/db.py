@@ -41,6 +41,10 @@ TELEGRAM_PRODUCT_STATUS_PROCESSING = "processing"
 TELEGRAM_PRODUCT_STATUS_CREATED = "created"
 TELEGRAM_PRODUCT_STATUS_FAILED = "failed"
 TELEGRAM_PRODUCT_STATUS_SKIPPED = "skipped"
+TELEGRAM_DEACTIVATION_STATUS_PENDING = "pending"
+TELEGRAM_DEACTIVATION_STATUS_PROCESSING = "processing"
+TELEGRAM_DEACTIVATION_STATUS_COMPLETED = "completed"
+TELEGRAM_DEACTIVATION_STATUS_FAILED = "failed"
 LEGACY_TELEGRAM_ACCOUNT_ID = "__legacy_unassigned__"
 DEFAULT_ACCOUNT_PLACEHOLDER = "default"
 
@@ -164,6 +168,15 @@ def _create_telegram_products_table(conn: sqlite3.Connection) -> None:
             shafa_deactivated_at TEXT,
             shafa_deactivate_attempts INTEGER NOT NULL DEFAULT 0,
             last_shafa_deactivate_error TEXT,
+            deactivation_status TEXT,
+            deactivation_queued_at TEXT,
+            deactivation_processing_started_at REAL,
+            deactivation_processing_token TEXT,
+            deactivation_processing_expires_at REAL,
+            deactivation_retry_count INTEGER NOT NULL DEFAULT 0,
+            deactivation_failed_at TEXT,
+            deactivation_error TEXT,
+            deactivation_completed_at TEXT,
             shafa_deleted_at TEXT,
             shafa_delete_attempts INTEGER NOT NULL DEFAULT 0,
             last_shafa_delete_error TEXT,
@@ -217,9 +230,15 @@ def _create_invalid_uploaded_products_table(conn: sqlite3.Connection) -> None:
     )
 
 
-def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
+def _account_db_path() -> Path:
+    configured = os.getenv("SHAFA_DB_PATH", "").strip()
+    return Path(configured) if configured else Path(DB_PATH)
+
+
+def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    resolved_db_path = Path(db_path) if db_path is not None else _account_db_path()
     conn = sqlite3.connect(
-        db_path,
+        resolved_db_path,
         timeout=_sqlite_timeout_seconds(),
         factory=_RetryingConnection,
     )
@@ -231,9 +250,9 @@ def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: Path = DB_PATH) -> None:
+def init_db(db_path: Optional[Path] = None) -> None:
     global _DB_INITIALIZED_PATHS
-    db_path = Path(db_path)
+    db_path = Path(db_path) if db_path is not None else _account_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
         conn.executescript(
@@ -343,15 +362,16 @@ def init_db(db_path: Path = DB_PATH) -> None:
     _DB_INITIALIZED_PATHS.add(db_path)
 
 
-def _ensure_db_initialized(db_path: Path = DB_PATH) -> None:
-    db_path = Path(db_path)
+def _ensure_db_initialized(db_path: Optional[Path] = None) -> None:
+    db_path = Path(db_path) if db_path is not None else _account_db_path()
     if db_path in _DB_INITIALIZED_PATHS:
         return
     init_db(db_path)
 
 
 def _telegram_products_db_path() -> Path:
-    return Path(TELEGRAM_PRODUCTS_DB_PATH)
+    configured = os.getenv("SHAFA_SHARED_TELEGRAM_DB_PATH", "").strip()
+    return Path(configured) if configured else Path(TELEGRAM_PRODUCTS_DB_PATH)
 
 
 def _normalize_catalog_slug(catalog_slug: Optional[str]) -> Optional[str]:
@@ -691,6 +711,41 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
         if "last_shafa_deactivate_error" in columns
         else "NULL"
     )
+    deactivation_status_expr = (
+        "deactivation_status" if "deactivation_status" in columns else "NULL"
+    )
+    deactivation_queued_at_expr = (
+        "deactivation_queued_at" if "deactivation_queued_at" in columns else "NULL"
+    )
+    deactivation_processing_started_at_expr = (
+        "deactivation_processing_started_at"
+        if "deactivation_processing_started_at" in columns
+        else "NULL"
+    )
+    deactivation_processing_token_expr = (
+        "deactivation_processing_token"
+        if "deactivation_processing_token" in columns
+        else "NULL"
+    )
+    deactivation_processing_expires_at_expr = (
+        "deactivation_processing_expires_at"
+        if "deactivation_processing_expires_at" in columns
+        else "NULL"
+    )
+    deactivation_retry_count_expr = (
+        "COALESCE(deactivation_retry_count, 0)"
+        if "deactivation_retry_count" in columns
+        else "0"
+    )
+    deactivation_failed_at_expr = (
+        "deactivation_failed_at" if "deactivation_failed_at" in columns else "NULL"
+    )
+    deactivation_error_expr = (
+        "deactivation_error" if "deactivation_error" in columns else "NULL"
+    )
+    deactivation_completed_at_expr = (
+        "deactivation_completed_at" if "deactivation_completed_at" in columns else "NULL"
+    )
     conn.execute("ALTER TABLE telegram_products RENAME TO telegram_products_legacy")
     _create_telegram_products_table(conn)
     conn.execute(
@@ -714,6 +769,15 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
             shafa_deactivated_at,
             shafa_deactivate_attempts,
             last_shafa_deactivate_error,
+            deactivation_status,
+            deactivation_queued_at,
+            deactivation_processing_started_at,
+            deactivation_processing_token,
+            deactivation_processing_expires_at,
+            deactivation_retry_count,
+            deactivation_failed_at,
+            deactivation_error,
+            deactivation_completed_at,
             shafa_deleted_at,
             shafa_delete_attempts,
             last_shafa_delete_error
@@ -752,6 +816,15 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
             {shafa_deactivated_at_expr},
             {shafa_deactivate_attempts_expr},
             {last_shafa_deactivate_error_expr},
+            {deactivation_status_expr},
+            {deactivation_queued_at_expr},
+            {deactivation_processing_started_at_expr},
+            {deactivation_processing_token_expr},
+            {deactivation_processing_expires_at_expr},
+            {deactivation_retry_count_expr},
+            {deactivation_failed_at_expr},
+            {deactivation_error_expr},
+            {deactivation_completed_at_expr},
             {shafa_deleted_at_expr},
             {shafa_delete_attempts_expr},
             {last_shafa_delete_error_expr}
@@ -859,6 +932,56 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE telegram_products ADD COLUMN last_shafa_deactivate_error TEXT"
         )
+    if "deactivation_status" not in columns:
+        conn.execute("ALTER TABLE telegram_products ADD COLUMN deactivation_status TEXT")
+    if "deactivation_queued_at" not in columns:
+        conn.execute("ALTER TABLE telegram_products ADD COLUMN deactivation_queued_at TEXT")
+    if "deactivation_processing_started_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN "
+            "deactivation_processing_started_at REAL"
+        )
+    if "deactivation_processing_token" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN deactivation_processing_token TEXT"
+        )
+    if "deactivation_processing_expires_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN "
+            "deactivation_processing_expires_at REAL"
+        )
+    if "deactivation_retry_count" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN deactivation_retry_count "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+    if "deactivation_failed_at" not in columns:
+        conn.execute("ALTER TABLE telegram_products ADD COLUMN deactivation_failed_at TEXT")
+    if "deactivation_error" not in columns:
+        conn.execute("ALTER TABLE telegram_products ADD COLUMN deactivation_error TEXT")
+    if "deactivation_completed_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN deactivation_completed_at TEXT"
+        )
+    conn.execute(
+        f"""
+        UPDATE telegram_products
+        SET deactivation_status = ?,
+            deactivation_completed_at = COALESCE(
+                deactivation_completed_at,
+                shafa_deactivated_at
+            )
+        WHERE shafa_deactivated_at IS NOT NULL
+          AND (
+                deactivation_status IS NULL
+                OR deactivation_status != ?
+          )
+        """,
+        (
+            TELEGRAM_DEACTIVATION_STATUS_COMPLETED,
+            TELEGRAM_DEACTIVATION_STATUS_COMPLETED,
+        ),
+    )
     if "shafa_deleted_at" not in columns:
         conn.execute("ALTER TABLE telegram_products ADD COLUMN shafa_deleted_at TEXT")
     if "shafa_delete_attempts" not in columns:
@@ -898,6 +1021,20 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_deactivated_at "
         "ON telegram_products(account_id, shafa_deactivated_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_status "
+        "ON telegram_products(account_id, deactivation_status, deactivation_queued_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_lease "
+        "ON telegram_products(account_id, deactivation_status, "
+        "deactivation_processing_expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_poll "
+        "ON telegram_products(account_id, deactivation_status, telegram_message_date, "
+        "message_id)"
     )
 
 
@@ -2413,6 +2550,15 @@ def mark_telegram_product_created(
                 shafa_deactivated_at = NULL,
                 shafa_deactivate_attempts = 0,
                 last_shafa_deactivate_error = NULL,
+                deactivation_status = NULL,
+                deactivation_queued_at = NULL,
+                deactivation_processing_started_at = NULL,
+                deactivation_processing_token = NULL,
+                deactivation_processing_expires_at = NULL,
+                deactivation_retry_count = 0,
+                deactivation_failed_at = NULL,
+                deactivation_error = NULL,
+                deactivation_completed_at = NULL,
                 shafa_deleted_at = NULL,
                 shafa_delete_attempts = 0,
                 last_shafa_delete_error = NULL,
@@ -2740,6 +2886,482 @@ def list_expired_created_telegram_products(
     return [_serialize_created_telegram_product_row(row) for row in rows]
 
 
+def _serialize_deactivation_queue_row(row: sqlite3.Row) -> dict:
+    item = _serialize_created_telegram_product_row(row)
+    item.update(
+        {
+            "deactivation_status": row["deactivation_status"],
+            "deactivation_queued_at": row["deactivation_queued_at"],
+            "deactivation_processing_started_at": (
+                float(row["deactivation_processing_started_at"])
+                if row["deactivation_processing_started_at"] is not None
+                else None
+            ),
+            "deactivation_processing_token": row["deactivation_processing_token"],
+            "deactivation_processing_expires_at": (
+                float(row["deactivation_processing_expires_at"])
+                if row["deactivation_processing_expires_at"] is not None
+                else None
+            ),
+            "deactivation_retry_count": int(row["deactivation_retry_count"] or 0),
+            "deactivation_failed_at": row["deactivation_failed_at"],
+            "deactivation_error": row["deactivation_error"],
+            "deactivation_completed_at": row["deactivation_completed_at"],
+        }
+    )
+    return item
+
+
+def enqueue_expired_telegram_products_for_deactivation(
+    *,
+    older_than_days: int,
+    limit: int = 100,
+    account_id: Optional[str] = None,
+) -> int:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    age_days = max(int(older_than_days), 1)
+    row_limit = max(int(limit), 1)
+    with _connect(telegram_db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM telegram_products
+            WHERE account_id = ?
+              AND status = ?
+              AND created = 1
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              AND telegram_message_date IS NOT NULL
+              AND TRIM(telegram_message_date) != ''
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+              AND datetime(telegram_message_date) <= datetime('now', ?)
+              AND (
+                    deactivation_status IS NULL
+                    OR TRIM(deactivation_status) = ''
+                    OR deactivation_status = ?
+                  )
+            ORDER BY datetime(telegram_message_date) ASC, message_id ASC
+            LIMIT ?
+            """,
+            (
+                normalized_account_id,
+                TELEGRAM_PRODUCT_STATUS_CREATED,
+                f"-{age_days} days",
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+                row_limit,
+            ),
+        ).fetchall()
+        if not rows:
+            return 0
+        ids = [int(row["id"]) for row in rows]
+        placeholders = ",".join(["?"] * len(ids))
+        cursor = conn.execute(
+            f"""
+            UPDATE telegram_products
+            SET deactivation_status = ?,
+                deactivation_queued_at = COALESCE(
+                    deactivation_queued_at,
+                    datetime('now')
+                ),
+                deactivation_processing_started_at = NULL,
+                deactivation_processing_token = NULL,
+                deactivation_processing_expires_at = NULL,
+                deactivation_failed_at = NULL,
+                deactivation_error = NULL,
+                updated_at = datetime('now')
+            WHERE account_id = ?
+              AND id IN ({placeholders})
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+              AND (
+                    deactivation_status IS NULL
+                    OR TRIM(deactivation_status) = ''
+                    OR deactivation_status = ?
+                  )
+            """,
+            (
+                TELEGRAM_DEACTIVATION_STATUS_PENDING,
+                normalized_account_id,
+                *ids,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+            ),
+        )
+    return int(cursor.rowcount or 0)
+
+
+def enqueue_telegram_product_deactivation(
+    channel_id: int,
+    message_id: int,
+    *,
+    account_id: Optional[str] = None,
+) -> bool:
+    normalized_account_id = _current_account_id(account_id)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE telegram_products
+            SET deactivation_status = ?,
+                deactivation_queued_at = COALESCE(
+                    deactivation_queued_at,
+                    datetime('now')
+                ),
+                deactivation_processing_started_at = NULL,
+                deactivation_processing_token = NULL,
+                deactivation_processing_expires_at = NULL,
+                deactivation_failed_at = NULL,
+                deactivation_error = NULL,
+                updated_at = datetime('now')
+            WHERE account_id = ?
+              AND channel_id = ?
+              AND message_id = ?
+              AND status = ?
+              AND created = 1
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+              AND (
+                    deactivation_status IS NULL
+                    OR TRIM(deactivation_status) = ''
+                    OR deactivation_status IN (?, ?)
+                  )
+            """,
+            (
+                TELEGRAM_DEACTIVATION_STATUS_PENDING,
+                normalized_account_id,
+                channel_id,
+                message_id,
+                TELEGRAM_PRODUCT_STATUS_CREATED,
+                TELEGRAM_DEACTIVATION_STATUS_PENDING,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+            ),
+        )
+    return cursor.rowcount == 1
+
+
+def claim_telegram_product_deactivation(
+    *,
+    account_id: Optional[str] = None,
+    channel_id: Optional[int] = None,
+    message_id: Optional[int] = None,
+    lease_seconds: float = 900.0,
+    max_retries: int = 3,
+    now_ts: Optional[float] = None,
+) -> Optional[dict]:
+    normalized_account_id = _current_account_id(account_id)
+    lease_duration_seconds = max(float(lease_seconds), 1.0)
+    current_ts = float(now_ts if now_ts is not None else time.time())
+    lease_expires_at = current_ts + lease_duration_seconds
+    retry_limit = max(int(max_retries), 1)
+    lease_token = uuid.uuid4().hex
+    queue_filters = ""
+    params: list[object] = [
+        normalized_account_id,
+        TELEGRAM_PRODUCT_STATUS_CREATED,
+        TELEGRAM_DEACTIVATION_STATUS_PENDING,
+        TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+        current_ts,
+        TELEGRAM_DEACTIVATION_STATUS_FAILED,
+        retry_limit,
+    ]
+    if channel_id is not None:
+        queue_filters += " AND channel_id = ?"
+        params.append(int(channel_id))
+    if message_id is not None:
+        queue_filters += " AND message_id = ?"
+        params.append(int(message_id))
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            f"""
+            SELECT *
+            FROM telegram_products
+            WHERE account_id = ?
+              AND status = ?
+              AND created = 1
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+              AND (
+                    deactivation_status = ?
+                    OR (
+                        deactivation_status = ?
+                        AND deactivation_processing_expires_at IS NOT NULL
+                        AND deactivation_processing_expires_at <= ?
+                    )
+                    OR (
+                        deactivation_status = ?
+                        AND COALESCE(deactivation_retry_count, 0) < ?
+                    )
+                  )
+              {queue_filters}
+            ORDER BY
+                CASE deactivation_status
+                    WHEN ? THEN 0
+                    WHEN ? THEN 1
+                    WHEN ? THEN 2
+                    ELSE 3
+                END,
+                datetime(telegram_message_date) ASC,
+                message_id ASC
+            LIMIT 1
+            """,
+            (
+                *params,
+                TELEGRAM_DEACTIVATION_STATUS_PENDING,
+                TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        cursor = conn.execute(
+            """
+            UPDATE telegram_products
+            SET deactivation_status = ?,
+                deactivation_processing_started_at = ?,
+                deactivation_processing_token = ?,
+                deactivation_processing_expires_at = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND account_id = ?
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+              AND (
+                    deactivation_status = ?
+                    OR (
+                        deactivation_status = ?
+                        AND deactivation_processing_expires_at IS NOT NULL
+                        AND deactivation_processing_expires_at <= ?
+                    )
+                    OR (
+                        deactivation_status = ?
+                        AND COALESCE(deactivation_retry_count, 0) < ?
+                    )
+                  )
+            """,
+            (
+                TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                current_ts,
+                lease_token,
+                lease_expires_at,
+                int(row["id"]),
+                normalized_account_id,
+                TELEGRAM_DEACTIVATION_STATUS_PENDING,
+                TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                current_ts,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+                retry_limit,
+            ),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return None
+        claimed = conn.execute(
+            """
+            SELECT
+                account_id,
+                channel_id,
+                message_id,
+                created_product_id,
+                parsed_data,
+                telegram_message_date,
+                shafa_deactivate_attempts,
+                last_shafa_deactivate_error,
+                shafa_delete_attempts,
+                last_shafa_delete_error,
+                deactivation_status,
+                deactivation_queued_at,
+                deactivation_processing_started_at,
+                deactivation_processing_token,
+                deactivation_processing_expires_at,
+                deactivation_retry_count,
+                deactivation_failed_at,
+                deactivation_error,
+                deactivation_completed_at
+            FROM telegram_products
+            WHERE id = ?
+            """,
+            (int(row["id"]),),
+        ).fetchone()
+    return _serialize_deactivation_queue_row(claimed) if claimed is not None else None
+
+
+def list_telegram_product_deactivation_queue(
+    *,
+    account_id: Optional[str] = None,
+    limit: int = 20,
+    max_retries: int = 3,
+    now_ts: Optional[float] = None,
+) -> list[dict]:
+    normalized_account_id = _current_account_id(account_id)
+    row_limit = max(int(limit), 1)
+    retry_limit = max(int(max_retries), 1)
+    current_ts = float(now_ts if now_ts is not None else time.time())
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                account_id,
+                channel_id,
+                message_id,
+                created_product_id,
+                parsed_data,
+                telegram_message_date,
+                shafa_deactivate_attempts,
+                last_shafa_deactivate_error,
+                shafa_delete_attempts,
+                last_shafa_delete_error,
+                deactivation_status,
+                deactivation_queued_at,
+                deactivation_processing_started_at,
+                deactivation_processing_token,
+                deactivation_processing_expires_at,
+                deactivation_retry_count,
+                deactivation_failed_at,
+                deactivation_error,
+                deactivation_completed_at
+            FROM telegram_products
+            WHERE account_id = ?
+              AND status = ?
+              AND created = 1
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              AND shafa_deactivated_at IS NULL
+              AND shafa_deleted_at IS NULL
+              AND (
+                    deactivation_status = ?
+                    OR (
+                        deactivation_status = ?
+                        AND COALESCE(deactivation_retry_count, 0) < ?
+                    )
+                    OR (
+                        deactivation_status = ?
+                        AND deactivation_processing_expires_at IS NOT NULL
+                        AND deactivation_processing_expires_at <= ?
+                    )
+                  )
+            ORDER BY
+                CASE deactivation_status
+                    WHEN ? THEN 0
+                    WHEN ? THEN 1
+                    WHEN ? THEN 2
+                    ELSE 3
+                END,
+                datetime(telegram_message_date) ASC,
+                message_id ASC
+            LIMIT ?
+            """,
+            (
+                normalized_account_id,
+                TELEGRAM_PRODUCT_STATUS_CREATED,
+                TELEGRAM_DEACTIVATION_STATUS_PENDING,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+                retry_limit,
+                TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                current_ts,
+                TELEGRAM_DEACTIVATION_STATUS_PENDING,
+                TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+                row_limit,
+            ),
+        ).fetchall()
+    return [_serialize_deactivation_queue_row(row) for row in rows]
+
+
+def finish_telegram_product_deactivation(
+    channel_id: int,
+    message_id: int,
+    lease_token: str,
+    *,
+    success: bool,
+    error_message: Optional[str] = None,
+    account_id: Optional[str] = None,
+) -> bool:
+    normalized_account_id = _current_account_id(account_id)
+    token = str(lease_token or "").strip()
+    if not token:
+        return False
+    normalized_error = str(error_message or "").strip() or None
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        if success:
+            cursor = conn.execute(
+                """
+                UPDATE telegram_products
+                SET shafa_deactivated_at = COALESCE(
+                        shafa_deactivated_at,
+                        datetime('now')
+                    ),
+                    last_shafa_deactivate_error = NULL,
+                    deactivation_status = ?,
+                    deactivation_processing_started_at = NULL,
+                    deactivation_processing_token = NULL,
+                    deactivation_processing_expires_at = NULL,
+                    deactivation_failed_at = NULL,
+                    deactivation_error = NULL,
+                    deactivation_completed_at = datetime('now'),
+                    updated_at = datetime('now')
+                WHERE account_id = ?
+                  AND channel_id = ?
+                  AND message_id = ?
+                  AND deactivation_processing_token = ?
+                """,
+                (
+                    TELEGRAM_DEACTIVATION_STATUS_COMPLETED,
+                    normalized_account_id,
+                    channel_id,
+                    message_id,
+                    token,
+                ),
+            )
+            return cursor.rowcount == 1
+        cursor = conn.execute(
+            """
+            UPDATE telegram_products
+            SET shafa_deactivate_attempts = COALESCE(shafa_deactivate_attempts, 0) + 1,
+                last_shafa_deactivate_error = ?,
+                deactivation_status = ?,
+                deactivation_processing_started_at = NULL,
+                deactivation_processing_token = NULL,
+                deactivation_processing_expires_at = NULL,
+                deactivation_retry_count = COALESCE(deactivation_retry_count, 0) + 1,
+                deactivation_failed_at = datetime('now'),
+                deactivation_error = ?,
+                updated_at = datetime('now')
+            WHERE account_id = ?
+              AND channel_id = ?
+              AND message_id = ?
+              AND deactivation_processing_token = ?
+            """,
+            (
+                normalized_error,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
+                normalized_error,
+                normalized_account_id,
+                channel_id,
+                message_id,
+                token,
+            ),
+        )
+    return cursor.rowcount == 1
+
+
 def mark_telegram_product_deactivated_on_shafa(
     channel_id: int,
     message_id: int,
@@ -2755,10 +3377,22 @@ def mark_telegram_product_deactivated_on_shafa(
             UPDATE telegram_products
             SET shafa_deactivated_at = datetime('now'),
                 last_shafa_deactivate_error = NULL,
+                deactivation_status = ?,
+                deactivation_processing_started_at = NULL,
+                deactivation_processing_token = NULL,
+                deactivation_processing_expires_at = NULL,
+                deactivation_failed_at = NULL,
+                deactivation_error = NULL,
+                deactivation_completed_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE account_id = ? AND channel_id = ? AND message_id = ?
             """,
-            (normalized_account_id, channel_id, message_id),
+            (
+                TELEGRAM_DEACTIVATION_STATUS_COMPLETED,
+                normalized_account_id,
+                channel_id,
+                message_id,
+            ),
         )
 
 
@@ -2779,10 +3413,19 @@ def record_telegram_product_shafa_deactivate_failure(
             UPDATE telegram_products
             SET shafa_deactivate_attempts = COALESCE(shafa_deactivate_attempts, 0) + 1,
                 last_shafa_deactivate_error = ?,
+                deactivation_status = ?,
+                deactivation_processing_started_at = NULL,
+                deactivation_processing_token = NULL,
+                deactivation_processing_expires_at = NULL,
+                deactivation_retry_count = COALESCE(deactivation_retry_count, 0) + 1,
+                deactivation_failed_at = datetime('now'),
+                deactivation_error = ?,
                 updated_at = datetime('now')
             WHERE account_id = ? AND channel_id = ? AND message_id = ?
             """,
             (
+                normalized_error,
+                TELEGRAM_DEACTIVATION_STATUS_FAILED,
                 normalized_error,
                 normalized_account_id,
                 channel_id,
@@ -3394,9 +4037,13 @@ def save_cookies(cookies: list[dict]) -> None:
             )
 
 
-def load_cookies(domain: Optional[str] = None, db_path: Path = DB_PATH) -> list[dict]:
-    _ensure_db_initialized(db_path)
-    with _connect(db_path) as conn:
+def load_cookies(
+    domain: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    resolved_db_path = Path(db_path) if db_path is not None else _account_db_path()
+    _ensure_db_initialized(resolved_db_path)
+    with _connect(resolved_db_path) as conn:
         if domain:
             normalized = _normalize_domain(domain)
             rows = conn.execute(

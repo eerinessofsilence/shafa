@@ -99,6 +99,13 @@ class AccountService:
         payload = await self._read_payload()
         return [await self._to_model(item, include_channel_templates=False) for item in payload]
 
+    def load_runtime_accounts(self) -> list[Account]:
+        return [
+            self._record_to_account(item)
+            for item in self._read_payload_sync()
+            if str(item.get("id") or "").strip()
+        ]
+
     async def get_account(self, account_id: str) -> AccountRead:
         item = await self._get_record(account_id)
         return await self._to_model(item)
@@ -202,6 +209,15 @@ class AccountService:
 
         try:
             launch_context = self._build_launch_context(account)
+            self._append_log(
+                account,
+                "[RUN] launch context "
+                f"account_id={account.id} account_name={account.name} "
+                f"cwd={launch_context.get('cwd')} "
+                f"db_path={launch_context.get('SHAFA_DB_PATH')} "
+                f"telegram_db_path={launch_context.get('SHAFA_SHARED_TELEGRAM_DB_PATH')} "
+                f"state_dir={launch_context.get('SHAFA_ACCOUNT_STATE_DIR')}",
+            )
             process = self._spawn_process(account, launch_context)
         except BadRequestError as exc:
             self._append_log(account, f"[ERROR] {exc.message}")

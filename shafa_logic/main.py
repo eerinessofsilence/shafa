@@ -1187,6 +1187,17 @@ def main(
 ) -> None:
     if mode:
         os.environ[APP_MODE_ENV] = mode
+    account_id = str(os.getenv("SHAFA_ACCOUNT_ID") or "").strip() or "default"
+    account_name = str(os.getenv("SHAFA_ACCOUNT_NAME") or "").strip() or account_id
+    log(
+        "INFO",
+        "Runtime context initialized. "
+        f"account={account_name}. account_id={account_id}. "
+        f"db_path={os.getenv('SHAFA_DB_PATH', '')}. "
+        f"telegram_db_path={os.getenv('SHAFA_SHARED_TELEGRAM_DB_PATH', '')}. "
+        f"state_dir={os.getenv('SHAFA_ACCOUNT_STATE_DIR', '')}. "
+        f"deactivator_disabled={_env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)}.",
+    )
     if deactivate_old_products_once:
         _deactivate_old_products_once(
             older_than_days=old_products_age_days,

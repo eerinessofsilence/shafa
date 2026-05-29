@@ -7,10 +7,11 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from shafa_control import project_main_path, resolve_project_dir
+from shafa_control import LogRecord, project_main_path, resolve_project_dir
 
 from telegram_accounts_api.services.account_service import AccountService
 
@@ -51,11 +52,7 @@ class OutdatedProductCleanupService:
             }
         started_at = time.perf_counter()
         try:
-            accounts = [
-                account
-                for account in self.account_service.session_store.load_accounts()
-                if str(account.id or "").strip()
-            ]
+            accounts = self.account_service.load_runtime_accounts()
             totals = {
                 "accounts": len(accounts),
                 "checked": 0,
@@ -63,6 +60,7 @@ class OutdatedProductCleanupService:
                 "failed": 0,
             }
             if not accounts:
+                self._append_global_log("cleanup worker found no configured accounts")
                 totals["execution_time_seconds"] = round(
                     time.perf_counter() - started_at,
                     3,
@@ -191,7 +189,23 @@ class OutdatedProductCleanupService:
 
     def _cleanup_account(self, account) -> dict[str, Any]:
         started_at = time.perf_counter()
-        if self.account_service._active_process(account.id) is not None:
+        account_id = str(account.id or "").strip()
+        account_name = str(account.name or account_id or "unknown").strip()
+        if not account_id:
+            self._append_global_log("cleanup skipped account with empty account_id")
+            return {"checked": 0, "deactivated": 0, "failed": 1}
+        self._append_log(
+            account,
+            "cleanup worker account selected "
+            f"account={account_name}. account_id={account_id}. path={account.path}.",
+        )
+        if self.account_service._active_process(account_id) is not None:
+            self._append_log(
+                account,
+                "cleanup skipped detached run because account process is active; "
+                "in-process deactivator is responsible for this account. "
+                f"account={account_name}. account_id={account_id}.",
+            )
             return {"checked": 0, "deactivated": 0, "failed": 0}
         if not self.account_service.session_store.is_valid_shafa_session(account):
             age_days = self._cleanup_age_days() or 183
@@ -230,6 +244,13 @@ class OutdatedProductCleanupService:
             return {"checked": 0, "deactivated": 0, "failed": 1}
 
         env = self.account_service.runtime.account_env(account)
+        self._append_log(
+            account,
+            "cleanup launching detached deactivation "
+            f"account={account.name}. account_id={account.id}. "
+            f"cwd={project_path}. db_path={env.get('SHAFA_DB_PATH')}. "
+            f"telegram_db_path={env.get('SHAFA_SHARED_TELEGRAM_DB_PATH')}.",
+        )
         if account.channel_links:
             channels_file = self.account_service.runtime.export_channel_runtime_config(
                 account
@@ -305,6 +326,20 @@ class OutdatedProductCleanupService:
                 deactivated=int(summary.get("deactivated") or 0),
             )
         return summary
+
+    def _append_global_log(self, message: str) -> None:
+        try:
+            self.account_service.log_store.append(
+                LogRecord(
+                    timestamp=datetime.now(),
+                    message=message,
+                    level="INFO",
+                    account_id="system",
+                    account_name="system",
+                )
+            )
+        except Exception:
+            pass
 
     def _append_log(self, account, message: str) -> None:
         try:

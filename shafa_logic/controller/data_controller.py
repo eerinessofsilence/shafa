@@ -50,13 +50,18 @@ from data.const import (
 )
 from data.db import (
     backfill_telegram_product_message_dates_from_existing_db,
+    claim_telegram_product_deactivation,
     claim_telegram_fetch,
+    enqueue_expired_telegram_products_for_deactivation,
+    enqueue_telegram_product_deactivation,
     find_size_mapping_candidates,
     finish_telegram_fetch,
+    finish_telegram_product_deactivation,
     get_brand_id_by_name,
     get_max_telegram_product_message_id,
     get_next_uncreated_telegram_product,
     get_telegram_scan_cursor,
+    list_telegram_product_deactivation_queue,
     get_size_id_by_name,
     increment_telegram_product_attempt,
     list_created_telegram_products_for_age_check,
@@ -5574,6 +5579,24 @@ def _deactivate_old_telegram_products_impl(
         f"account={account_label}. account_id={resolved_account_id}. "
         f"threshold_days={age_days}. limit={result['limit']}. dry_run={dry_run}.",
     )
+    _safe_old_product_log(
+        "INFO",
+        "cleanup runtime context "
+        f"account={account_label}. account_id={resolved_account_id}. "
+        f"env_account_id={os.getenv('SHAFA_ACCOUNT_ID', '')}. "
+        f"db_path={os.getenv('SHAFA_DB_PATH', str(Path(DB_PATH)))}. "
+        f"telegram_db_path={os.getenv('SHAFA_SHARED_TELEGRAM_DB_PATH', str(Path(TELEGRAM_PRODUCTS_DB_PATH)))}. "
+        f"deactivate_only={deactivate_only}.",
+    )
+    env_account_id = str(os.getenv("SHAFA_ACCOUNT_ID") or "").strip()
+    if env_account_id and env_account_id != resolved_account_id:
+        _safe_old_product_log(
+            "WARN",
+            "cleanup account context mismatch "
+            f"resolved_account_id={resolved_account_id}. "
+            f"env_account_id={env_account_id}. "
+            "Using explicit resolved_account_id for shared Telegram queries.",
+        )
     sql_snapshot_items = _log_old_product_sql_snapshot(
         account_id=resolved_account_id,
         threshold_days=age_days,
@@ -5596,6 +5619,18 @@ def _deactivate_old_telegram_products_impl(
                 limit=backfill_limit_base * 5,
                 account_id=account_id,
             )
+            queued_count = enqueue_expired_telegram_products_for_deactivation(
+                older_than_days=age_days,
+                limit=backfill_limit_base * 5,
+                account_id=account_id,
+            )
+            if queued_count:
+                _safe_old_product_log(
+                    "INFO",
+                    "Поставлены в очередь деактивации старые Telegram-товары. "
+                    f"account={account_label}. account_id={resolved_account_id}. "
+                    f"queued={queued_count}.",
+                )
         except Exception as exc:
             _safe_old_product_log(
                 "WARN",
@@ -5606,11 +5641,29 @@ def _deactivate_old_telegram_products_impl(
     if deactivate_only:
         uploaded_products = []
         telegram_products = []
+        deactivation_queue_products = []
     else:
         try:
             uploaded_products = list_uploaded_products_for_age_check()
             telegram_products = list_created_telegram_products_for_age_check(
                 account_id=account_id
+            )
+            queue_limit = (
+                max(len(telegram_products), _old_product_deactivate_batch_size(), 1)
+                if batch_limit is None
+                else max(int(batch_limit), 1)
+            )
+            deactivation_queue_products = list_telegram_product_deactivation_queue(
+                account_id=account_id,
+                limit=queue_limit,
+            )
+            _safe_old_product_log(
+                "INFO",
+                "Деактивация: загружены источники кандидатов. "
+                f"account={account_label}. account_id={resolved_account_id}. "
+                f"uploaded_products={len(uploaded_products)}. "
+                f"telegram_products={len(telegram_products)}. "
+                f"deactivation_queue={len(deactivation_queue_products)}.",
             )
         except Exception as exc:
             result["failed"] = 1
@@ -5661,12 +5714,16 @@ def _deactivate_old_telegram_products_impl(
             )
         source_label = "uploaded_products(sql_preview_expired_by_telegram_message_date)"
     else:
-        source_products = uploaded_products if uploaded_products else telegram_products
-        source_label = (
-            "uploaded_products(account_db)"
-            if uploaded_products
-            else "telegram_products(account_db_fallback)"
-        )
+        if deactivation_queue_products:
+            source_products = deactivation_queue_products
+            source_label = "telegram_products(deactivation_queue)"
+        else:
+            source_products = uploaded_products if uploaded_products else telegram_products
+            source_label = (
+                "uploaded_products(account_db)"
+                if uploaded_products
+                else "telegram_products(account_db_fallback)"
+            )
     checked_products = (
         list(source_products)
         if batch_limit is None
@@ -5698,7 +5755,8 @@ def _deactivate_old_telegram_products_impl(
             "INFO",
             "Деактивация: нет товаров для проверки. "
             f"uploaded_products={len(uploaded_products)}. "
-            f"telegram_products={len(telegram_products)}.",
+            f"telegram_products={len(telegram_products)}. "
+            f"deactivation_queue={len(deactivation_queue_products)}.",
         )
     for checked_product in checked_products:
         tracking_allowed = True
@@ -5900,15 +5958,65 @@ def _deactivate_old_telegram_products_impl(
             )
         return _finish_result()
 
+    leased_candidates: list[dict[str, object]] = []
+    for candidate in candidates:
+        candidate_account_id = str(candidate["account_id"])
+        channel_id = int(candidate["channel_id"])
+        message_id = int(candidate["message_id"])
+        if not bool(candidate.get("tracking_allowed", True)):
+            leased_candidates.append(candidate)
+            continue
+        try:
+            enqueue_telegram_product_deactivation(
+                channel_id,
+                message_id,
+                account_id=candidate_account_id,
+            )
+            claimed = claim_telegram_product_deactivation(
+                account_id=candidate_account_id,
+                channel_id=channel_id,
+                message_id=message_id,
+            )
+        except Exception as exc:
+            result["failed"] = int(result["failed"]) + 1
+            _safe_old_product_log(
+                "ERROR",
+                "Не удалось получить lease очереди деактивации старого товара. "
+                f"account_id={candidate_account_id}. "
+                f"product_id={candidate.get('created_product_id')}. "
+                f"channel_id={channel_id}. message_id={message_id}. error={exc}",
+            )
+            continue
+        if claimed is None:
+            _safe_old_product_log(
+                "INFO",
+                "Пропускаю кандидата деактивации: товар уже обрабатывается другим процессом. "
+                f"account_id={candidate_account_id}. "
+                f"product_id={candidate.get('created_product_id')}. "
+                f"channel_id={channel_id}. message_id={message_id}.",
+            )
+            continue
+        candidate["deactivation_processing_token"] = claimed.get(
+            "deactivation_processing_token"
+        )
+        leased_candidates.append(candidate)
+    candidates = leased_candidates
+    result["found"] = len(candidates)
+    if not candidates:
+        return _finish_result()
+
     deactivator = deactivate_product_func or _deactivate_product_backend_not_configured
     deactivated = 0
-    failed = 0
+    failed = int(result["failed"])
     for index, candidate in enumerate(candidates, start=1):
         candidate_name = str(candidate.get("product_name") or "").strip() or "нет названия"
         product_id = str(candidate["created_product_id"])
         channel_id = int(candidate["channel_id"])
         message_id = int(candidate["message_id"])
         candidate_account_id = str(candidate["account_id"])
+        deactivation_processing_token = str(
+            candidate.get("deactivation_processing_token") or ""
+        ).strip()
         telegram_message_dt = _parse_datetime_text_utc(candidate.get("telegram_message_date"))
         telegram_age_days = (
             round(
@@ -5937,12 +6045,23 @@ def _deactivate_old_telegram_products_impl(
             attempts: object = "not_recorded"
             if bool(candidate.get("tracking_allowed", True)):
                 try:
-                    attempts = record_telegram_product_shafa_deactivate_failure(
-                        channel_id,
-                        message_id,
-                        str(exc),
-                        account_id=candidate_account_id,
-                    )
+                    if deactivation_processing_token:
+                        finish_telegram_product_deactivation(
+                            channel_id,
+                            message_id,
+                            deactivation_processing_token,
+                            success=False,
+                            error_message=str(exc),
+                            account_id=candidate_account_id,
+                        )
+                        attempts = "queued"
+                    else:
+                        attempts = record_telegram_product_shafa_deactivate_failure(
+                            channel_id,
+                            message_id,
+                            str(exc),
+                            account_id=candidate_account_id,
+                        )
                 except Exception as tracking_exc:
                     attempts = "tracking_error"
                     _safe_old_product_log(
@@ -5990,11 +6109,20 @@ def _deactivate_old_telegram_products_impl(
                 and message_id is not None
             ):
                 try:
-                    mark_telegram_product_deactivated_on_shafa(
-                        channel_id,
-                        message_id,
-                        account_id=candidate_account_id,
-                    )
+                    if deactivation_processing_token:
+                        finish_telegram_product_deactivation(
+                            channel_id,
+                            message_id,
+                            deactivation_processing_token,
+                            success=True,
+                            account_id=candidate_account_id,
+                        )
+                    else:
+                        mark_telegram_product_deactivated_on_shafa(
+                            channel_id,
+                            message_id,
+                            account_id=candidate_account_id,
+                        )
                 except Exception as tracking_exc:
                     _safe_old_product_log(
                         "WARN",

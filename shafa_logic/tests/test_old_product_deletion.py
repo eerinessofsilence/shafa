@@ -234,7 +234,12 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
                 with sqlite3.connect(telegram_db_path) as conn:
                     row = conn.execute(
                         """
-                        SELECT shafa_deactivated_at, shafa_deactivate_attempts, last_shafa_deactivate_error
+                        SELECT
+                            shafa_deactivated_at,
+                            shafa_deactivate_attempts,
+                            last_shafa_deactivate_error,
+                            deactivation_status,
+                            deactivation_completed_at
                         FROM telegram_products
                         WHERE account_id = ? AND channel_id = ? AND message_id = ?
                         """,
@@ -257,6 +262,8 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertIsNotNone(row[0])
         self.assertEqual(row[1], 0)
         self.assertIsNone(row[2])
+        self.assertEqual(row[3], db.TELEGRAM_DEACTIVATION_STATUS_COMPLETED)
+        self.assertIsNotNone(row[4])
         self.assertEqual(uploaded_row, (0, "Деактивовано"))
 
     def test_deactivate_old_telegram_products_checks_one_product_by_default(self) -> None:
@@ -316,6 +323,55 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(second_result["checked"], 1)
         self.assertEqual(second_result["deactivated"], 1)
         self.assertEqual(deactivated_ids, ["product-231", "product-232"])
+
+    def test_deactivate_old_telegram_products_prioritizes_deactivation_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            account_db_path = Path(temp_dir) / "account.sqlite3"
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+            deactivated_ids: list[str] = []
+
+            def _deactivator(product_id: str) -> None:
+                deactivated_ids.append(product_id)
+
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                self._patch_account_db(account_db_path),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+            ):
+                dc._OLD_PRODUCT_AGE_CHECK_CURSOR.clear()
+                db.init_db(db_path=account_db_path)
+                db.save_uploaded_product(
+                    "product-fresh",
+                    {"name": "Fresh item", "price": 1600, "size": 41},
+                    [],
+                )
+                db.save_telegram_product(
+                    11,
+                    260,
+                    "old queued",
+                    {"name": "Old queued", "price": "1600", "size": "41"},
+                    account_id="acc-1",
+                    telegram_message_date=now - timedelta(days=190),
+                )
+                db.mark_telegram_product_created(
+                    11,
+                    260,
+                    created_product_id="product-queued-old",
+                    account_id="acc-1",
+                )
+
+                result = dc.deactivate_old_telegram_products(
+                    older_than_days=183,
+                    sleep_seconds=0,
+                    account_id="acc-1",
+                    deactivate_product_func=_deactivator,
+                )
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["found"], 1)
+        self.assertEqual(result["deactivated"], 1)
+        self.assertEqual(deactivated_ids, ["product-queued-old"])
 
     def test_deactivate_old_telegram_products_checks_all_when_limit_zero(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -554,7 +610,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
                     deactivate_product_func=_deactivator,
                 )
 
-        self.assertEqual(result["checked"], 2)
+        self.assertEqual(result["checked"], 1)
         self.assertEqual(result["deactivated"], 1)
         info_messages = [
             call.args[1]
@@ -565,7 +621,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
             any(
                 "Проверяю созданный товар из базы аккаунта." in message
                 and "account_id=acc-1." in message
-                and "source=uploaded_products(account_db)." in message
+                and "source=telegram_products(deactivation_queue)." in message
                 and "telegram_source=telegram_products(shared_account_db)." in message
                 and "name=Checked item." in message
                 and "product_id=product-221." in message
@@ -577,18 +633,10 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
                 for message in info_messages
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             any(
                 "Проверяю созданный товар из базы аккаунта." in message
-                and "account_id=acc-1." in message
-                and "source=uploaded_products(account_db)." in message
-                and "telegram_source=telegram_products(shared_account_db)." in message
                 and "product_id=product-222." in message
-                and "checked_at_utc=" in message
-                and "product_age=" in message
-                and "threshold_days=183." in message
-                and "telegram_age_days=" in message
-                and "decision=not_old_enough." in message
                 for message in info_messages
             )
         )
@@ -632,7 +680,13 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
                 with sqlite3.connect(telegram_db_path) as conn:
                     row = conn.execute(
                         """
-                        SELECT shafa_deactivated_at, shafa_deactivate_attempts, last_shafa_deactivate_error
+                        SELECT
+                            shafa_deactivated_at,
+                            shafa_deactivate_attempts,
+                            last_shafa_deactivate_error,
+                            deactivation_status,
+                            deactivation_retry_count,
+                            deactivation_error
                         FROM telegram_products
                         WHERE account_id = ? AND channel_id = ? AND message_id = ?
                         """,
@@ -644,6 +698,9 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertIsNone(row[0])
         self.assertEqual(row[1], 1)
         self.assertEqual(row[2], "deactivate failed")
+        self.assertEqual(row[3], db.TELEGRAM_DEACTIVATION_STATUS_FAILED)
+        self.assertEqual(row[4], 1)
+        self.assertEqual(row[5], "deactivate failed")
 
 if __name__ == "__main__":
     unittest.main()

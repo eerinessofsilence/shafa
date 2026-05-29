@@ -12,6 +12,8 @@ from shafa_control import (
     python_candidates,
     resolve_project_dir,
 )
+from telegram_accounts_api.services.account_service import AccountService
+from telegram_accounts_api.utils.storage import JsonListStorage
 
 
 def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
@@ -44,6 +46,30 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_ACCOUNT_NAME"] == "Primary"
     assert env["SHAFA_TELEGRAM_API_ID"] == "777000"
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
+
+
+def test_account_service_runtime_accounts_use_canonical_storage_not_stale_index(
+    tmp_path: Path,
+) -> None:
+    accounts_dir = tmp_path / "accounts"
+    storage_path = tmp_path / "accounts_state.json"
+    accounts_dir.mkdir()
+    storage_path.write_text(
+        '[{"id":"acc-canonical","name":"Canonical","path":"/canonical"}]',
+        encoding="utf-8",
+    )
+    (accounts_dir / "index.json").write_text(
+        '[{"id":"acc-stale","name":"Stale","path":"/stale"}]',
+        encoding="utf-8",
+    )
+    service = AccountService(
+        storage=JsonListStorage(storage_path),
+        accounts_dir=accounts_dir,
+    )
+
+    accounts = service.load_runtime_accounts()
+
+    assert [account.id for account in accounts] == ["acc-canonical"]
 
 
 def test_account_runtime_sets_account_price_markup(tmp_path: Path) -> None:

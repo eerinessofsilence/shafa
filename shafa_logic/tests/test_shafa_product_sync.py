@@ -1,6 +1,7 @@
 import _test_path  # noqa: F401
 
 import sqlite3
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,41 @@ class ShafaProductSyncTests(unittest.TestCase):
             "data.db._connect",
             side_effect=lambda db_path_arg=db_path: original_connect(db_path),
         )
+
+    def test_default_db_path_follows_runtime_env_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_db_path = Path(temp_dir) / "first.sqlite3"
+            second_db_path = Path(temp_dir) / "second.sqlite3"
+            db._DB_INITIALIZED_PATHS.discard(first_db_path)
+            db._DB_INITIALIZED_PATHS.discard(second_db_path)
+
+            with patch.dict(os.environ, {"SHAFA_DB_PATH": str(first_db_path)}, clear=False):
+                db.init_db()
+                db.save_uploaded_product(
+                    "product-first",
+                    {"name": "First", "price": 100, "size": 41},
+                    [],
+                )
+
+            with patch.dict(os.environ, {"SHAFA_DB_PATH": str(second_db_path)}, clear=False):
+                db.init_db()
+                db.save_uploaded_product(
+                    "product-second",
+                    {"name": "Second", "price": 200, "size": 42},
+                    [],
+                )
+
+            with sqlite3.connect(first_db_path) as conn:
+                first_rows = conn.execute(
+                    "SELECT product_id FROM uploaded_products"
+                ).fetchall()
+            with sqlite3.connect(second_db_path) as conn:
+                second_rows = conn.execute(
+                    "SELECT product_id FROM uploaded_products"
+                ).fetchall()
+
+        self.assertEqual(first_rows, [("product-first",)])
+        self.assertEqual(second_rows, [("product-second",)])
 
     def test_sync_uploaded_products_from_shafa_inserts_active_products(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
