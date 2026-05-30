@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -156,6 +157,132 @@ class DashboardApiTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_shared_deactivation_rows(
+        self,
+        rows: list[dict[str, object]],
+    ) -> None:
+        db_path = self.account_service.session_store.shared_telegram_db_file()
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE shared_telegram_products (
+                    telegram_product_key TEXT PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    telegram_message_date TEXT,
+                    product_title TEXT
+                );
+                CREATE TABLE shared_telegram_product_accounts (
+                    telegram_product_key TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    shafa_product_id TEXT NOT NULL,
+                    product_title TEXT,
+                    account_product_status TEXT NOT NULL DEFAULT 'active',
+                    PRIMARY KEY (telegram_product_key, account_id)
+                );
+                CREATE TABLE shared_deactivation_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    telegram_product_key TEXT NOT NULL,
+                    telegram_message_date TEXT,
+                    reason TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    updated_at TEXT
+                );
+                CREATE TABLE shared_deactivation_task_accounts (
+                    task_id TEXT NOT NULL,
+                    telegram_product_key TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    shafa_product_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    next_retry_at REAL,
+                    completed_at TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (task_id, account_id)
+                );
+                """
+            )
+            products: set[tuple[str, int, int, str]] = set()
+            tasks: set[tuple[str, str, str]] = set()
+            for row in rows:
+                product_key = str(row["telegram_product_key"])
+                channel_id = int(row.get("channel_id") or 11)
+                message_id = int(row.get("message_id") or 501)
+                title = str(row.get("product_title") or "Item")
+                products.add((product_key, channel_id, message_id, title))
+                tasks.add(
+                    (
+                        str(row["task_id"]),
+                        product_key,
+                        str(row.get("reason") or "telegram_message_older_than_183_days"),
+                    )
+                )
+            conn.executemany(
+                """
+                INSERT INTO shared_telegram_products (
+                    telegram_product_key, channel_id, message_id, product_title
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                sorted(products),
+            )
+            conn.executemany(
+                """
+                INSERT INTO shared_deactivation_tasks (
+                    task_id, telegram_product_key, reason, status, updated_at
+                )
+                VALUES (?, ?, ?, 'pending', datetime('now'))
+                """,
+                sorted(tasks),
+            )
+            for row in rows:
+                conn.execute(
+                    """
+                    INSERT INTO shared_telegram_product_accounts (
+                        telegram_product_key,
+                        account_id,
+                        shafa_product_id,
+                        product_title,
+                        account_product_status
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["telegram_product_key"],
+                        row["account_id"],
+                        row["shafa_product_id"],
+                        row.get("product_title") or "Item",
+                        row.get("account_product_status") or "active",
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO shared_deactivation_task_accounts (
+                        task_id,
+                        telegram_product_key,
+                        account_id,
+                        shafa_product_id,
+                        status,
+                        retry_count,
+                        last_error,
+                        completed_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+                    """,
+                    (
+                        row["task_id"],
+                        row["telegram_product_key"],
+                        row["account_id"],
+                        row["shafa_product_id"],
+                        row["status"],
+                        row.get("last_error"),
+                        row.get("completed_at"),
+                        row.get("updated_at") or row.get("completed_at"),
+                    ),
+                )
+
     def test_dashboard_summary_returns_aggregated_real_data(self) -> None:
         response = self.client.get("/dashboard/summary")
 
@@ -184,6 +311,104 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(points[yesterday]["errors"], 1)
         self.assertEqual(points[two_days_ago]["items"], 1)
         self.assertEqual(points[today]["errors"], 1)
+
+    def test_dashboard_summary_counts_shared_deactivations_per_account_row(self) -> None:
+        completed_at = (self.now - timedelta(minutes=5)).isoformat()
+        self._write_shared_deactivation_rows(
+            [
+                {
+                    "task_id": "task-shared-product",
+                    "telegram_product_key": "tg:11:501",
+                    "account_id": "acc-1",
+                    "shafa_product_id": "product-a",
+                    "status": "completed",
+                    "completed_at": completed_at,
+                    "product_title": "Shared item",
+                },
+                {
+                    "task_id": "task-shared-product",
+                    "telegram_product_key": "tg:11:501",
+                    "account_id": "acc-2",
+                    "shafa_product_id": "product-b",
+                    "status": "completed",
+                    "completed_at": completed_at,
+                    "product_title": "Shared item",
+                },
+                {
+                    "task_id": "task-other-product",
+                    "telegram_product_key": "tg:12:601",
+                    "channel_id": 12,
+                    "message_id": 601,
+                    "account_id": "acc-1",
+                    "shafa_product_id": "product-c",
+                    "status": "skipped_not_found",
+                    "completed_at": completed_at,
+                    "product_title": "Missing item",
+                },
+                {
+                    "task_id": "task-pending-product",
+                    "telegram_product_key": "tg:13:701",
+                    "channel_id": 13,
+                    "message_id": 701,
+                    "account_id": "acc-1",
+                    "shafa_product_id": "product-d",
+                    "status": "pending",
+                },
+                {
+                    "task_id": "task-failed-product",
+                    "telegram_product_key": "tg:14:801",
+                    "channel_id": 14,
+                    "message_id": 801,
+                    "account_id": "acc-2",
+                    "shafa_product_id": "product-e",
+                    "status": "failed",
+                    "last_error": "temporary Shafa error",
+                },
+                {
+                    "task_id": "task-retry-product",
+                    "telegram_product_key": "tg:15:901",
+                    "channel_id": 15,
+                    "message_id": 901,
+                    "account_id": "acc-2",
+                    "shafa_product_id": "product-f",
+                    "status": "retry_scheduled",
+                    "last_error": "retry later",
+                },
+            ]
+        )
+
+        response = self.client.get("/dashboard/summary")
+
+        self.assertEqual(response.status_code, 200)
+        shared = response.json()["shared_deactivation"]
+        self.assertEqual(shared["deactivated_success_count"], 2)
+        self.assertEqual(shared["not_found_treated_as_done_count"], 1)
+        self.assertEqual(shared["total_done_count"], 3)
+        self.assertEqual(shared["total_deactivated_products"], 3)
+
+        by_account = {
+            row["account_id"]: row for row in shared["per_account"]
+        }
+        self.assertEqual(by_account["acc-1"]["account_name"], "Alpha")
+        self.assertEqual(by_account["acc-1"]["deactivated_success_count"], 1)
+        self.assertEqual(by_account["acc-1"]["not_found_treated_as_done_count"], 1)
+        self.assertEqual(by_account["acc-1"]["total_done_count"], 2)
+        self.assertEqual(by_account["acc-1"]["pending_count"], 1)
+        self.assertEqual(by_account["acc-2"]["account_name"], "Beta")
+        self.assertEqual(by_account["acc-2"]["deactivated_success_count"], 1)
+        self.assertEqual(by_account["acc-2"]["failed_count"], 1)
+        self.assertEqual(by_account["acc-2"]["retry_scheduled_count"], 1)
+
+        recent = shared["recent"]
+        self.assertEqual(len(recent), 3)
+        self.assertEqual(
+            sum(1 for row in recent if row["telegram_product_key"] == "tg:11:501"),
+            2,
+        )
+        self.assertEqual(
+            {row["status"] for row in recent},
+            {"completed", "skipped_not_found"},
+        )
 
     def test_dashboard_summary_supports_week_period(self) -> None:
         response = self.client.get("/dashboard/summary?period=week")

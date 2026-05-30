@@ -1,6 +1,7 @@
 import type { MetricAccent, MetricKind } from '../types';
 import {
   CircleAlert,
+  CheckCircle2,
   Package2,
   Radio,
   Users,
@@ -20,6 +21,7 @@ const iconByKind: Record<MetricKind, LucideIcon> = {
   active: Radio,
   items: Package2,
   errors: CircleAlert,
+  deactivated: CheckCircle2,
 };
 
 const accentClasses: Record<

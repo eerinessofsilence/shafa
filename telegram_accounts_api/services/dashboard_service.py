@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -9,7 +10,10 @@ from typing import Callable, Literal
 
 from telegram_accounts_api.models.account import AccountRead
 from telegram_accounts_api.models.dashboard import (
+    DashboardRecentSharedDeactivationRead,
     DashboardSeriesPointRead,
+    DashboardSharedDeactivationAccountRead,
+    DashboardSharedDeactivationSummaryRead,
     DashboardSummaryRead,
 )
 from telegram_accounts_api.services.account_service import AccountService
@@ -33,6 +37,11 @@ _DASHBOARD_PERIOD_DAYS: dict[DashboardPeriod, int] = {
     "quarter": 90,
     "custom": 0,
 }
+SHARED_ACCOUNT_TASK_COMPLETED = "completed"
+SHARED_ACCOUNT_TASK_FAILED = "failed"
+SHARED_ACCOUNT_TASK_PENDING = "pending"
+SHARED_ACCOUNT_TASK_RETRY_SCHEDULED = "retry_scheduled"
+SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND = "skipped_not_found"
 
 
 @dataclass(frozen=True)
@@ -71,6 +80,7 @@ class DashboardService:
         local_tz = current_time.tzinfo or UTC
         generated_at = current_time.astimezone(local_tz)
         account_daily_totals: dict[str, dict[date, dict[str, int]]] = {}
+        account_names = {account.id: account.name for account in accounts}
         earliest_entry_date: date | None = None
 
         for account in accounts:
@@ -165,7 +175,164 @@ class DashboardService:
             top_error_account_name=top_error_account_name,
             top_error_account_errors=top_error_account_errors,
             series=series,
+            shared_deactivation=self._load_shared_deactivation_summary(
+                account_names=account_names
+            ),
         )
+
+    def _load_shared_deactivation_summary(
+        self,
+        *,
+        account_names: dict[str, str],
+        recent_limit: int = 20,
+    ) -> DashboardSharedDeactivationSummaryRead:
+        db_path = self.account_service.session_store.shared_telegram_db_file()
+        if not db_path.exists():
+            return DashboardSharedDeactivationSummaryRead()
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                if not self._shared_deactivation_tables_exist(conn):
+                    return DashboardSharedDeactivationSummaryRead()
+                account_rows = conn.execute(
+                    """
+                    SELECT
+                        account_id,
+                        SUM(CASE WHEN status = ? THEN 1 ELSE 0 END)
+                            AS deactivated_success_count,
+                        SUM(CASE WHEN status = ? THEN 1 ELSE 0 END)
+                            AS not_found_treated_as_done_count,
+                        SUM(CASE WHEN status = ? THEN 1 ELSE 0 END)
+                            AS failed_count,
+                        SUM(CASE WHEN status = ? THEN 1 ELSE 0 END)
+                            AS pending_count,
+                        SUM(CASE WHEN status = ? THEN 1 ELSE 0 END)
+                            AS retry_scheduled_count
+                    FROM shared_deactivation_task_accounts
+                    GROUP BY account_id
+                    ORDER BY account_id
+                    """,
+                    (
+                        SHARED_ACCOUNT_TASK_COMPLETED,
+                        SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                        SHARED_ACCOUNT_TASK_FAILED,
+                        SHARED_ACCOUNT_TASK_PENDING,
+                        SHARED_ACCOUNT_TASK_RETRY_SCHEDULED,
+                    ),
+                ).fetchall()
+                recent_rows = conn.execute(
+                    """
+                    SELECT
+                        account_task.account_id,
+                        account_task.telegram_product_key,
+                        product.channel_id,
+                        product.message_id,
+                        COALESCE(account_product.product_title, product.product_title)
+                            AS product_title,
+                        account_task.shafa_product_id,
+                        account_task.status,
+                        account_task.completed_at,
+                        parent.reason,
+                        account_task.last_error
+                    FROM shared_deactivation_task_accounts AS account_task
+                    JOIN shared_deactivation_tasks AS parent
+                      ON parent.task_id = account_task.task_id
+                    LEFT JOIN shared_telegram_products AS product
+                      ON product.telegram_product_key = account_task.telegram_product_key
+                    LEFT JOIN shared_telegram_product_accounts AS account_product
+                      ON account_product.telegram_product_key = account_task.telegram_product_key
+                     AND account_product.account_id = account_task.account_id
+                    WHERE account_task.status IN (?, ?)
+                    ORDER BY datetime(account_task.completed_at) DESC,
+                             account_task.updated_at DESC
+                    LIMIT ?
+                    """,
+                    (
+                        SHARED_ACCOUNT_TASK_COMPLETED,
+                        SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                        max(int(recent_limit), 1),
+                    ),
+                ).fetchall()
+        except sqlite3.Error:
+            return DashboardSharedDeactivationSummaryRead()
+
+        per_account: list[DashboardSharedDeactivationAccountRead] = []
+        total_success = 0
+        total_not_found = 0
+        for row in account_rows:
+            success_count = int(row["deactivated_success_count"] or 0)
+            not_found_count = int(row["not_found_treated_as_done_count"] or 0)
+            total_success += success_count
+            total_not_found += not_found_count
+            account_id = str(row["account_id"] or "").strip()
+            per_account.append(
+                DashboardSharedDeactivationAccountRead(
+                    account_id=account_id,
+                    account_name=account_names.get(account_id),
+                    deactivated_success_count=success_count,
+                    not_found_treated_as_done_count=not_found_count,
+                    total_done_count=success_count + not_found_count,
+                    failed_count=int(row["failed_count"] or 0),
+                    pending_count=int(row["pending_count"] or 0),
+                    retry_scheduled_count=int(row["retry_scheduled_count"] or 0),
+                )
+            )
+
+        per_account.sort(
+            key=lambda item: (
+                -item.total_done_count,
+                -item.pending_count,
+                item.account_name or item.account_id,
+            )
+        )
+        recent = [
+            DashboardRecentSharedDeactivationRead(
+                account_id=str(row["account_id"] or ""),
+                account_name=account_names.get(str(row["account_id"] or "")),
+                telegram_product_key=str(row["telegram_product_key"] or ""),
+                channel_id=(
+                    int(row["channel_id"]) if row["channel_id"] is not None else None
+                ),
+                message_id=(
+                    int(row["message_id"]) if row["message_id"] is not None else None
+                ),
+                product_title=str(row["product_title"] or "").strip() or None,
+                shafa_product_id=str(row["shafa_product_id"] or ""),
+                status=str(row["status"] or ""),
+                completed_at=self._parse_datetime(row["completed_at"]),
+                reason=str(row["reason"] or "").strip() or None,
+                last_error=str(row["last_error"] or "").strip() or None,
+            )
+            for row in recent_rows
+        ]
+
+        total_done = total_success + total_not_found
+        return DashboardSharedDeactivationSummaryRead(
+            total_deactivated_products=total_done,
+            deactivated_success_count=total_success,
+            not_found_treated_as_done_count=total_not_found,
+            total_done_count=total_done,
+            per_account=per_account,
+            recent=recent,
+        )
+
+    @staticmethod
+    def _shared_deactivation_tables_exist(conn: sqlite3.Connection) -> bool:
+        rows = conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN (
+                    'shared_deactivation_task_accounts',
+                    'shared_deactivation_tasks',
+                    'shared_telegram_products',
+                    'shared_telegram_product_accounts'
+              )
+            """
+        ).fetchall()
+        return len({str(row["name"]) for row in rows}) == 4
 
     def _load_account_daily_totals(
         self,

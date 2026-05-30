@@ -1116,6 +1116,15 @@ function createDashboardMetrics(
       unit: 'лог.',
       accent: 'rose',
     },
+    {
+      kind: 'deactivated',
+      label: 'Деактиваций',
+      value: summary
+        ? String(summary.shared_deactivation.total_done_count)
+        : '—',
+      unit: 'копий',
+      accent: 'teal',
+    },
   ];
 }
 

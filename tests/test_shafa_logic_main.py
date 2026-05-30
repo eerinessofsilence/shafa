@@ -55,6 +55,143 @@ def test_noninteractive_shafa_mode_does_not_require_inquirer(monkeypatch) -> Non
     ]
 
 
+def test_shared_worker_skips_old_direct_deactivator(monkeypatch) -> None:
+    module = _reload_shafa_main()
+    calls: list[object] = []
+
+    class _StopEvent:
+        def set(self) -> None:
+            calls.append("stop")
+
+    class _Thread:
+        def join(self, timeout=None) -> None:
+            calls.append(("join", timeout))
+
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_ENABLED", "1")
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_WORKER_ENABLED", "1")
+    monkeypatch.setitem(sys.modules, "inquirer", None)
+    monkeypatch.setattr(module, "sync_channels_from_runtime_config", lambda: calls.append("sync"))
+    monkeypatch.setattr(module, "_auto_create_product", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        module,
+        "_start_background_telegram_scanner",
+        lambda: (_StopEvent(), _Thread()),
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_background_shared_deactivation_worker",
+        lambda: (calls.append("shared") or _StopEvent(), _Thread()),
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_background_old_product_deactivator",
+        lambda: calls.append("old") or (_StopEvent(), _Thread()),
+    )
+
+    module.main(shafa=True)
+
+    assert "shared" in calls
+    assert "old" not in calls
+
+
+def test_shared_auto_run_enables_planner_worker_and_real_mode(monkeypatch) -> None:
+    module = _reload_shafa_main()
+
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "1")
+    monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_ENABLED", raising=False)
+    monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_PLANNER_ENABLED", raising=False)
+    monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_WORKER_ENABLED", raising=False)
+    monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", raising=False)
+
+    assert module._shared_deactivation_enabled()
+    assert module._shared_deactivation_planner_enabled()
+    assert module._shared_deactivation_worker_enabled()
+    assert not module._shared_deactivation_dry_run_enabled()
+
+
+def test_shared_auto_run_respects_explicit_dry_run(monkeypatch) -> None:
+    module = _reload_shafa_main()
+
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "1")
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", "1")
+
+    assert module._shared_deactivation_dry_run_enabled()
+
+
+def test_shared_auto_run_makes_controller_worker_real_by_default(monkeypatch) -> None:
+    _reload_shafa_main()
+    sys.modules.pop("controller.data_controller", None)
+    data_controller = importlib.import_module("controller.data_controller")
+
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "1")
+    monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", raising=False)
+
+    assert not data_controller._shared_deactivation_dry_run()
+
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", "1")
+
+    assert data_controller._shared_deactivation_dry_run()
+
+
+def test_shared_auto_run_starts_shared_worker_and_skips_old_direct(
+    monkeypatch,
+) -> None:
+    module = _reload_shafa_main()
+    calls: list[object] = []
+
+    class _StopEvent:
+        def set(self) -> None:
+            calls.append("stop")
+
+    class _Thread:
+        def join(self, timeout=None) -> None:
+            calls.append(("join", timeout))
+
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "1")
+    monkeypatch.setitem(sys.modules, "inquirer", None)
+    monkeypatch.setattr(module, "sync_channels_from_runtime_config", lambda: calls.append("sync"))
+    monkeypatch.setattr(module, "_auto_create_product", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        module,
+        "_start_background_telegram_scanner",
+        lambda: (_StopEvent(), _Thread()),
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_background_shared_deactivation_worker",
+        lambda: (calls.append("shared") or _StopEvent(), _Thread()),
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_background_old_product_deactivator",
+        lambda: calls.append("old") or (_StopEvent(), _Thread()),
+    )
+
+    module.main(shafa=True)
+
+    assert "shared" in calls
+    assert "old" not in calls
+
+
+def test_shared_plan_once_refuses_non_dry_run_when_shared_disabled(monkeypatch) -> None:
+    module = _reload_shafa_main()
+
+    monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_ENABLED", raising=False)
+    monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", "0")
+    monkeypatch.setattr(
+        module,
+        "_shared_deactivation_plan_once",
+        module._shared_deactivation_plan_once,
+    )
+
+    try:
+        module.main(shared_deactivation_plan_once=True)
+    except RuntimeError as exc:
+        assert "SHAFA_SHARED_DEACTIVATION_ENABLED" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
 def test_old_product_deactivate_interval_defaults_to_one_to_three_minutes(
     monkeypatch,
 ) -> None:

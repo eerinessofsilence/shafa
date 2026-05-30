@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 import sqlite3
 import time
@@ -51,9 +52,12 @@ from data.const import (
 from data.db import (
     backfill_telegram_product_message_dates_from_existing_db,
     claim_telegram_product_deactivation,
+    claim_shared_deactivation_task_for_account,
     claim_telegram_fetch,
+    complete_shared_deactivation_task_for_account,
     enqueue_expired_telegram_products_for_deactivation,
     enqueue_telegram_product_deactivation,
+    fail_shared_deactivation_task_for_account,
     find_size_mapping_candidates,
     finish_telegram_fetch,
     finish_telegram_product_deactivation,
@@ -77,9 +81,12 @@ from data.db import (
     finish_telegram_scan,
     mark_telegram_product_created,
     record_telegram_product_shafa_deactivate_failure,
+    plan_shared_deactivation_tasks,
+    reconcile_shared_telegram_products,
     save_telegram_channels,
     save_telegram_product,
     set_telegram_product_message_date,
+    skip_shared_deactivation_task_not_found_for_account,
     size_id_exists,
     telegram_products_exist,
 )
@@ -109,6 +116,11 @@ DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS = 360
 DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS = 183
 DEFAULT_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE = 1
 DEFAULT_OLD_PRODUCT_DEACTIVATE_SLEEP_SECONDS = 3.0
+DEFAULT_SHARED_DEACTIVATION_SCAN_SECONDS = 10.0
+DEFAULT_SHARED_DEACTIVATION_COOLDOWN_MIN_SECONDS = 10.0
+DEFAULT_SHARED_DEACTIVATION_COOLDOWN_MAX_SECONDS = 30.0
+DEFAULT_SHARED_DEACTIVATION_LEASE_SECONDS = 900.0
+DEFAULT_SHARED_DEACTIVATION_RETRY_DELAY_SECONDS = 300.0
 DEFAULT_AUTO_DEACTIVATE_TELEGRAM_MATCH_SCORE = 0.85
 MIN_PRODUCT_PRICE_DIGITS = 3
 MAX_PRODUCT_PRICE_DIGITS = 4
@@ -2985,6 +2997,102 @@ def _old_product_deactivate_sleep_seconds() -> float:
     return min(max(value, 0.0), 60.0)
 
 
+def _shared_deactivation_dry_run() -> bool:
+    raw = os.getenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", "").strip()
+    if not raw:
+        auto_run = os.getenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "").strip()
+        return auto_run not in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+    return raw in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+
+
+def _shared_deactivation_scan_seconds() -> float:
+    raw = os.getenv("SHAFA_SHARED_DEACTIVATION_SCAN_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_SHARED_DEACTIVATION_SCAN_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_SHARED_DEACTIVATION_SCAN_SECONDS
+    return min(max(value, 1.0), 300.0)
+
+
+def _shared_deactivation_cooldown_range_seconds() -> tuple[float, float]:
+    def _read(name: str, default: float) -> float:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+
+    min_seconds = min(
+        max(
+            _read(
+                "SHAFA_DEACTIVATION_COOLDOWN_MIN_SECONDS",
+                DEFAULT_SHARED_DEACTIVATION_COOLDOWN_MIN_SECONDS,
+            ),
+            0.0,
+        ),
+        300.0,
+    )
+    max_seconds = min(
+        max(
+            _read(
+                "SHAFA_DEACTIVATION_COOLDOWN_MAX_SECONDS",
+                DEFAULT_SHARED_DEACTIVATION_COOLDOWN_MAX_SECONDS,
+            ),
+            min_seconds,
+        ),
+        300.0,
+    )
+    return min_seconds, max_seconds
+
+
+def _is_shafa_product_not_found_error(exc: BaseException) -> bool:
+    message = " ".join(str(exc or "").split()).lower()
+    if not message:
+        return False
+    if any(
+        marker in message
+        for marker in (
+            "csrftoken",
+            "cookie",
+            "authenticated",
+            "authentication",
+            "session",
+        )
+    ):
+        return False
+    product_markers = ("product", "products", "includeids", "include_ids", "товар")
+    if any(
+        marker in message
+        for marker in (
+            "product_not_found",
+            "product not found",
+            "product not_found",
+            "товар не найден",
+            "товар не знайден",
+        )
+    ):
+        return True
+    has_product_context = any(marker in message for marker in product_markers)
+    if not has_product_context:
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "not_found",
+            "notfound",
+            "not found",
+            "does not exist",
+            "doesn't exist",
+            "не найден",
+            "не знайден",
+        )
+    )
+
+
 def _message_datetime_utc(message) -> Optional[datetime]:
     value = getattr(message, "date", None)
     if not isinstance(value, datetime):
@@ -5510,6 +5618,221 @@ def backfill_created_product_message_dates(
         "backfill_created_product_message_dates cannot be called when an event loop is running. "
         "Use backfill_created_product_message_dates_async."
     )
+
+
+def plan_shared_old_product_deactivation(
+    *,
+    older_than_days: Optional[int] = None,
+    limit: int = 100,
+    account_id: Optional[str] = None,
+    dry_run: Optional[bool] = None,
+) -> dict[str, int]:
+    age_days = max(
+        DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
+        if older_than_days is None
+        else int(older_than_days),
+        DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS,
+    )
+    resolved_account_id = str(account_id or _current_account_id()).strip() or "default"
+    effective_dry_run = _shared_deactivation_dry_run() if dry_run is None else dry_run
+    try:
+        backfill_created_product_message_dates(
+            limit=max(int(limit), 1),
+            account_id=account_id,
+        )
+    except Exception as exc:
+        _safe_old_product_log(
+            "WARN",
+            "shared deactivation planner could not backfill Telegram dates "
+            f"account_id={resolved_account_id}. error={exc}.",
+        )
+    reconcile_result = reconcile_shared_telegram_products(account_id=account_id)
+    result = plan_shared_deactivation_tasks(
+        older_than_days=age_days,
+        limit=limit,
+        account_id=account_id,
+        dry_run=effective_dry_run,
+    )
+    _safe_old_product_log(
+        "INFO",
+        "shared deactivation planner finished "
+        f"account_id={resolved_account_id}. dry_run={effective_dry_run}. "
+        f"reconciled_products={reconcile_result.get('products')}. "
+        f"reconciled_memberships={reconcile_result.get('memberships')}. "
+        f"checked={result.get('checked')}. old={result.get('old')}. "
+        f"fresh={result.get('fresh')}. date_missing={result.get('date_missing')}. "
+        f"tasks={result.get('tasks')}. account_tasks={result.get('account_tasks')}.",
+    )
+    return result
+
+
+def process_shared_deactivation_queue_once(
+    *,
+    account_id: Optional[str] = None,
+    dry_run: Optional[bool] = None,
+    deactivate_product_func=None,
+    sleep_func=time.sleep,
+) -> dict[str, object]:
+    resolved_account_id = str(account_id or _current_account_id()).strip() or "default"
+    effective_dry_run = _shared_deactivation_dry_run() if dry_run is None else dry_run
+    result: dict[str, object] = {
+        "account_id": resolved_account_id,
+        "claimed": 0,
+        "deactivated": 0,
+        "failed": 0,
+        "skipped": 0,
+        "not_found": 0,
+        "dry_run": effective_dry_run,
+        "slept_seconds": 0.0,
+    }
+    if effective_dry_run:
+        _safe_old_product_log(
+            "INFO",
+            "shared deactivation worker dry run; not claiming tasks "
+            f"account_id={resolved_account_id}.",
+        )
+        return result
+
+    claimed = claim_shared_deactivation_task_for_account(
+        account_id=resolved_account_id,
+        lease_seconds=DEFAULT_SHARED_DEACTIVATION_LEASE_SECONDS,
+    )
+    if claimed is None:
+        return result
+
+    result["claimed"] = 1
+    token = str(claimed.get("processing_token") or "")
+    token_prefix = token[:8]
+    task_id = str(claimed["task_id"])
+    product_key = str(claimed["telegram_product_key"])
+    shafa_product_id = str(claimed["shafa_product_id"])
+    deactivator = deactivate_product_func or _deactivate_product_backend_not_configured
+    _safe_old_product_log(
+        "INFO",
+        "shared deactivation task claimed "
+        f"account_id={resolved_account_id}. task_id={task_id}. "
+        f"telegram_product_key={product_key}. "
+        f"telegram_message_date={claimed.get('telegram_message_date')}. "
+        f"shafa_product_id={shafa_product_id}. status=processing. "
+        f"processing_token_prefix={token_prefix}.",
+    )
+    try:
+        deactivator(shafa_product_id)
+    except Exception as exc:
+        if _is_shafa_product_not_found_error(exc):
+            result["not_found"] = 1
+            complete_not_found = skip_shared_deactivation_task_not_found_for_account(
+                task_id=task_id,
+                account_id=resolved_account_id,
+                processing_token=token,
+            )
+            _safe_old_product_log(
+                "WARN",
+                "shared deactivation product not found treated as done "
+                f"account_id={resolved_account_id}. task_id={task_id}. "
+                f"telegram_product_key={product_key}. shafa_product_id={shafa_product_id}. "
+                "action=product_not_found_treated_as_done. "
+                "status=skipped_not_found. "
+                f"db_updated={complete_not_found}. "
+                f"processing_token_prefix={token_prefix}.",
+            )
+            result["deactivated"] = 0
+            result["skipped"] = 1 if complete_not_found else 0
+            result["failed"] = 0 if complete_not_found else 1
+            if not complete_not_found:
+                fail_shared_deactivation_task_for_account(
+                    task_id=task_id,
+                    account_id=resolved_account_id,
+                    processing_token=token,
+                    error_message=str(exc),
+                    retry_delay_seconds=DEFAULT_SHARED_DEACTIVATION_RETRY_DELAY_SECONDS,
+                )
+            else:
+                try:
+                    mark_uploaded_product_inactive(
+                        shafa_product_id,
+                        status_title="Не знайдено",
+                    )
+                except Exception as mark_exc:
+                    _safe_old_product_log(
+                        "WARN",
+                        "shared deactivation could not mark missing uploaded product inactive "
+                        f"account_id={resolved_account_id}. task_id={task_id}. "
+                        f"shafa_product_id={shafa_product_id}. error={mark_exc}.",
+                    )
+            return _sleep_after_shared_deactivation_attempt(
+                result=result,
+                account_id=resolved_account_id,
+                sleep_func=sleep_func,
+            )
+        result["failed"] = 1
+        fail_shared_deactivation_task_for_account(
+            task_id=task_id,
+            account_id=resolved_account_id,
+            processing_token=token,
+            error_message=str(exc),
+            retry_delay_seconds=DEFAULT_SHARED_DEACTIVATION_RETRY_DELAY_SECONDS,
+        )
+        _safe_old_product_log(
+            "ERROR",
+            "shared deactivation task failed "
+            f"account_id={resolved_account_id}. task_id={task_id}. "
+            f"telegram_product_key={product_key}. shafa_product_id={shafa_product_id}. "
+            f"status=failed. last_error={exc}. "
+            f"processing_token_prefix={token_prefix}.",
+        )
+    else:
+        result["deactivated"] = 1
+        complete_shared_deactivation_task_for_account(
+            task_id=task_id,
+            account_id=resolved_account_id,
+            processing_token=token,
+        )
+        try:
+            mark_uploaded_product_inactive(shafa_product_id, status_title="Деактивовано")
+        except Exception as exc:
+            _safe_old_product_log(
+                "WARN",
+                "shared deactivation could not mark uploaded product inactive "
+                f"account_id={resolved_account_id}. task_id={task_id}. "
+                f"shafa_product_id={shafa_product_id}. error={exc}.",
+            )
+        _safe_old_product_log(
+            "OK",
+            "shared deactivation task completed "
+            f"account_id={resolved_account_id}. task_id={task_id}. "
+            f"telegram_product_key={product_key}. shafa_product_id={shafa_product_id}. "
+            f"status=completed. processing_token_prefix={token_prefix}.",
+        )
+
+    return _sleep_after_shared_deactivation_attempt(
+        result=result,
+        account_id=resolved_account_id,
+        sleep_func=sleep_func,
+    )
+
+
+def _sleep_after_shared_deactivation_attempt(
+    *,
+    result: dict[str, object],
+    account_id: str,
+    sleep_func=time.sleep,
+) -> dict[str, object]:
+    min_cooldown, max_cooldown = _shared_deactivation_cooldown_range_seconds()
+    cooldown = (
+        min_cooldown
+        if min_cooldown == max_cooldown
+        else random.uniform(min_cooldown, max_cooldown)
+    )
+    result["slept_seconds"] = round(cooldown, 3)
+    if cooldown > 0:
+        _safe_old_product_log(
+            "INFO",
+            "shared deactivation worker cooldown "
+            f"account_id={account_id}. cooldown_seconds={round(cooldown, 3)}.",
+        )
+        sleep_func(cooldown)
+    return result
 
 
 def _deactivate_old_telegram_products_impl(

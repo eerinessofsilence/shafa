@@ -15,7 +15,12 @@ export type DashboardRangePreset =
   | 'quarter'
   | 'custom';
 export type MetricAccent = 'teal' | 'amber' | 'blue' | 'rose';
-export type MetricKind = 'accounts' | 'active' | 'items' | 'errors';
+export type MetricKind =
+  | 'accounts'
+  | 'active'
+  | 'items'
+  | 'errors'
+  | 'deactivated';
 
 export interface DesktopShellInfo {
   apiBaseUrl: string;
@@ -158,6 +163,40 @@ export interface ApiDashboardSeriesPoint {
   errors: number;
 }
 
+export interface ApiDashboardSharedDeactivationAccount {
+  account_id: string;
+  account_name: string | null;
+  deactivated_success_count: number;
+  not_found_treated_as_done_count: number;
+  total_done_count: number;
+  failed_count: number;
+  pending_count: number;
+  retry_scheduled_count: number;
+}
+
+export interface ApiDashboardRecentSharedDeactivation {
+  account_id: string;
+  account_name: string | null;
+  telegram_product_key: string;
+  channel_id: number | null;
+  message_id: number | null;
+  product_title: string | null;
+  shafa_product_id: string;
+  status: string;
+  completed_at: string | null;
+  reason: string | null;
+  last_error: string | null;
+}
+
+export interface ApiDashboardSharedDeactivationSummary {
+  total_deactivated_products: number;
+  deactivated_success_count: number;
+  not_found_treated_as_done_count: number;
+  total_done_count: number;
+  per_account: ApiDashboardSharedDeactivationAccount[];
+  recent: ApiDashboardRecentSharedDeactivation[];
+}
+
 export interface ApiDashboardSummary {
   generated_at: string;
   range_start: string;
@@ -173,6 +212,7 @@ export interface ApiDashboardSummary {
   top_error_account_name: string | null;
   top_error_account_errors: number;
   series: ApiDashboardSeriesPoint[];
+  shared_deactivation: ApiDashboardSharedDeactivationSummary;
 }
 
 export interface ApiAccountCreate {

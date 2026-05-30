@@ -244,10 +244,42 @@ class OutdatedProductCleanupService:
             return {"checked": 0, "deactivated": 0, "failed": 1}
 
         env = self.account_service.runtime.account_env(account)
+        shared_auto_run = str(
+            env.get("SHAFA_SHARED_DEACTIVATION_AUTO_RUN") or ""
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        shared_enabled = shared_auto_run or str(
+            env.get("SHAFA_SHARED_DEACTIVATION_ENABLED") or ""
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        shared_planner_enabled = shared_auto_run or str(
+            env.get("SHAFA_SHARED_DEACTIVATION_PLANNER_ENABLED") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if shared_enabled and not shared_planner_enabled:
+            self._append_log(
+                account,
+                "cleanup skipped detached direct deactivation because shared "
+                "deactivation is enabled; account-scoped workers are responsible. "
+                f"account={account.name}. account_id={account.id}.",
+            )
+            self._append_cycle_end(account, started_at, checked=0, deactivated=0)
+            return {"checked": 0, "deactivated": 0, "failed": 0}
         self._append_log(
             account,
-            "cleanup launching detached deactivation "
-            f"account={account.name}. account_id={account.id}. "
+            (
+                "cleanup launching shared deactivation planner "
+                if shared_enabled
+                else "cleanup launching detached deactivation "
+            )
+            + f"account={account.name}. account_id={account.id}. "
             f"cwd={project_path}. db_path={env.get('SHAFA_DB_PATH')}. "
             f"telegram_db_path={env.get('SHAFA_SHARED_TELEGRAM_DB_PATH')}.",
         )
@@ -256,18 +288,25 @@ class OutdatedProductCleanupService:
                 account
             )
             env["SHAFA_TELEGRAM_CHANNEL_LINKS_FILE"] = str(channels_file)
-        command = [
-            self.account_service.runtime.account_python(account),
-            "main.py",
-            "--deactivate-old-products-once",
-            "--old-products-limit",
-            str(self._cleanup_limit()),
-            "--old-products-sleep-seconds",
-            "0",
-        ]
-        age_days = self._cleanup_age_days()
-        if age_days is not None:
-            command.extend(["--old-products-age-days", str(age_days)])
+        if shared_enabled:
+            command = [
+                self.account_service.runtime.account_python(account),
+                "main.py",
+                "--shared-deactivation-plan-once",
+            ]
+        else:
+            command = [
+                self.account_service.runtime.account_python(account),
+                "main.py",
+                "--deactivate-old-products-once",
+                "--old-products-limit",
+                str(self._cleanup_limit()),
+                "--old-products-sleep-seconds",
+                "0",
+            ]
+            age_days = self._cleanup_age_days()
+            if age_days is not None:
+                command.extend(["--old-products-age-days", str(age_days)])
 
         try:
             completed = subprocess.run(

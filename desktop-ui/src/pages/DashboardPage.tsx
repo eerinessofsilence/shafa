@@ -5,6 +5,7 @@ import {
   createDashboardSeries,
   createDefaultDashboardCustomRange,
   formatApiError,
+  formatAccountDateTime,
 } from '../app/shared';
 import { LineChart } from '../components/LineChart';
 import { MetricCard } from '../components/MetricCard';
@@ -38,6 +39,7 @@ function DashboardPage() {
     dashboardRangePreset,
     appliedCustomRange,
   );
+  const sharedDeactivation = summary?.shared_deactivation;
   const shouldShowEmptyAccounts =
     Boolean(summary) && (summary?.total_accounts ?? 0) === 0 && !isLoading;
 
@@ -147,7 +149,7 @@ function DashboardPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {dashboardMetrics.map((metric) => (
           <MetricCard key={metric.label} {...metric} />
         ))}
@@ -193,6 +195,129 @@ function DashboardPage() {
                   Ошибки
                 </span>
               </div>
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Общая деактивация">
+          {sharedDeactivation &&
+          (sharedDeactivation.per_account.length > 0 ||
+            sharedDeactivation.recent.length > 0) ? (
+            <div className="space-y-5">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-border bg-background px-4 py-3">
+                  <p className="text-sm text-text-muted">Успешно</p>
+                  <strong className="mt-1 block text-2xl text-text">
+                    {sharedDeactivation.deactivated_success_count}
+                  </strong>
+                </div>
+                <div className="rounded-xl border border-border bg-background px-4 py-3">
+                  <p className="text-sm text-text-muted">Уже отсутствовали</p>
+                  <strong className="mt-1 block text-2xl text-text">
+                    {sharedDeactivation.not_found_treated_as_done_count}
+                  </strong>
+                </div>
+                <div className="rounded-xl border border-border bg-background px-4 py-3">
+                  <p className="text-sm text-text-muted">Всего копий</p>
+                  <strong className="mt-1 block text-2xl text-text">
+                    {sharedDeactivation.total_done_count}
+                  </strong>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-border">
+                <table className="min-w-full divide-y divide-border text-left text-sm">
+                  <thead className="bg-secondary text-text-muted">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Аккаунт</th>
+                      <th className="px-4 py-3 font-medium">Готово</th>
+                      <th className="px-4 py-3 font-medium">Успешно</th>
+                      <th className="px-4 py-3 font-medium">Нет на Shafa</th>
+                      <th className="px-4 py-3 font-medium">Ожидают</th>
+                      <th className="px-4 py-3 font-medium">Повтор</th>
+                      <th className="px-4 py-3 font-medium">Ошибки</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border bg-foreground">
+                    {sharedDeactivation.per_account.map((row) => (
+                      <tr key={row.account_id}>
+                        <td className="px-4 py-3 text-text">
+                          {row.account_name || row.account_id}
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-text">
+                          {row.total_done_count}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {row.deactivated_success_count}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {row.not_found_treated_as_done_count}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {row.pending_count}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {row.retry_scheduled_count}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {row.failed_count}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {sharedDeactivation.recent.length > 0 ? (
+                <div className="overflow-hidden rounded-xl border border-border">
+                  <table className="min-w-full divide-y divide-border text-left text-sm">
+                    <thead className="bg-secondary text-text-muted">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">Последний товар</th>
+                        <th className="px-4 py-3 font-medium">Аккаунт</th>
+                        <th className="px-4 py-3 font-medium">Shafa ID</th>
+                        <th className="px-4 py-3 font-medium">Статус</th>
+                        <th className="px-4 py-3 font-medium">Завершено</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border bg-foreground">
+                      {sharedDeactivation.recent.map((row) => (
+                        <tr
+                          key={`${row.account_id}:${row.telegram_product_key}:${row.shafa_product_id}:${row.status}`}
+                        >
+                          <td className="px-4 py-3 text-text">
+                            <span className="block font-medium">
+                              {row.product_title || row.telegram_product_key}
+                            </span>
+                            <span className="mt-1 block text-xs text-text-muted">
+                              {row.telegram_product_key}
+                              {row.channel_id && row.message_id
+                                ? ` · ${row.channel_id}/${row.message_id}`
+                                : ''}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            {row.account_name || row.account_id}
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            {row.shafa_product_id}
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            {row.status}
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            {formatAccountDateTime(row.completed_at)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-border/50 bg-secondary/40 p-5 text-sm text-text-muted">
+              По общей деактивации пока нет задач на уровне аккаунтов.
             </div>
           )}
         </Panel>

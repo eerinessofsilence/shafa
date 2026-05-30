@@ -3,7 +3,7 @@ import os
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -45,6 +45,31 @@ TELEGRAM_DEACTIVATION_STATUS_PENDING = "pending"
 TELEGRAM_DEACTIVATION_STATUS_PROCESSING = "processing"
 TELEGRAM_DEACTIVATION_STATUS_COMPLETED = "completed"
 TELEGRAM_DEACTIVATION_STATUS_FAILED = "failed"
+SHARED_PRODUCT_CHECK_UNCHECKED = "unchecked"
+SHARED_PRODUCT_CHECK_FRESH = "fresh"
+SHARED_PRODUCT_CHECK_OLD = "old"
+SHARED_PRODUCT_CHECK_DATE_MISSING = "date_missing"
+SHARED_PRODUCT_CHECK_NEEDS_RETRY = "needs_retry"
+SHARED_PRODUCT_DEACTIVATION_NONE = "none"
+SHARED_PRODUCT_DEACTIVATION_QUEUED = "queued"
+SHARED_PRODUCT_DEACTIVATION_PARTIAL = "partial"
+SHARED_PRODUCT_DEACTIVATION_COMPLETED = "completed"
+SHARED_PRODUCT_DEACTIVATION_FAILED = "failed"
+SHARED_TASK_STATUS_PENDING = "pending"
+SHARED_TASK_STATUS_PROCESSING = "processing"
+SHARED_TASK_STATUS_PARTIAL = "partial"
+SHARED_TASK_STATUS_COMPLETED = "completed"
+SHARED_TASK_STATUS_FAILED = "failed"
+SHARED_ACCOUNT_TASK_PENDING = "pending"
+SHARED_ACCOUNT_TASK_PROCESSING = "processing"
+SHARED_ACCOUNT_TASK_COMPLETED = "completed"
+SHARED_ACCOUNT_TASK_FAILED = "failed"
+SHARED_ACCOUNT_TASK_RETRY_SCHEDULED = "retry_scheduled"
+SHARED_ACCOUNT_TASK_SKIPPED = "skipped"
+SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND = "skipped_not_found"
+SHARED_ACCOUNT_PRODUCT_ACTIVE = "active"
+SHARED_ACCOUNT_PRODUCT_DEACTIVATED = "deactivated"
+SHARED_ACCOUNT_PRODUCT_MISSING = "missing"
 LEGACY_TELEGRAM_ACCOUNT_ID = "__legacy_unassigned__"
 DEFAULT_ACCOUNT_PLACEHOLDER = "default"
 
@@ -182,6 +207,93 @@ def _create_telegram_products_table(conn: sqlite3.Connection) -> None:
             last_shafa_delete_error TEXT,
             UNIQUE(account_id, channel_id, message_id)
         )
+        """
+    )
+
+
+def _create_shared_deactivation_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS shared_telegram_products (
+            telegram_product_key TEXT PRIMARY KEY,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            telegram_message_date TEXT,
+            product_title TEXT,
+            checked_status TEXT NOT NULL DEFAULT 'unchecked',
+            deactivation_status TEXT NOT NULL DEFAULT 'none',
+            age_source TEXT,
+            last_checked_at TEXT,
+            next_check_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(channel_id, message_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_shared_telegram_products_check
+            ON shared_telegram_products(checked_status, next_check_at, last_checked_at);
+        CREATE INDEX IF NOT EXISTS idx_shared_telegram_products_deactivation
+            ON shared_telegram_products(deactivation_status);
+
+        CREATE TABLE IF NOT EXISTS shared_telegram_product_accounts (
+            telegram_product_key TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            shafa_product_id TEXT NOT NULL,
+            product_title TEXT,
+            account_product_status TEXT NOT NULL DEFAULT 'active',
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (telegram_product_key, account_id),
+            FOREIGN KEY (telegram_product_key)
+                REFERENCES shared_telegram_products(telegram_product_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_shared_product_accounts_account
+            ON shared_telegram_product_accounts(account_id, account_product_status);
+
+        CREATE TABLE IF NOT EXISTS shared_deactivation_tasks (
+            task_id TEXT PRIMARY KEY,
+            telegram_product_key TEXT NOT NULL,
+            telegram_message_date TEXT,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(telegram_product_key),
+            FOREIGN KEY (telegram_product_key)
+                REFERENCES shared_telegram_products(telegram_product_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_shared_deactivation_tasks_status
+            ON shared_deactivation_tasks(status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS shared_deactivation_task_accounts (
+            task_id TEXT NOT NULL,
+            telegram_product_key TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            shafa_product_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            processing_token TEXT,
+            processing_started_at REAL,
+            processing_expires_at REAL,
+            next_retry_at REAL,
+            completed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (task_id, account_id),
+            FOREIGN KEY (task_id) REFERENCES shared_deactivation_tasks(task_id),
+            FOREIGN KEY (telegram_product_key)
+                REFERENCES shared_telegram_products(telegram_product_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_shared_task_accounts_claim
+            ON shared_deactivation_task_accounts(
+                account_id,
+                status,
+                next_retry_at,
+                processing_expires_at
+            );
+        CREATE INDEX IF NOT EXISTS idx_shared_task_accounts_parent
+            ON shared_deactivation_task_accounts(task_id, status);
         """
     )
 
@@ -350,6 +462,8 @@ def init_db(db_path: Optional[Path] = None) -> None:
         )
         _ensure_schema_migrations_table(conn)
         _create_telegram_products_table(conn)
+        if db_path == _telegram_products_db_path():
+            _create_shared_deactivation_tables(conn)
         _create_telegram_scan_cursors_table(conn)
         _create_invalid_uploaded_products_table(conn)
         _ensure_uploaded_products_schema(conn)
@@ -2733,6 +2847,968 @@ def _extract_product_name_from_parsed_data(parsed_data: object) -> Optional[str]
         return None
     name = str(payload.get("name") or "").strip()
     return name or None
+
+
+def shared_telegram_product_key(channel_id: int, message_id: int) -> str:
+    return f"tg:{int(channel_id)}:{int(message_id)}"
+
+
+def _parse_datetime_utc(value: object) -> Optional[datetime]:
+    text = _normalize_datetime_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _serialize_shared_task_account_row(row: sqlite3.Row) -> dict:
+    return {
+        "task_id": row["task_id"],
+        "telegram_product_key": row["telegram_product_key"],
+        "account_id": row["account_id"],
+        "shafa_product_id": row["shafa_product_id"],
+        "status": row["status"],
+        "retry_count": int(row["retry_count"] or 0),
+        "last_error": row["last_error"],
+        "processing_token": row["processing_token"],
+        "processing_started_at": (
+            float(row["processing_started_at"])
+            if row["processing_started_at"] is not None
+            else None
+        ),
+        "processing_expires_at": (
+            float(row["processing_expires_at"])
+            if row["processing_expires_at"] is not None
+            else None
+        ),
+        "next_retry_at": (
+            float(row["next_retry_at"]) if row["next_retry_at"] is not None else None
+        ),
+        "completed_at": row["completed_at"],
+        "telegram_message_date": row["telegram_message_date"],
+        "reason": row["reason"],
+    }
+
+
+def reconcile_shared_telegram_products(
+    *,
+    account_id: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> dict[str, int]:
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    normalized_account_id = (
+        _current_account_id(account_id) if account_id is not None else None
+    )
+    row_limit = None if limit is None or int(limit) <= 0 else max(int(limit), 1)
+    account_filter = "AND account_id = ?" if normalized_account_id is not None else ""
+    limit_clause = "LIMIT ?" if row_limit is not None else ""
+    params: list[object] = [TELEGRAM_PRODUCT_STATUS_CREATED]
+    if normalized_account_id is not None:
+        params.append(normalized_account_id)
+    if row_limit is not None:
+        params.append(row_limit)
+
+    with _connect(telegram_db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                account_id,
+                channel_id,
+                message_id,
+                created_product_id,
+                parsed_data,
+                telegram_message_date,
+                shafa_deactivated_at,
+                shafa_deleted_at
+            FROM telegram_products
+            WHERE status = ?
+              AND created = 1
+              AND account_id IS NOT NULL
+              AND TRIM(account_id) != ''
+              AND account_id != ?
+              AND created_product_id IS NOT NULL
+              AND TRIM(created_product_id) != ''
+              AND created_product_id NOT LIKE 'SKIPPED_%'
+              {account_filter}
+            ORDER BY channel_id ASC, message_id ASC, account_id ASC
+            {limit_clause}
+            """,
+            (TELEGRAM_PRODUCT_STATUS_CREATED, LEGACY_TELEGRAM_ACCOUNT_ID, *params[1:]),
+        ).fetchall()
+
+        products_seen: set[str] = set()
+        memberships_seen = 0
+        for row in rows:
+            channel_id = int(row["channel_id"])
+            message_id = int(row["message_id"])
+            key = shared_telegram_product_key(channel_id, message_id)
+            title = _extract_product_name_from_parsed_data(row["parsed_data"])
+            message_date = _normalize_datetime_text(row["telegram_message_date"])
+            age_source = "telegram_message_date" if message_date else None
+            if row["shafa_deleted_at"]:
+                account_status = SHARED_ACCOUNT_PRODUCT_MISSING
+            elif row["shafa_deactivated_at"]:
+                account_status = SHARED_ACCOUNT_PRODUCT_DEACTIVATED
+            else:
+                account_status = SHARED_ACCOUNT_PRODUCT_ACTIVE
+
+            conn.execute(
+                """
+                INSERT INTO shared_telegram_products (
+                    telegram_product_key,
+                    channel_id,
+                    message_id,
+                    telegram_message_date,
+                    product_title,
+                    checked_status,
+                    deactivation_status,
+                    age_source
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(channel_id, message_id) DO UPDATE SET
+                    telegram_message_date = COALESCE(
+                        shared_telegram_products.telegram_message_date,
+                        excluded.telegram_message_date
+                    ),
+                    product_title = COALESCE(
+                        excluded.product_title,
+                        shared_telegram_products.product_title
+                    ),
+                    age_source = COALESCE(
+                        shared_telegram_products.age_source,
+                        excluded.age_source
+                    ),
+                    updated_at = datetime('now')
+                """,
+                (
+                    key,
+                    channel_id,
+                    message_id,
+                    message_date,
+                    title,
+                    SHARED_PRODUCT_CHECK_UNCHECKED,
+                    SHARED_PRODUCT_DEACTIVATION_NONE,
+                    age_source,
+                ),
+            )
+            products_seen.add(key)
+
+            conn.execute(
+                """
+                INSERT INTO shared_telegram_product_accounts (
+                    telegram_product_key,
+                    account_id,
+                    shafa_product_id,
+                    product_title,
+                    account_product_status,
+                    last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(telegram_product_key, account_id) DO UPDATE SET
+                    shafa_product_id = excluded.shafa_product_id,
+                    product_title = COALESCE(
+                        excluded.product_title,
+                        shared_telegram_product_accounts.product_title
+                    ),
+                    account_product_status = excluded.account_product_status,
+                    last_seen_at = datetime('now'),
+                    updated_at = datetime('now')
+                """,
+                (
+                    key,
+                    str(row["account_id"]),
+                    str(row["created_product_id"]),
+                    title,
+                    account_status,
+                ),
+            )
+            if account_status == SHARED_ACCOUNT_PRODUCT_ACTIVE:
+                conn.execute(
+                    """
+                    UPDATE shared_telegram_products
+                    SET checked_status = CASE
+                            WHEN deactivation_status = ? THEN ?
+                            ELSE checked_status
+                        END,
+                        next_check_at = CASE
+                            WHEN deactivation_status = ? THEN NULL
+                            ELSE next_check_at
+                        END,
+                        updated_at = datetime('now')
+                    WHERE telegram_product_key = ?
+                    """,
+                    (
+                        SHARED_PRODUCT_DEACTIVATION_COMPLETED,
+                        SHARED_PRODUCT_CHECK_UNCHECKED,
+                        SHARED_PRODUCT_DEACTIVATION_COMPLETED,
+                        key,
+                    ),
+                )
+            memberships_seen += 1
+
+        copied_dates = copy_shared_telegram_product_dates_from_memberships(conn)
+
+    return {
+        "products": len(products_seen),
+        "memberships": memberships_seen,
+        "dates_copied": copied_dates,
+    }
+
+
+def copy_shared_telegram_product_dates_from_memberships(
+    conn: sqlite3.Connection,
+) -> int:
+    rows = conn.execute(
+        """
+        SELECT
+            shared.telegram_product_key,
+            MIN(datetime(source.telegram_message_date)) AS copied_date
+        FROM shared_telegram_products AS shared
+        JOIN telegram_products AS source
+          ON source.channel_id = shared.channel_id
+         AND source.message_id = shared.message_id
+        WHERE (
+                shared.telegram_message_date IS NULL
+                OR TRIM(shared.telegram_message_date) = ''
+              )
+          AND source.telegram_message_date IS NOT NULL
+          AND TRIM(source.telegram_message_date) != ''
+        GROUP BY shared.telegram_product_key
+        """
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        copied_date = _normalize_datetime_text(row["copied_date"])
+        if not copied_date:
+            continue
+        cursor = conn.execute(
+            """
+            UPDATE shared_telegram_products
+            SET telegram_message_date = ?,
+                age_source = COALESCE(age_source, 'telegram_message_date'),
+                checked_status = CASE
+                    WHEN checked_status IN (?, ?) THEN ?
+                    ELSE checked_status
+                END,
+                next_check_at = NULL,
+                updated_at = datetime('now')
+            WHERE telegram_product_key = ?
+              AND (
+                    telegram_message_date IS NULL
+                    OR TRIM(telegram_message_date) = ''
+                  )
+            """,
+            (
+                copied_date,
+                SHARED_PRODUCT_CHECK_DATE_MISSING,
+                SHARED_PRODUCT_CHECK_NEEDS_RETRY,
+                SHARED_PRODUCT_CHECK_UNCHECKED,
+                row["telegram_product_key"],
+            ),
+        )
+        updated += int(cursor.rowcount or 0)
+    return updated
+
+
+def plan_shared_deactivation_tasks(
+    *,
+    older_than_days: int = 183,
+    limit: int = 100,
+    account_id: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    age_days = max(int(older_than_days), 183)
+    row_limit = max(int(limit), 1)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    reconcile_shared_telegram_products(account_id=account_id)
+
+    checked = old = fresh = date_missing = tasks = account_tasks = 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=age_days)
+    with _connect(telegram_db_path) as conn:
+        copy_shared_telegram_product_dates_from_memberships(conn)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM shared_telegram_products
+            WHERE (
+                    checked_status IN (?, ?, ?)
+                    OR last_checked_at IS NULL
+                    OR datetime(last_checked_at) <= datetime('now', '-1 day')
+                  )
+              AND (
+                    next_check_at IS NULL
+                    OR datetime(next_check_at) <= datetime('now')
+                  )
+            ORDER BY
+                CASE checked_status
+                    WHEN ? THEN 0
+                    WHEN ? THEN 1
+                    WHEN ? THEN 2
+                    ELSE 3
+                END,
+                datetime(telegram_message_date) ASC,
+                channel_id ASC,
+                message_id ASC
+            LIMIT ?
+            """,
+            (
+                SHARED_PRODUCT_CHECK_UNCHECKED,
+                SHARED_PRODUCT_CHECK_NEEDS_RETRY,
+                SHARED_PRODUCT_CHECK_DATE_MISSING,
+                SHARED_PRODUCT_CHECK_UNCHECKED,
+                SHARED_PRODUCT_CHECK_NEEDS_RETRY,
+                SHARED_PRODUCT_CHECK_DATE_MISSING,
+                row_limit,
+            ),
+        ).fetchall()
+
+        for row in rows:
+            checked += 1
+            key = str(row["telegram_product_key"])
+            message_date_text = _normalize_datetime_text(row["telegram_message_date"])
+            message_dt = _parse_datetime_utc(message_date_text)
+            if message_dt is None:
+                date_missing += 1
+                if not dry_run:
+                    conn.execute(
+                        """
+                        UPDATE shared_telegram_products
+                        SET checked_status = ?,
+                            last_checked_at = datetime('now'),
+                            next_check_at = datetime('now', '+1 day'),
+                            updated_at = datetime('now')
+                        WHERE telegram_product_key = ?
+                        """,
+                        (SHARED_PRODUCT_CHECK_DATE_MISSING, key),
+                    )
+                continue
+
+            if message_dt > cutoff:
+                fresh += 1
+                if not dry_run:
+                    conn.execute(
+                        """
+                        UPDATE shared_telegram_products
+                        SET checked_status = ?,
+                            last_checked_at = datetime('now'),
+                            next_check_at = datetime('now', '+1 day'),
+                            updated_at = datetime('now')
+                        WHERE telegram_product_key = ?
+                        """,
+                        (SHARED_PRODUCT_CHECK_FRESH, key),
+                    )
+                continue
+
+            old += 1
+            task_id = uuid.uuid4().hex
+            reason = f"telegram_message_older_than_{age_days}_days"
+            if not dry_run:
+                conn.execute(
+                    """
+                    INSERT INTO shared_deactivation_tasks (
+                        task_id,
+                        telegram_product_key,
+                        telegram_message_date,
+                        reason,
+                        status
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(telegram_product_key) DO UPDATE SET
+                        telegram_message_date = excluded.telegram_message_date,
+                        reason = excluded.reason,
+                        status = CASE
+                            WHEN shared_deactivation_tasks.status = ? THEN ?
+                            ELSE shared_deactivation_tasks.status
+                        END,
+                        updated_at = datetime('now')
+                    """,
+                    (
+                        task_id,
+                        key,
+                        message_date_text,
+                        reason,
+                        SHARED_TASK_STATUS_PENDING,
+                        SHARED_TASK_STATUS_COMPLETED,
+                        SHARED_TASK_STATUS_PARTIAL,
+                    ),
+                )
+                task_row = conn.execute(
+                    """
+                    SELECT task_id
+                    FROM shared_deactivation_tasks
+                    WHERE telegram_product_key = ?
+                    """,
+                    (key,),
+                ).fetchone()
+                if task_row is None:
+                    continue
+                resolved_task_id = str(task_row["task_id"])
+                tasks += 1
+                membership_rows = conn.execute(
+                    """
+                    SELECT account_id, shafa_product_id
+                    FROM shared_telegram_product_accounts
+                    WHERE telegram_product_key = ?
+                      AND account_product_status = ?
+                      AND shafa_product_id IS NOT NULL
+                      AND TRIM(shafa_product_id) != ''
+                    """,
+                    (key, SHARED_ACCOUNT_PRODUCT_ACTIVE),
+                ).fetchall()
+                for membership in membership_rows:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO shared_deactivation_task_accounts (
+                            task_id,
+                            telegram_product_key,
+                            account_id,
+                            shafa_product_id,
+                            status
+                        )
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(task_id, account_id) DO UPDATE SET
+                            shafa_product_id = CASE
+                                WHEN shared_deactivation_task_accounts.status = ?
+                                    THEN shared_deactivation_task_accounts.shafa_product_id
+                                ELSE excluded.shafa_product_id
+                            END,
+                            status = CASE
+                                WHEN shared_deactivation_task_accounts.status IN (?, ?)
+                                    THEN shared_deactivation_task_accounts.status
+                                ELSE excluded.status
+                            END,
+                            updated_at = datetime('now')
+                        """,
+                        (
+                            resolved_task_id,
+                            key,
+                            str(membership["account_id"]),
+                            str(membership["shafa_product_id"]),
+                            SHARED_ACCOUNT_TASK_PENDING,
+                            SHARED_ACCOUNT_TASK_COMPLETED,
+                            SHARED_ACCOUNT_TASK_COMPLETED,
+                            SHARED_ACCOUNT_TASK_PROCESSING,
+                        ),
+                    )
+                    account_tasks += int(cursor.rowcount or 0)
+                conn.execute(
+                    """
+                    UPDATE shared_telegram_products
+                    SET checked_status = ?,
+                        deactivation_status = ?,
+                        last_checked_at = datetime('now'),
+                        next_check_at = NULL,
+                        age_source = COALESCE(age_source, 'telegram_message_date'),
+                        updated_at = datetime('now')
+                    WHERE telegram_product_key = ?
+                    """,
+                    (
+                        SHARED_PRODUCT_CHECK_OLD,
+                        SHARED_PRODUCT_DEACTIVATION_QUEUED,
+                        key,
+                    ),
+                )
+                update_shared_deactivation_parent_status(conn, resolved_task_id)
+
+    return {
+        "checked": checked,
+        "old": old,
+        "fresh": fresh,
+        "date_missing": date_missing,
+        "tasks": tasks,
+        "account_tasks": account_tasks,
+        "dry_run": int(bool(dry_run)),
+    }
+
+
+def claim_shared_deactivation_task_for_account(
+    *,
+    account_id: Optional[str] = None,
+    lease_seconds: float = 900.0,
+    max_retries: int = 3,
+    now_ts: Optional[float] = None,
+) -> Optional[dict]:
+    normalized_account_id = _current_account_id(account_id)
+    current_ts = float(now_ts if now_ts is not None else time.time())
+    lease_expires_at = current_ts + max(float(lease_seconds), 1.0)
+    retry_limit = max(int(max_retries), 1)
+    token = uuid.uuid4().hex
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT account_task.*, parent.telegram_message_date, parent.reason
+            FROM shared_deactivation_task_accounts AS account_task
+            JOIN shared_deactivation_tasks AS parent
+              ON parent.task_id = account_task.task_id
+            WHERE account_task.account_id = ?
+              AND parent.status != ?
+              AND (
+                    account_task.status = ?
+                    OR account_task.status = ?
+                    OR (
+                        account_task.status = ?
+                        AND COALESCE(account_task.retry_count, 0) < ?
+                    )
+                    OR (
+                        account_task.status = ?
+                        AND account_task.processing_expires_at IS NOT NULL
+                        AND account_task.processing_expires_at <= ?
+                    )
+                  )
+              AND (
+                    account_task.next_retry_at IS NULL
+                    OR account_task.next_retry_at <= ?
+                  )
+            ORDER BY
+                CASE account_task.status
+                    WHEN ? THEN 0
+                    WHEN ? THEN 1
+                    WHEN ? THEN 2
+                    WHEN ? THEN 3
+                    ELSE 4
+                END,
+                account_task.created_at ASC
+            LIMIT 1
+            """,
+            (
+                normalized_account_id,
+                SHARED_TASK_STATUS_COMPLETED,
+                SHARED_ACCOUNT_TASK_PENDING,
+                SHARED_ACCOUNT_TASK_RETRY_SCHEDULED,
+                SHARED_ACCOUNT_TASK_FAILED,
+                retry_limit,
+                SHARED_ACCOUNT_TASK_PROCESSING,
+                current_ts,
+                current_ts,
+                SHARED_ACCOUNT_TASK_PENDING,
+                SHARED_ACCOUNT_TASK_RETRY_SCHEDULED,
+                SHARED_ACCOUNT_TASK_FAILED,
+                SHARED_ACCOUNT_TASK_PROCESSING,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        cursor = conn.execute(
+            """
+            UPDATE shared_deactivation_task_accounts
+            SET status = ?,
+                processing_token = ?,
+                processing_started_at = ?,
+                processing_expires_at = ?,
+                updated_at = datetime('now')
+            WHERE task_id = ?
+              AND account_id = ?
+              AND (
+                    status = ?
+                    OR status = ?
+                    OR (
+                        status = ?
+                        AND COALESCE(retry_count, 0) < ?
+                    )
+                    OR (
+                        status = ?
+                        AND processing_expires_at IS NOT NULL
+                        AND processing_expires_at <= ?
+                    )
+                  )
+            """,
+            (
+                SHARED_ACCOUNT_TASK_PROCESSING,
+                token,
+                current_ts,
+                lease_expires_at,
+                row["task_id"],
+                normalized_account_id,
+                SHARED_ACCOUNT_TASK_PENDING,
+                SHARED_ACCOUNT_TASK_RETRY_SCHEDULED,
+                SHARED_ACCOUNT_TASK_FAILED,
+                retry_limit,
+                SHARED_ACCOUNT_TASK_PROCESSING,
+                current_ts,
+            ),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return None
+        claimed = conn.execute(
+            """
+            SELECT account_task.*, parent.telegram_message_date, parent.reason
+            FROM shared_deactivation_task_accounts AS account_task
+            JOIN shared_deactivation_tasks AS parent
+              ON parent.task_id = account_task.task_id
+            WHERE account_task.task_id = ?
+              AND account_task.account_id = ?
+              AND account_task.processing_token = ?
+            """,
+            (row["task_id"], normalized_account_id, token),
+        ).fetchone()
+        update_shared_deactivation_parent_status(conn, str(row["task_id"]))
+    return _serialize_shared_task_account_row(claimed) if claimed is not None else None
+
+
+def complete_shared_deactivation_task_for_account(
+    *,
+    task_id: str,
+    account_id: Optional[str],
+    processing_token: str,
+) -> bool:
+    normalized_account_id = _current_account_id(account_id)
+    token = str(processing_token or "").strip()
+    if not token:
+        return False
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE shared_deactivation_task_accounts
+            SET status = ?,
+                last_error = NULL,
+                processing_token = NULL,
+                processing_started_at = NULL,
+                processing_expires_at = NULL,
+                next_retry_at = NULL,
+                completed_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE task_id = ?
+              AND account_id = ?
+              AND processing_token = ?
+              AND status = ?
+            """,
+            (
+                SHARED_ACCOUNT_TASK_COMPLETED,
+                task_id,
+                normalized_account_id,
+                token,
+                SHARED_ACCOUNT_TASK_PROCESSING,
+            ),
+        )
+        updated = cursor.rowcount == 1
+        if updated:
+            row = conn.execute(
+                """
+                SELECT
+                    account_task.telegram_product_key,
+                    account_task.shafa_product_id,
+                    shared.channel_id,
+                    shared.message_id
+                FROM shared_deactivation_task_accounts AS account_task
+                JOIN shared_telegram_products AS shared
+                  ON shared.telegram_product_key = account_task.telegram_product_key
+                WHERE account_task.task_id = ? AND account_task.account_id = ?
+                """,
+                (task_id, normalized_account_id),
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    """
+                    UPDATE telegram_products
+                    SET shafa_deactivated_at = COALESCE(
+                            shafa_deactivated_at,
+                            datetime('now')
+                        ),
+                        last_shafa_deactivate_error = NULL,
+                        deactivation_status = ?,
+                        deactivation_processing_started_at = NULL,
+                        deactivation_processing_token = NULL,
+                        deactivation_processing_expires_at = NULL,
+                        deactivation_failed_at = NULL,
+                        deactivation_error = NULL,
+                        deactivation_completed_at = datetime('now'),
+                        updated_at = datetime('now')
+                    WHERE account_id = ?
+                      AND channel_id = ?
+                      AND message_id = ?
+                      AND created_product_id = ?
+                    """,
+                    (
+                        TELEGRAM_DEACTIVATION_STATUS_COMPLETED,
+                        normalized_account_id,
+                        int(row["channel_id"]),
+                        int(row["message_id"]),
+                        str(row["shafa_product_id"]),
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE shared_telegram_product_accounts
+                    SET account_product_status = ?,
+                        updated_at = datetime('now')
+                    WHERE telegram_product_key = ?
+                      AND account_id = ?
+                    """,
+                    (
+                        SHARED_ACCOUNT_PRODUCT_DEACTIVATED,
+                        row["telegram_product_key"],
+                        normalized_account_id,
+                    ),
+                )
+            update_shared_deactivation_parent_status(conn, task_id)
+    return updated
+
+
+def skip_shared_deactivation_task_not_found_for_account(
+    *,
+    task_id: str,
+    account_id: Optional[str],
+    processing_token: str,
+) -> bool:
+    normalized_account_id = _current_account_id(account_id)
+    token = str(processing_token or "").strip()
+    if not token:
+        return False
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE shared_deactivation_task_accounts
+            SET status = ?,
+                last_error = NULL,
+                processing_token = NULL,
+                processing_started_at = NULL,
+                processing_expires_at = NULL,
+                next_retry_at = NULL,
+                completed_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE task_id = ?
+              AND account_id = ?
+              AND processing_token = ?
+              AND status = ?
+            """,
+            (
+                SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                task_id,
+                normalized_account_id,
+                token,
+                SHARED_ACCOUNT_TASK_PROCESSING,
+            ),
+        )
+        updated = cursor.rowcount == 1
+        if updated:
+            row = conn.execute(
+                """
+                SELECT
+                    account_task.telegram_product_key,
+                    account_task.shafa_product_id,
+                    shared.channel_id,
+                    shared.message_id
+                FROM shared_deactivation_task_accounts AS account_task
+                JOIN shared_telegram_products AS shared
+                  ON shared.telegram_product_key = account_task.telegram_product_key
+                WHERE account_task.task_id = ? AND account_task.account_id = ?
+                """,
+                (task_id, normalized_account_id),
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    """
+                    UPDATE telegram_products
+                    SET shafa_deleted_at = COALESCE(
+                            shafa_deleted_at,
+                            datetime('now')
+                        ),
+                        last_shafa_deactivate_error = NULL,
+                        deactivation_status = ?,
+                        deactivation_processing_started_at = NULL,
+                        deactivation_processing_token = NULL,
+                        deactivation_processing_expires_at = NULL,
+                        deactivation_failed_at = NULL,
+                        deactivation_error = NULL,
+                        deactivation_completed_at = datetime('now'),
+                        updated_at = datetime('now')
+                    WHERE account_id = ?
+                      AND channel_id = ?
+                      AND message_id = ?
+                      AND created_product_id = ?
+                    """,
+                    (
+                        TELEGRAM_DEACTIVATION_STATUS_COMPLETED,
+                        normalized_account_id,
+                        int(row["channel_id"]),
+                        int(row["message_id"]),
+                        str(row["shafa_product_id"]),
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE shared_telegram_product_accounts
+                    SET account_product_status = ?,
+                        updated_at = datetime('now')
+                    WHERE telegram_product_key = ?
+                      AND account_id = ?
+                    """,
+                    (
+                        SHARED_ACCOUNT_PRODUCT_MISSING,
+                        row["telegram_product_key"],
+                        normalized_account_id,
+                    ),
+                )
+            update_shared_deactivation_parent_status(conn, task_id)
+    return updated
+
+
+def fail_shared_deactivation_task_for_account(
+    *,
+    task_id: str,
+    account_id: Optional[str],
+    processing_token: str,
+    error_message: str,
+    retry_delay_seconds: float = 300.0,
+    max_retries: int = 3,
+    now_ts: Optional[float] = None,
+) -> bool:
+    normalized_account_id = _current_account_id(account_id)
+    token = str(processing_token or "").strip()
+    if not token:
+        return False
+    retry_limit = max(int(max_retries), 1)
+    telegram_db_path = _telegram_products_db_path()
+    _ensure_db_initialized(telegram_db_path)
+    with _connect(telegram_db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(retry_count, 0) AS retry_count
+            FROM shared_deactivation_task_accounts
+            WHERE task_id = ?
+              AND account_id = ?
+              AND processing_token = ?
+              AND status = ?
+            """,
+            (
+                task_id,
+                normalized_account_id,
+                token,
+                SHARED_ACCOUNT_TASK_PROCESSING,
+            ),
+        ).fetchone()
+        if row is None:
+            return False
+        next_retry_count = int(row["retry_count"] or 0) + 1
+        next_status = (
+            SHARED_ACCOUNT_TASK_RETRY_SCHEDULED
+            if next_retry_count < retry_limit
+            else SHARED_ACCOUNT_TASK_FAILED
+        )
+        current_ts = float(now_ts if now_ts is not None else time.time())
+        next_retry_at = (
+            current_ts + max(float(retry_delay_seconds), 1.0)
+            if next_status == SHARED_ACCOUNT_TASK_RETRY_SCHEDULED
+            else None
+        )
+        cursor = conn.execute(
+            """
+            UPDATE shared_deactivation_task_accounts
+            SET status = ?,
+                retry_count = ?,
+                last_error = ?,
+                processing_token = NULL,
+                processing_started_at = NULL,
+                processing_expires_at = NULL,
+                next_retry_at = ?,
+                updated_at = datetime('now')
+            WHERE task_id = ?
+              AND account_id = ?
+              AND processing_token = ?
+              AND status = ?
+            """,
+            (
+                next_status,
+                next_retry_count,
+                str(error_message or "").strip() or None,
+                next_retry_at,
+                task_id,
+                normalized_account_id,
+                token,
+                SHARED_ACCOUNT_TASK_PROCESSING,
+            ),
+        )
+        updated = cursor.rowcount == 1
+        if updated:
+            update_shared_deactivation_parent_status(conn, task_id)
+    return updated
+
+
+def update_shared_deactivation_parent_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> None:
+    rows = conn.execute(
+        """
+        SELECT status
+        FROM shared_deactivation_task_accounts
+        WHERE task_id = ?
+        """,
+        (task_id,),
+    ).fetchall()
+    if not rows:
+        next_status = SHARED_TASK_STATUS_PENDING
+    else:
+        statuses = {str(row["status"]) for row in rows}
+        terminal_success_statuses = {
+            SHARED_ACCOUNT_TASK_COMPLETED,
+            SHARED_ACCOUNT_TASK_SKIPPED,
+            SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+        }
+        if statuses <= terminal_success_statuses:
+            next_status = SHARED_TASK_STATUS_COMPLETED
+        elif statuses == {SHARED_ACCOUNT_TASK_FAILED}:
+            next_status = SHARED_TASK_STATUS_FAILED
+        elif SHARED_ACCOUNT_TASK_PROCESSING in statuses:
+            next_status = SHARED_TASK_STATUS_PROCESSING
+        elif statuses & terminal_success_statuses:
+            next_status = SHARED_TASK_STATUS_PARTIAL
+        elif SHARED_ACCOUNT_TASK_FAILED in statuses and statuses <= {
+            SHARED_ACCOUNT_TASK_FAILED,
+            SHARED_ACCOUNT_TASK_SKIPPED,
+        }:
+            next_status = SHARED_TASK_STATUS_FAILED
+        else:
+            next_status = SHARED_TASK_STATUS_PENDING
+    conn.execute(
+        """
+        UPDATE shared_deactivation_tasks
+        SET status = ?,
+            updated_at = datetime('now')
+        WHERE task_id = ?
+        """,
+        (next_status, task_id),
+    )
+    task_row = conn.execute(
+        """
+        SELECT telegram_product_key
+        FROM shared_deactivation_tasks
+        WHERE task_id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+    if task_row is None:
+        return
+    product_status = {
+        SHARED_TASK_STATUS_COMPLETED: SHARED_PRODUCT_DEACTIVATION_COMPLETED,
+        SHARED_TASK_STATUS_FAILED: SHARED_PRODUCT_DEACTIVATION_FAILED,
+        SHARED_TASK_STATUS_PARTIAL: SHARED_PRODUCT_DEACTIVATION_PARTIAL,
+        SHARED_TASK_STATUS_PROCESSING: SHARED_PRODUCT_DEACTIVATION_PARTIAL,
+    }.get(next_status, SHARED_PRODUCT_DEACTIVATION_QUEUED)
+    conn.execute(
+        """
+        UPDATE shared_telegram_products
+        SET deactivation_status = ?,
+            updated_at = datetime('now')
+        WHERE telegram_product_key = ?
+        """,
+        (product_status, task_row["telegram_product_key"]),
+    )
 
 
 def _extract_message_id_from_payload(raw_payload: object) -> Optional[int]:
