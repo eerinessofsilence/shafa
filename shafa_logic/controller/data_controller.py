@@ -52,9 +52,12 @@ from data.const import (
 from data.db import (
     backfill_telegram_product_message_dates_from_existing_db,
     claim_telegram_product_deactivation,
+    claim_creation_product_for_creation,
     claim_shared_deactivation_task_for_account,
     claim_telegram_fetch,
     complete_shared_deactivation_task_for_account,
+    creation_products_db_path,
+    creation_products_enabled,
     enqueue_expired_telegram_products_for_deactivation,
     enqueue_telegram_product_deactivation,
     fail_shared_deactivation_task_for_account,
@@ -62,6 +65,7 @@ from data.db import (
     finish_telegram_fetch,
     finish_telegram_product_deactivation,
     get_brand_id_by_name,
+    get_creation_product,
     get_max_telegram_product_message_id,
     get_next_uncreated_telegram_product,
     get_telegram_scan_cursor,
@@ -75,6 +79,11 @@ from data.db import (
     load_telegram_channels,
     mark_uploaded_product_inactive,
     mark_telegram_product_deactivated_on_shafa,
+    mark_telegram_product_deactivation_check,
+    mark_telegram_product_not_found_on_shafa,
+    mark_creation_product_created,
+    mark_creation_product_failed,
+    mark_creation_product_skipped,
     mark_telegram_backfill_started,
     mark_telegram_scan_started,
     finish_telegram_backfill,
@@ -87,7 +96,14 @@ from data.db import (
     save_telegram_product,
     set_telegram_product_message_date,
     skip_shared_deactivation_task_not_found_for_account,
+    skip_telegram_product_deactivation_not_found,
     size_id_exists,
+    upsert_created_telegram_product_mapping,
+    upsert_creation_product,
+    TELEGRAM_DEACTIVATION_CHECK_DATE_MISSING,
+    TELEGRAM_DEACTIVATION_CHECK_FRESH,
+    TELEGRAM_DEACTIVATION_CHECK_OLD,
+    TELEGRAM_DEACTIVATION_STATUS_SKIPPED_NOT_FOUND,
     telegram_products_exist,
 )
 from data.size_mapping import (
@@ -113,7 +129,9 @@ DEFAULT_TELEGRAM_FETCH_WAIT_SECONDS = 3.0
 DEFAULT_TELEGRAM_SCAN_BATCH_SIZE = 150
 DEFAULT_TELEGRAM_CHANNEL_SCAN_INTERVAL_SECONDS = 180
 DEFAULT_TELEGRAM_CHANNEL_SCAN_LEASE_SECONDS = 360
+MIN_TELEGRAM_PRODUCT_MAX_AGE_DAYS = 183
 DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS = 183
+UNSAFE_OLD_PRODUCT_AGE_OVERRIDE_ENV = "SHAFA_ALLOW_UNSAFE_OLD_PRODUCT_AGE_DAYS"
 DEFAULT_OLD_PRODUCT_DEACTIVATE_BATCH_SIZE = 1
 DEFAULT_OLD_PRODUCT_DEACTIVATE_SLEEP_SECONDS = 3.0
 DEFAULT_SHARED_DEACTIVATION_SCAN_SECONDS = 10.0
@@ -121,6 +139,7 @@ DEFAULT_SHARED_DEACTIVATION_COOLDOWN_MIN_SECONDS = 10.0
 DEFAULT_SHARED_DEACTIVATION_COOLDOWN_MAX_SECONDS = 30.0
 DEFAULT_SHARED_DEACTIVATION_LEASE_SECONDS = 900.0
 DEFAULT_SHARED_DEACTIVATION_RETRY_DELAY_SECONDS = 300.0
+DEFAULT_CREATION_PRODUCT_LEASE_SECONDS = 900
 DEFAULT_AUTO_DEACTIVATE_TELEGRAM_MATCH_SCORE = 0.85
 MIN_PRODUCT_PRICE_DIGITS = 3
 MAX_PRODUCT_PRICE_DIGITS = 4
@@ -129,6 +148,8 @@ _OLD_PRODUCT_AGE_CHECK_CURSOR: dict[tuple[str, str], int] = {}
 api_id = TELEGRAM_API_ID
 api_hash = TELEGRAM_API_HASH
 SKIPPED_CREATE_RETRY_LIMIT = "SKIPPED_CREATE_RETRY_LIMIT"
+_CREATION_DB_PATH_LOGGED = False
+_CREATION_DB_BYPASS_LOGGED = False
 
 DEFAULT_DESCRIPTION = (
     "36 (23.0 см)\n"
@@ -2968,7 +2989,9 @@ def _telegram_product_max_age_days() -> int:
         value = int(raw)
     except ValueError:
         return DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
-    return max(value, 1)
+    if _env_flag_enabled(UNSAFE_OLD_PRODUCT_AGE_OVERRIDE_ENV):
+        return max(value, 1)
+    return max(value, MIN_TELEGRAM_PRODUCT_MAX_AGE_DAYS)
 
 
 def _telegram_backfill_cutoff_utc() -> datetime:
@@ -3490,7 +3513,11 @@ def inspect_shafa_product_telegram_age(
     age_days = (
         _telegram_product_max_age_days()
         if older_than_days is None
-        else max(int(older_than_days), 1)
+        else (
+            max(int(older_than_days), 1)
+            if _env_flag_enabled(UNSAFE_OLD_PRODUCT_AGE_OVERRIDE_ENV)
+            else max(int(older_than_days), MIN_TELEGRAM_PRODUCT_MAX_AGE_DAYS)
+        )
     )
     now_utc = datetime.now(timezone.utc)
     cutoff_utc = now_utc - timedelta(days=age_days)
@@ -3840,6 +3867,25 @@ def _env_flag_enabled(name: str) -> bool:
     return os.getenv(name, "").strip() in {"1", "true", "TRUE", "yes", "YES"}
 
 
+def _log_creation_db_path_once() -> None:
+    global _CREATION_DB_PATH_LOGGED
+    if _CREATION_DB_PATH_LOGGED or not creation_products_enabled():
+        return
+    log("INFO", f"Creation products DB enabled: path={creation_products_db_path()}.")
+    _CREATION_DB_PATH_LOGGED = True
+
+
+def _log_creation_db_bypass_once() -> None:
+    global _CREATION_DB_BYPASS_LOGGED
+    if _CREATION_DB_BYPASS_LOGGED:
+        return
+    log(
+        "INFO",
+        "Creation DB enabled; bypassing old telegram_products scanning for creation.",
+    )
+    _CREATION_DB_BYPASS_LOGGED = True
+
+
 def _is_backfill_history_window_complete(
     cursor: dict,
     *,
@@ -3883,14 +3929,42 @@ def _process_scanned_messages(
             continue
 
         stats["parsed_ok"] += 1
-        if save_telegram_product(
-            channel_id,
-            message_id,
-            getattr(msg, "message", "") or "",
-            parsed,
-            account_id=account_id,
-            telegram_message_date=_message_datetime_utc(msg),
-        ):
+        raw_message = getattr(msg, "message", "") or ""
+        message_date = _message_datetime_utc(msg)
+        if creation_products_enabled():
+            _log_creation_db_path_once()
+            inserted = upsert_creation_product(
+                channel_id,
+                message_id,
+                raw_message,
+                parsed,
+                account_id=account_id,
+                telegram_message_date=message_date,
+            )
+            if inserted:
+                log(
+                    "INFO",
+                    "Product inserted into creation DB. "
+                    f"account_id={account_id}. channel_id={channel_id}. "
+                    f"message_id={message_id}.",
+                )
+            else:
+                log(
+                    "INFO",
+                    "Duplicate product in creation DB updated. "
+                    f"account_id={account_id}. channel_id={channel_id}. "
+                    f"message_id={message_id}.",
+                )
+        else:
+            inserted = save_telegram_product(
+                channel_id,
+                message_id,
+                raw_message,
+                parsed,
+                account_id=account_id,
+                telegram_message_date=message_date,
+            )
+        if inserted:
             result["inserted"] = int(result["inserted"] or 0) + 1
             stats["saved"] += 1
         else:
@@ -5323,6 +5397,56 @@ def rebuild_product_data_from_source(product_data: dict) -> tuple[dict, dict]:
 
 
 def _pick_next_product_for_upload() -> Optional[dict]:
+    if creation_products_enabled():
+        _log_creation_db_path_once()
+        _log_creation_db_bypass_once()
+        while True:
+            row = claim_creation_product_for_creation(
+                lease_seconds=DEFAULT_CREATION_PRODUCT_LEASE_SECONDS
+            )
+            if row is None:
+                return None
+            log(
+                "INFO",
+                "Product selected for creation and marked processing. "
+                f"account_id={row['account_id']}. channel_id={row['channel_id']}. "
+                f"message_id={row['message_id']}. attempt={row['attempt_count']}.",
+            )
+            parsed_from_db = row["parsed_data"] if isinstance(row["parsed_data"], dict) else {}
+            raw_message = row["raw_message"] or ""
+            parsed = parse_message(raw_message) if raw_message else parsed_from_db
+            if not is_mode_allowed_parsed(parsed):
+                log(
+                    "INFO",
+                    f"Пропускаю сообщение channel_id={row['channel_id']} "
+                    + f"message_id={row['message_id']}: не подходит для режима {get_runtime_mode()}.",
+                )
+                mark_product_created(
+                    row["message_id"],
+                    created_product_id="SKIPPED_BY_MODE",
+                    channel_id=row["channel_id"],
+                )
+                continue
+            if not parsed.get("name") or not parsed.get("price") or not parsed.get("size"):
+                log(
+                    "WARN",
+                    f"Пропускаю сообщение channel_id={row['channel_id']} "
+                    + f"message_id={row['message_id']}: нет названия/цены/размера.",
+                )
+                mark_product_created(
+                    row["message_id"],
+                    created_product_id="SKIPPED_MISSING_DATA",
+                    channel_id=row["channel_id"],
+                )
+                continue
+            return {
+                "channel_id": row["channel_id"],
+                "message_id": row["message_id"],
+                "raw_message": raw_message,
+                "parsed_data": parsed,
+                "product_raw_data": _build_product_raw_data(parsed),
+            }
+
     while True:
         rows = [
             row
@@ -5476,6 +5600,61 @@ def mark_product_created(
     resolved_channel_id = (
         channel_id if channel_id is not None else _get_channel_ids()[0]
     )
+    if creation_products_enabled():
+        normalized_created_product_id = str(created_product_id or "").strip()
+        if normalized_created_product_id.startswith("SKIPPED_"):
+            mark_creation_product_skipped(
+                resolved_channel_id,
+                message_id,
+                normalized_created_product_id,
+                created_product_id=normalized_created_product_id,
+            )
+            log(
+                "INFO",
+                "Product marked skipped in creation DB. "
+                f"channel_id={resolved_channel_id}. message_id={message_id}. "
+                f"reason={normalized_created_product_id}.",
+            )
+            return
+
+        marked = mark_creation_product_created(
+            resolved_channel_id,
+            message_id,
+            created_product_id,
+        )
+        log(
+            "INFO",
+            "Product marked created in creation DB. "
+            f"channel_id={resolved_channel_id}. message_id={message_id}. "
+            f"created_product_id={created_product_id}. marked={marked}.",
+        )
+        creation_row = get_creation_product(resolved_channel_id, message_id)
+        if creation_row is not None and normalized_created_product_id:
+            parsed_data = (
+                creation_row["parsed_data"]
+                if isinstance(creation_row.get("parsed_data"), dict)
+                else {}
+            )
+            upsert_created_telegram_product_mapping(
+                resolved_channel_id,
+                message_id,
+                str(creation_row.get("raw_message") or ""),
+                parsed_data,
+                normalized_created_product_id,
+                account_id=str(creation_row.get("account_id") or ""),
+                telegram_message_date=creation_row.get("telegram_message_date"),
+            )
+            reconcile_shared_telegram_products(
+                account_id=str(creation_row.get("account_id") or "")
+            )
+            log(
+                "INFO",
+                "Created product mapping written to shared Telegram DB. "
+                f"account_id={creation_row.get('account_id')}. "
+                f"channel_id={resolved_channel_id}. message_id={message_id}. "
+                f"created_product_id={created_product_id}.",
+            )
+        return
     mark_telegram_product_created(resolved_channel_id, message_id, created_product_id)
 
 
@@ -5487,6 +5666,19 @@ def register_product_failure(
     resolved_channel_id = (
         channel_id if channel_id is not None else _get_channel_ids()[0]
     )
+    if creation_products_enabled():
+        attempts = mark_creation_product_failed(
+            resolved_channel_id,
+            message_id,
+            failure_reason,
+        )
+        log(
+            "ERROR",
+            "Product marked failed in creation DB. "
+            f"channel_id={resolved_channel_id}. message_id={message_id}. "
+            f"attempts={attempts}. error={failure_reason}.",
+        )
+        return attempts, False
     attempts = increment_telegram_product_attempt(
         resolved_channel_id,
         message_id,
@@ -5848,7 +6040,11 @@ def _deactivate_old_telegram_products_impl(
     age_days = (
         _telegram_product_max_age_days()
         if older_than_days is None
-        else max(int(older_than_days), 1)
+        else (
+            max(int(older_than_days), 1)
+            if _env_flag_enabled(UNSAFE_OLD_PRODUCT_AGE_OVERRIDE_ENV)
+            else max(int(older_than_days), MIN_TELEGRAM_PRODUCT_MAX_AGE_DAYS)
+        )
     )
     if limit is None:
         batch_limit: Optional[int] = _old_product_deactivate_batch_size()
@@ -5900,13 +6096,18 @@ def _deactivate_old_telegram_products_impl(
         "INFO",
         "cleanup cycle start "
         f"account={account_label}. account_id={resolved_account_id}. "
-        f"threshold_days={age_days}. limit={result['limit']}. dry_run={dry_run}.",
+        "entry_point=old_direct deactivation_mode=old_direct "
+        f"will_call_shafa={str(not dry_run).lower()} "
+        f"process_id={os.getpid()}. threshold_days={age_days}. "
+        f"limit={result['limit']}. dry_run={dry_run}.",
     )
     _safe_old_product_log(
         "INFO",
         "cleanup runtime context "
         f"account={account_label}. account_id={resolved_account_id}. "
+        "entry_point=old_direct deactivation_mode=old_direct "
         f"env_account_id={os.getenv('SHAFA_ACCOUNT_ID', '')}. "
+        f"storage_state_path={os.getenv('SHAFA_STORAGE_STATE_PATH', '')}. "
         f"db_path={os.getenv('SHAFA_DB_PATH', str(Path(DB_PATH)))}. "
         f"telegram_db_path={os.getenv('SHAFA_SHARED_TELEGRAM_DB_PATH', str(Path(TELEGRAM_PRODUCTS_DB_PATH)))}. "
         f"deactivate_only={deactivate_only}.",
@@ -5964,15 +6165,25 @@ def _deactivate_old_telegram_products_impl(
     if deactivate_only:
         uploaded_products = []
         telegram_products = []
+        due_telegram_products = []
         deactivation_queue_products = []
     else:
+        def _deactivation_check_due(item: dict[str, object]) -> bool:
+            next_check_at = _parse_datetime_text_utc(
+                item.get("deactivation_next_check_at")
+            )
+            return next_check_at is None or next_check_at <= datetime.now(timezone.utc)
+
         try:
             uploaded_products = list_uploaded_products_for_age_check()
             telegram_products = list_created_telegram_products_for_age_check(
                 account_id=account_id
             )
+            due_telegram_products = [
+                item for item in telegram_products if _deactivation_check_due(item)
+            ]
             queue_limit = (
-                max(len(telegram_products), _old_product_deactivate_batch_size(), 1)
+                max(len(due_telegram_products), _old_product_deactivate_batch_size(), 1)
                 if batch_limit is None
                 else max(int(batch_limit), 1)
             )
@@ -5986,6 +6197,7 @@ def _deactivate_old_telegram_products_impl(
                 f"account={account_label}. account_id={resolved_account_id}. "
                 f"uploaded_products={len(uploaded_products)}. "
                 f"telegram_products={len(telegram_products)}. "
+                f"telegram_products_due={len(due_telegram_products)}. "
                 f"deactivation_queue={len(deactivation_queue_products)}.",
             )
         except Exception as exc:
@@ -6013,6 +6225,23 @@ def _deactivate_old_telegram_products_impl(
         uploaded_message_id = _old_product_int(item.get("message_id"))
         if uploaded_message_id is not None:
             uploaded_by_message_id[uploaded_message_id] = item
+    if deactivate_only:
+        uploaded_products_for_source = uploaded_products
+    else:
+        uploaded_products_for_source = []
+        for item in uploaded_products:
+            product_id = str(item.get("product_id") or "").strip()
+            explicit_message_id = _old_product_int(item.get("message_id"))
+            linked_items = []
+            if explicit_message_id is not None:
+                linked_items.extend(telegram_by_message_id.get(explicit_message_id, []))
+            if product_id:
+                linked_product = telegram_by_product_id.get(product_id)
+                if linked_product is not None and linked_product not in linked_items:
+                    linked_items.append(linked_product)
+            if linked_items and not any(_deactivation_check_due(linked) for linked in linked_items):
+                continue
+            uploaded_products_for_source.append(item)
     cutoff_utc = datetime.now(timezone.utc) - timedelta(days=age_days)
     if deactivate_only:
         source_products = []
@@ -6041,10 +6270,14 @@ def _deactivate_old_telegram_products_impl(
             source_products = deactivation_queue_products
             source_label = "telegram_products(deactivation_queue)"
         else:
-            source_products = uploaded_products if uploaded_products else telegram_products
+            source_products = (
+                uploaded_products_for_source
+                if uploaded_products_for_source
+                else due_telegram_products
+            )
             source_label = (
                 "uploaded_products(account_db)"
-                if uploaded_products
+                if uploaded_products_for_source
                 else "telegram_products(account_db_fallback)"
             )
     checked_products = (
@@ -6245,6 +6478,41 @@ def _deactivate_old_telegram_products_impl(
             action=action,
             reason=lookup_reason,
         )
+        if (
+            tracking_allowed
+            and channel_id is not None
+            and message_id is not None
+            and decision in {"not_old_enough", "missing_message_date"}
+        ):
+            try:
+                next_check_at = (
+                    max(
+                        telegram_message_dt + timedelta(days=age_days),
+                        now_utc + timedelta(hours=1),
+                    )
+                    if decision == "not_old_enough"
+                    and telegram_message_dt is not None
+                    else now_utc + timedelta(days=1)
+                )
+                mark_telegram_product_deactivation_check(
+                    channel_id,
+                    message_id,
+                    check_status=(
+                        TELEGRAM_DEACTIVATION_CHECK_FRESH
+                        if decision == "not_old_enough"
+                        else TELEGRAM_DEACTIVATION_CHECK_DATE_MISSING
+                    ),
+                    next_check_at=next_check_at,
+                    account_id=candidate_account_id,
+                )
+            except Exception as tracking_exc:
+                _safe_old_product_log(
+                    "WARN",
+                    "Не удалось записать checkpoint проверки старого товара. "
+                    f"account_id={candidate_account_id}. product_id={product_id}. "
+                    f"channel_id={channel_id}. message_id={message_id}. "
+                    f"decision={decision}. error={tracking_exc}",
+                )
         if decision == "eligible_for_deactivation":
             candidates.append(
                 {
@@ -6364,57 +6632,119 @@ def _deactivate_old_telegram_products_impl(
             )
             deactivator(product_id)
         except Exception as exc:
-            failed += 1
-            attempts: object = "not_recorded"
-            if bool(candidate.get("tracking_allowed", True)):
+            if _is_shafa_product_not_found_error(exc):
+                result["not_found"] = int(result["not_found"]) + 1
+                result["skipped"] = int(result["skipped"]) + 1
+                terminal_recorded: object = "not_recorded"
+                if bool(candidate.get("tracking_allowed", True)):
+                    try:
+                        if deactivation_processing_token:
+                            terminal_recorded = (
+                                skip_telegram_product_deactivation_not_found(
+                                    channel_id,
+                                    message_id,
+                                    deactivation_processing_token,
+                                    account_id=candidate_account_id,
+                                )
+                            )
+                        else:
+                            terminal_recorded = mark_telegram_product_not_found_on_shafa(
+                                channel_id,
+                                message_id,
+                                account_id=candidate_account_id,
+                            )
+                    except Exception as tracking_exc:
+                        terminal_recorded = "tracking_error"
+                        _safe_old_product_log(
+                            "WARN",
+                            "Не удалось записать terminal not_found старого товара. "
+                            f"account_id={candidate_account_id}. product_id={product_id}. "
+                            f"channel_id={channel_id}. message_id={message_id}. "
+                            f"error={tracking_exc}",
+                        )
                 try:
-                    if deactivation_processing_token:
-                        finish_telegram_product_deactivation(
-                            channel_id,
-                            message_id,
-                            deactivation_processing_token,
-                            success=False,
-                            error_message=str(exc),
-                            account_id=candidate_account_id,
-                        )
-                        attempts = "queued"
-                    else:
-                        attempts = record_telegram_product_shafa_deactivate_failure(
-                            channel_id,
-                            message_id,
-                            str(exc),
-                            account_id=candidate_account_id,
-                        )
+                    mark_uploaded_product_inactive(product_id, status_title="Не знайдено")
                 except Exception as tracking_exc:
-                    attempts = "tracking_error"
                     _safe_old_product_log(
                         "WARN",
-                        "Не удалось записать ошибку деактивации старого товара. "
+                        "Не удалось отметить missing товар аккаунта как неактивный. "
                         f"account_id={candidate_account_id}. product_id={product_id}. "
-                        f"channel_id={channel_id}. message_id={message_id}. "
                         f"error={tracking_exc}",
                     )
-            _safe_old_product_log(
-                "ERROR",
-                "Не удалось деактивировать старый товар Shafa. "
-                f"name={candidate_name}. product_id={product_id}. "
-                f"channel_id={channel_id}. message_id={message_id}. "
-                f"telegram_age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
-                f"Попытка деактивации: {attempts}. Ошибка: {exc}",
-            )
-            _log_old_product_check(
-                level="ERROR",
-                account_label=account_label,
-                product_name=candidate_name,
-                product_id=product_id,
-                message_id=message_id,
-                telegram_found=True,
-                channel_id=channel_id,
-                message_date=candidate.get("telegram_message_date"),
-                age_days=telegram_age_days_int,
-                action="ERROR",
-                reason=str(exc),
-            )
+                _safe_old_product_log(
+                    "INFO",
+                    "Старый товар уже отсутствует на Shafa; считаю деактивацию завершенной. "
+                    "action=product_not_found_treated_as_done "
+                    f"status={TELEGRAM_DEACTIVATION_STATUS_SKIPPED_NOT_FOUND}. "
+                    f"account_id={candidate_account_id}. product_id={product_id}. "
+                    f"channel_id={channel_id}. message_id={message_id}. "
+                    f"terminal_recorded={terminal_recorded}. error={exc}",
+                )
+                _log_old_product_check(
+                    level="INFO",
+                    account_label=account_label,
+                    product_name=candidate_name,
+                    product_id=product_id,
+                    message_id=message_id,
+                    telegram_found=True,
+                    channel_id=channel_id,
+                    message_date=candidate.get("telegram_message_date"),
+                    age_days=telegram_age_days_int,
+                    action="SKIPPED_NOT_FOUND",
+                    reason="product_not_found_treated_as_done",
+                )
+            else:
+                failed += 1
+                attempts: object = "not_recorded"
+                if bool(candidate.get("tracking_allowed", True)):
+                    try:
+                        if deactivation_processing_token:
+                            finish_telegram_product_deactivation(
+                                channel_id,
+                                message_id,
+                                deactivation_processing_token,
+                                success=False,
+                                error_message=str(exc),
+                                account_id=candidate_account_id,
+                            )
+                            attempts = "queued"
+                        else:
+                            attempts = record_telegram_product_shafa_deactivate_failure(
+                                channel_id,
+                                message_id,
+                                str(exc),
+                                account_id=candidate_account_id,
+                            )
+                    except Exception as tracking_exc:
+                        attempts = "tracking_error"
+                        _safe_old_product_log(
+                            "WARN",
+                            "Не удалось записать ошибку деактивации старого товара. "
+                            f"account_id={candidate_account_id}. product_id={product_id}. "
+                            f"channel_id={channel_id}. message_id={message_id}. "
+                            f"error={tracking_exc}",
+                        )
+                _safe_old_product_log(
+                    "ERROR",
+                    "Не удалось деактивировать старый товар Shafa. "
+                    f"name={candidate_name}. product_id={product_id}. "
+                    f"channel_id={channel_id}. message_id={message_id}. "
+                    f"telegram_age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
+                    f"Попытка деактивации: {attempts}. Ошибка: {exc}",
+                )
+                _log_old_product_check(
+                    level="ERROR",
+                    account_label=account_label,
+                    product_name=candidate_name,
+                    product_id=product_id,
+                    message_id=message_id,
+                    telegram_found=True,
+                    channel_id=channel_id,
+                    message_date=candidate.get("telegram_message_date"),
+                    age_days=telegram_age_days_int,
+                    action="ERROR",
+                    reason=str(exc),
+                )
         else:
             deactivated += 1
             try:

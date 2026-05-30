@@ -283,6 +283,70 @@ class DashboardApiTest(unittest.TestCase):
                     ),
                 )
 
+    def _write_direct_deactivation_rows(
+        self,
+        rows: list[dict[str, object]],
+    ) -> None:
+        db_path = self.account_service.session_store.shared_telegram_db_file()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id TEXT NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    parsed_data TEXT,
+                    status TEXT NOT NULL DEFAULT 'created',
+                    created INTEGER NOT NULL DEFAULT 1,
+                    created_product_id TEXT,
+                    shafa_deactivated_at TEXT,
+                    shafa_deleted_at TEXT,
+                    deactivation_status TEXT,
+                    deactivation_completed_at TEXT,
+                    deactivation_error TEXT,
+                    updated_at TEXT,
+                    UNIQUE(account_id, channel_id, message_id)
+                )
+                """
+            )
+            for row in rows:
+                title = str(row.get("product_title") or "Direct item")
+                completed_at = row.get("completed_at") or self.now.isoformat()
+                conn.execute(
+                    """
+                    INSERT INTO telegram_products (
+                        account_id,
+                        channel_id,
+                        message_id,
+                        parsed_data,
+                        status,
+                        created,
+                        created_product_id,
+                        shafa_deactivated_at,
+                        shafa_deleted_at,
+                        deactivation_status,
+                        deactivation_completed_at,
+                        deactivation_error,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, 'created', 1, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["account_id"],
+                        row["channel_id"],
+                        row["message_id"],
+                        json.dumps({"name": title}),
+                        row["shafa_product_id"],
+                        row.get("shafa_deactivated_at"),
+                        row.get("shafa_deleted_at"),
+                        row.get("deactivation_status"),
+                        completed_at,
+                        row.get("deactivation_error"),
+                        row.get("updated_at") or completed_at,
+                    ),
+                )
+
     def test_dashboard_summary_returns_aggregated_real_data(self) -> None:
         response = self.client.get("/dashboard/summary")
 
@@ -409,6 +473,111 @@ class DashboardApiTest(unittest.TestCase):
             {row["status"] for row in recent},
             {"completed", "skipped_not_found"},
         )
+
+    def test_dashboard_summary_counts_direct_deactivations(self) -> None:
+        completed_at = (self.now - timedelta(minutes=5)).isoformat()
+        self._write_direct_deactivation_rows(
+            [
+                {
+                    "account_id": "acc-1",
+                    "channel_id": 21,
+                    "message_id": 1001,
+                    "shafa_product_id": "direct-a",
+                    "deactivation_status": "completed",
+                    "shafa_deactivated_at": completed_at,
+                    "completed_at": completed_at,
+                    "product_title": "Direct item A",
+                },
+                {
+                    "account_id": "acc-2",
+                    "channel_id": 21,
+                    "message_id": 1001,
+                    "shafa_product_id": "direct-b",
+                    "deactivation_status": "completed",
+                    "shafa_deactivated_at": completed_at,
+                    "completed_at": completed_at,
+                    "product_title": "Direct item B",
+                },
+                {
+                    "account_id": "acc-1",
+                    "channel_id": 22,
+                    "message_id": 1002,
+                    "shafa_product_id": "direct-missing",
+                    "deactivation_status": "skipped_not_found",
+                    "shafa_deleted_at": completed_at,
+                    "completed_at": completed_at,
+                    "product_title": "Missing direct item",
+                },
+                {
+                    "account_id": "acc-1",
+                    "channel_id": 23,
+                    "message_id": 1003,
+                    "shafa_product_id": "direct-pending",
+                    "deactivation_status": "pending",
+                    "completed_at": completed_at,
+                },
+                {
+                    "account_id": "acc-2",
+                    "channel_id": 24,
+                    "message_id": 1004,
+                    "shafa_product_id": "direct-failed",
+                    "deactivation_status": "failed",
+                    "completed_at": completed_at,
+                },
+            ]
+        )
+
+        response = self.client.get("/dashboard/summary")
+
+        self.assertEqual(response.status_code, 200)
+        shared = response.json()["shared_deactivation"]
+        self.assertEqual(shared["deactivated_success_count"], 2)
+        self.assertEqual(shared["not_found_treated_as_done_count"], 1)
+        self.assertEqual(shared["total_done_count"], 3)
+        by_account = {row["account_id"]: row for row in shared["per_account"]}
+        self.assertEqual(by_account["acc-1"]["deactivated_success_count"], 1)
+        self.assertEqual(by_account["acc-1"]["not_found_treated_as_done_count"], 1)
+        self.assertEqual(by_account["acc-2"]["deactivated_success_count"], 1)
+        self.assertEqual({row["status"] for row in shared["recent"]}, {"completed", "skipped_not_found"})
+
+    def test_dashboard_does_not_double_count_shared_source_rows(self) -> None:
+        completed_at = (self.now - timedelta(minutes=5)).isoformat()
+        self._write_shared_deactivation_rows(
+            [
+                {
+                    "task_id": "task-shared-source",
+                    "telegram_product_key": "tg:31:1101",
+                    "channel_id": 31,
+                    "message_id": 1101,
+                    "account_id": "acc-1",
+                    "shafa_product_id": "shared-source-a",
+                    "status": "completed",
+                    "completed_at": completed_at,
+                    "product_title": "Shared source item",
+                },
+            ]
+        )
+        self._write_direct_deactivation_rows(
+            [
+                {
+                    "account_id": "acc-1",
+                    "channel_id": 31,
+                    "message_id": 1101,
+                    "shafa_product_id": "shared-source-a",
+                    "deactivation_status": "completed",
+                    "shafa_deactivated_at": completed_at,
+                    "completed_at": completed_at,
+                    "product_title": "Shared source item",
+                },
+            ]
+        )
+
+        response = self.client.get("/dashboard/summary")
+
+        self.assertEqual(response.status_code, 200)
+        shared = response.json()["shared_deactivation"]
+        self.assertEqual(shared["deactivated_success_count"], 1)
+        self.assertEqual(shared["total_done_count"], 1)
 
     def test_dashboard_summary_supports_week_period(self) -> None:
         response = self.client.get("/dashboard/summary?period=week")

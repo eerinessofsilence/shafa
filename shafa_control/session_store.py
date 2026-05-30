@@ -103,6 +103,7 @@ class AccountSessionStore:
             "telegram_channels_path": str(self.channels_file(account)),
             "telegram_queue_seed_marker_path": str(self.telegram_queue_seed_marker_file(account)),
             "telegram_queue_seed_pending": self.has_pending_telegram_queue_seed(account),
+            "creation_products_db_path": str(self.creation_products_db_file()),
             "media_dir_path": str(self.media_dir(account)),
             "proxy_id": account.proxy_id,
             "proxy_config_path": str(self.proxy_config_file(account)),
@@ -185,6 +186,9 @@ class AccountSessionStore:
 
     def shared_telegram_db_file(self) -> Path:
         return self.shared_telegram_dir() / "telegram_feed.sqlite3"
+
+    def creation_products_db_file(self) -> Path:
+        return self.shared_telegram_dir() / "creation_products.sqlite3"
 
     def shared_telegram_channels_file(self) -> Path:
         return self.shared_telegram_dir() / "shafa_telegram_channels.json"

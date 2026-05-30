@@ -35,6 +35,9 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert env["SHAFA_STORAGE_STATE_PATH"].endswith("accounts/acc-1/auth.json")
     assert env["SHAFA_DB_PATH"].endswith("accounts/acc-1/shafa.sqlite3")
     assert env["SHAFA_SHARED_TELEGRAM_DB_PATH"].endswith("telegram_shared/telegram_feed.sqlite3")
+    assert env["SHAFA_CREATION_PRODUCTS_DB_PATH"].endswith(
+        "telegram_shared/creation_products.sqlite3"
+    )
     assert env["SHAFA_MEDIA_DIR_PATH"].endswith("accounts/acc-1/media")
     assert env["SHAFA_TELEGRAM_SESSION_PATH"].endswith("accounts/acc-1/telegram.session")
     assert env["SHAFA_TELEGRAM_CHANNELS_PATH"].endswith("accounts/acc-1/shafa_telegram_channels.json")

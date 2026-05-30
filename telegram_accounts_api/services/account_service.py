@@ -206,16 +206,27 @@ class AccountService:
         running_process = self._active_process(account_id)
         if running_process is not None:
             return await self._to_model(record)
+        if str(record.get("status") or "").strip().lower() in {"started", "running"}:
+            self._append_log(
+                account,
+                "[RUN] stale process registry miss "
+                f"selected_account_id={account.id} runtime_account_id={account.id} "
+                "previous_status=started active_process_registry=false "
+                "action=starting_new_process no_process_was_killed=true",
+            )
 
         try:
             launch_context = self._build_launch_context(account)
             self._append_log(
                 account,
                 "[RUN] launch context "
+                f"selected_account_id={account.id} runtime_account_id={account.id} "
                 f"account_id={account.id} account_name={account.name} "
                 f"cwd={launch_context.get('cwd')} "
                 f"db_path={launch_context.get('SHAFA_DB_PATH')} "
+                f"storage_state_path={launch_context.get('SHAFA_STORAGE_STATE_PATH')} "
                 f"telegram_db_path={launch_context.get('SHAFA_SHARED_TELEGRAM_DB_PATH')} "
+                f"creation_db_path={launch_context.get('SHAFA_CREATION_PRODUCTS_DB_PATH')} "
                 f"state_dir={launch_context.get('SHAFA_ACCOUNT_STATE_DIR')}",
             )
             process = self._spawn_process(account, launch_context)

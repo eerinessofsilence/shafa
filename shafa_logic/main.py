@@ -1035,7 +1035,7 @@ def _deactivate_shafa_product_if_old_in_telegram() -> None:
     older_than_days = _prompt_int(
         "Деактивировать, если товар в Telegram старше скольких дней?",
         default=183,
-        min_value=1,
+        min_value=183,
     )
     if older_than_days is None:
         return

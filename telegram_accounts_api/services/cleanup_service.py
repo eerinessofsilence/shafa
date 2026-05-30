@@ -16,6 +16,9 @@ from shafa_control import LogRecord, project_main_path, resolve_project_dir
 from telegram_accounts_api.services.account_service import AccountService
 
 
+MIN_OLD_PRODUCT_CLEANUP_AGE_DAYS = 183
+
+
 class OutdatedProductCleanupService:
     def __init__(self, account_service: AccountService) -> None:
         self.account_service = account_service
@@ -103,6 +106,15 @@ class OutdatedProductCleanupService:
         return raw in {"1", "true", "yes", "on"}
 
     @staticmethod
+    def _env_flag_enabled(name: str) -> bool:
+        raw = os.getenv(name, "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _global_old_product_cleanup_enabled(cls) -> bool:
+        return cls._env_flag_enabled("SHAFA_GLOBAL_OLD_PRODUCT_CLEANUP_ENABLED")
+
+    @staticmethod
     def _interval_range_seconds() -> tuple[int, int]:
         fixed_interval = os.getenv(
             "SHAFA_BACKGROUND_OLD_PRODUCT_DEACTIVATE_INTERVAL_SECONDS",
@@ -181,39 +193,47 @@ class OutdatedProductCleanupService:
     def _cleanup_age_days() -> int | None:
         raw = os.getenv("SHAFA_TELEGRAM_PRODUCT_MAX_AGE_DAYS", "").strip()
         if not raw:
-            return None
+            return MIN_OLD_PRODUCT_CLEANUP_AGE_DAYS
         try:
-            return max(int(raw), 1)
+            return max(int(raw), MIN_OLD_PRODUCT_CLEANUP_AGE_DAYS)
         except ValueError:
-            return None
+            return MIN_OLD_PRODUCT_CLEANUP_AGE_DAYS
 
     def _cleanup_account(self, account) -> dict[str, Any]:
         started_at = time.perf_counter()
         account_id = str(account.id or "").strip()
         account_name = str(account.name or account_id or "unknown").strip()
+        process_id = os.getpid()
         if not account_id:
             self._append_global_log("cleanup skipped account with empty account_id")
             return {"checked": 0, "deactivated": 0, "failed": 1}
         self._append_log(
             account,
             "cleanup worker account selected "
-            f"account={account_name}. account_id={account_id}. path={account.path}.",
-        )
+                f"entry_point=cleanup_service selected_account_id={account_id}. "
+                f"account={account_name}. account_id={account_id}. path={account.path}. "
+                f"process_id={process_id}.",
+            )
         if self.account_service._active_process(account_id) is not None:
             self._append_log(
                 account,
                 "cleanup skipped detached run because account process is active; "
                 "in-process deactivator is responsible for this account. "
-                f"account={account_name}. account_id={account_id}.",
+                f"entry_point=cleanup_service cleanup_mode=disabled "
+                f"will_call_shafa=false account={account_name}. account_id={account_id}. "
+                f"process_id={process_id}.",
             )
             return {"checked": 0, "deactivated": 0, "failed": 0}
         if not self.account_service.session_store.is_valid_shafa_session(account):
-            age_days = self._cleanup_age_days() or 183
+            age_days = self._cleanup_age_days() or MIN_OLD_PRODUCT_CLEANUP_AGE_DAYS
             self._append_log(
                 account,
                 "cleanup cycle start "
                 f"account={account.name}. account_id={account.id}. "
-                f"threshold_days={age_days}. limit=all. dry_run=False.",
+                "entry_point=cleanup_service cleanup_mode=disabled "
+                "will_call_shafa=false "
+                f"process_id={process_id}. threshold_days={age_days}. "
+                "limit=all. dry_run=False.",
             )
             self._append_log(
                 account,
@@ -227,12 +247,15 @@ class OutdatedProductCleanupService:
 
         project_path = resolve_project_dir(Path(account.path).expanduser())
         if not project_main_path(project_path).is_file():
-            age_days = self._cleanup_age_days() or 183
+            age_days = self._cleanup_age_days() or MIN_OLD_PRODUCT_CLEANUP_AGE_DAYS
             self._append_log(
                 account,
                 "cleanup cycle start "
                 f"account={account.name}. account_id={account.id}. "
-                f"threshold_days={age_days}. limit=all. dry_run=False.",
+                "entry_point=cleanup_service cleanup_mode=disabled "
+                "will_call_shafa=false "
+                f"process_id={process_id}. threshold_days={age_days}. "
+                "limit=all. dry_run=False.",
             )
             self._append_log(
                 account,
@@ -263,15 +286,33 @@ class OutdatedProductCleanupService:
         shared_planner_enabled = shared_auto_run or str(
             env.get("SHAFA_SHARED_DEACTIVATION_PLANNER_ENABLED") or ""
         ).strip().lower() in {"1", "true", "yes", "on"}
+        direct_cleanup_enabled = self._global_old_product_cleanup_enabled()
         if shared_enabled and not shared_planner_enabled:
             self._append_log(
                 account,
                 "cleanup skipped detached direct deactivation because shared "
                 "deactivation is enabled; account-scoped workers are responsible. "
-                f"account={account.name}. account_id={account.id}.",
+                "entry_point=cleanup_service cleanup_mode=disabled "
+                "deactivation_mode=shared_worker will_call_shafa=false "
+                f"account={account.name}. account_id={account.id}. "
+                f"process_id={process_id}.",
             )
             self._append_cycle_end(account, started_at, checked=0, deactivated=0)
             return {"checked": 0, "deactivated": 0, "failed": 0}
+        if not shared_enabled and not direct_cleanup_enabled:
+            self._append_log(
+                account,
+                "cleanup skipped global old direct deactivation because it is disabled. "
+                "entry_point=cleanup_service cleanup_mode=disabled "
+                "deactivation_mode=old_direct will_call_shafa=false "
+                f"account={account.name}. account_id={account.id}. "
+                f"process_id={process_id}. "
+                "enable_with=SHAFA_GLOBAL_OLD_PRODUCT_CLEANUP_ENABLED.",
+            )
+            self._append_cycle_end(account, started_at, checked=0, deactivated=0)
+            return {"checked": 0, "deactivated": 0, "failed": 0}
+        age_days = self._cleanup_age_days() or MIN_OLD_PRODUCT_CLEANUP_AGE_DAYS
+        cleanup_mode = "planner_only" if shared_enabled else "direct"
         self._append_log(
             account,
             (
@@ -280,6 +321,10 @@ class OutdatedProductCleanupService:
                 else "cleanup launching detached deactivation "
             )
             + f"account={account.name}. account_id={account.id}. "
+            f"entry_point=cleanup_service cleanup_mode={cleanup_mode} "
+            f"deactivation_mode={'shared_planner' if shared_enabled else 'old_direct'} "
+            f"will_call_shafa={str(not shared_enabled).lower()} "
+            f"process_id={process_id}. threshold_days={age_days}. "
             f"cwd={project_path}. db_path={env.get('SHAFA_DB_PATH')}. "
             f"telegram_db_path={env.get('SHAFA_SHARED_TELEGRAM_DB_PATH')}.",
         )
@@ -304,9 +349,7 @@ class OutdatedProductCleanupService:
                 "--old-products-sleep-seconds",
                 "0",
             ]
-            age_days = self._cleanup_age_days()
-            if age_days is not None:
-                command.extend(["--old-products-age-days", str(age_days)])
+            command.extend(["--old-products-age-days", str(age_days)])
 
         try:
             completed = subprocess.run(

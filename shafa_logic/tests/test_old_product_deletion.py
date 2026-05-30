@@ -266,6 +266,137 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertIsNotNone(row[4])
         self.assertEqual(uploaded_row, (0, "Деактивовано"))
 
+    def test_old_product_age_env_is_clamped_to_183_days(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "SHAFA_TELEGRAM_PRODUCT_MAX_AGE_DAYS": "1",
+                "SHAFA_ALLOW_UNSAFE_OLD_PRODUCT_AGE_DAYS": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(dc._telegram_product_max_age_days(), 183)
+
+    def test_explicit_old_product_age_is_clamped_to_183_days(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            account_db_path = Path(temp_dir) / "account.sqlite3"
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+            deactivated_ids: list[str] = []
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "SHAFA_ACCOUNT_ID": "acc-1",
+                        "SHAFA_ALLOW_UNSAFE_OLD_PRODUCT_AGE_DAYS": "",
+                    },
+                    clear=False,
+                ),
+                self._patch_account_db(account_db_path),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+            ):
+                db.init_db(db_path=account_db_path)
+                parsed = {"name": "Item", "price": "1600", "size": "41"}
+                db.save_uploaded_product(
+                    "product-221",
+                    {"name": "Item", "price": 1600, "size": 41},
+                    [],
+                )
+                db.save_telegram_product(
+                    11,
+                    221,
+                    "fresh-ish",
+                    parsed,
+                    account_id="acc-1",
+                    telegram_message_date=now - timedelta(days=100),
+                )
+                db.mark_telegram_product_created(
+                    11,
+                    221,
+                    created_product_id="product-221",
+                    account_id="acc-1",
+                )
+
+                result = dc.deactivate_old_telegram_products(
+                    older_than_days=1,
+                    limit=5,
+                    sleep_seconds=0,
+                    account_id="acc-1",
+                    deactivate_product_func=deactivated_ids.append,
+                )
+
+        self.assertEqual(result["older_than_days"], 183)
+        self.assertEqual(result["active"], 1)
+        self.assertEqual(result["deactivated"], 0)
+        self.assertEqual(deactivated_ids, [])
+
+    def test_fresh_direct_check_is_persisted_until_next_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            account_db_path = Path(temp_dir) / "account.sqlite3"
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                self._patch_account_db(account_db_path),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+            ):
+                db.init_db(db_path=account_db_path)
+                parsed = {"name": "Item", "price": "1600", "size": "41"}
+                db.save_uploaded_product(
+                    "product-222",
+                    {"name": "Item", "price": 1600, "size": 41},
+                    [],
+                )
+                db.save_telegram_product(
+                    11,
+                    222,
+                    "fresh",
+                    parsed,
+                    account_id="acc-1",
+                    telegram_message_date=now - timedelta(days=100),
+                )
+                db.mark_telegram_product_created(
+                    11,
+                    222,
+                    created_product_id="product-222",
+                    account_id="acc-1",
+                )
+
+                result = dc.deactivate_old_telegram_products(
+                    older_than_days=183,
+                    limit=5,
+                    sleep_seconds=0,
+                    account_id="acc-1",
+                    deactivate_product_func=lambda _product_id: None,
+                )
+                second_result = dc.deactivate_old_telegram_products(
+                    older_than_days=183,
+                    limit=5,
+                    sleep_seconds=0,
+                    account_id="acc-1",
+                    deactivate_product_func=lambda _product_id: None,
+                )
+                with sqlite3.connect(telegram_db_path) as conn:
+                    row = conn.execute(
+                        """
+                        SELECT
+                            deactivation_check_status,
+                            deactivation_last_checked_at,
+                            deactivation_next_check_at
+                        FROM telegram_products
+                        WHERE account_id = ? AND channel_id = ? AND message_id = ?
+                        """,
+                        ("acc-1", 11, 222),
+                    ).fetchone()
+
+        self.assertEqual(result["active"], 1)
+        self.assertEqual(row[0], db.TELEGRAM_DEACTIVATION_CHECK_FRESH)
+        self.assertIsNotNone(row[1])
+        self.assertIsNotNone(row[2])
+        self.assertEqual(second_result["checked"], 0)
+
     def test_deactivate_old_telegram_products_checks_one_product_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -701,6 +832,80 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(row[3], db.TELEGRAM_DEACTIVATION_STATUS_FAILED)
         self.assertEqual(row[4], 1)
         self.assertEqual(row[5], "deactivate failed")
+
+    def test_old_direct_product_not_found_is_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            account_db_path = Path(temp_dir) / "account.sqlite3"
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+
+            def _deactivator(_product_id: str) -> None:
+                raise RuntimeError("product_not_found")
+
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                self._patch_account_db(account_db_path),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+            ):
+                db.init_db(db_path=account_db_path)
+                parsed = {"name": "Item", "price": "1600", "size": "41"}
+                db.save_uploaded_product(
+                    "product-302",
+                    {"name": "Item", "price": 1600, "size": 41},
+                    [],
+                )
+                db.save_telegram_product(
+                    11,
+                    302,
+                    "old",
+                    parsed,
+                    account_id="acc-1",
+                    telegram_message_date=now - timedelta(days=190),
+                )
+                db.mark_telegram_product_created(
+                    11,
+                    302,
+                    created_product_id="product-302",
+                    account_id="acc-1",
+                )
+
+                result = dc.deactivate_old_telegram_products(
+                    older_than_days=183,
+                    limit=5,
+                    sleep_seconds=0,
+                    account_id="acc-1",
+                    deactivate_product_func=_deactivator,
+                )
+                retry = db.claim_telegram_product_deactivation(
+                    account_id="acc-1",
+                    channel_id=11,
+                    message_id=302,
+                )
+                with sqlite3.connect(telegram_db_path) as conn:
+                    row = conn.execute(
+                        """
+                        SELECT
+                            shafa_deleted_at,
+                            shafa_deactivated_at,
+                            deactivation_status,
+                            deactivation_retry_count,
+                            deactivation_error
+                        FROM telegram_products
+                        WHERE account_id = ? AND channel_id = ? AND message_id = ?
+                        """,
+                        ("acc-1", 11, 302),
+                    ).fetchone()
+
+        self.assertEqual(result["deactivated"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["not_found"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertIsNone(retry)
+        self.assertIsNotNone(row[0])
+        self.assertIsNone(row[1])
+        self.assertEqual(row[2], db.TELEGRAM_DEACTIVATION_STATUS_SKIPPED_NOT_FOUND)
+        self.assertEqual(row[3], 0)
+        self.assertIsNone(row[4])
 
 if __name__ == "__main__":
     unittest.main()
