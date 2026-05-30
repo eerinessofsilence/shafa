@@ -397,6 +397,62 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertIsNotNone(row[2])
         self.assertEqual(second_result["checked"], 0)
 
+    def test_fresh_direct_check_logs_summary_without_per_product_spam(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            account_db_path = Path(temp_dir) / "account.sqlite3"
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            now = datetime.now(timezone.utc)
+            logs: list[str] = []
+
+            with (
+                patch.dict("os.environ", {"SHAFA_ACCOUNT_ID": "acc-1"}, clear=False),
+                self._patch_account_db(account_db_path),
+                patch.object(db, "TELEGRAM_PRODUCTS_DB_PATH", str(telegram_db_path)),
+                patch.object(dc, "log", side_effect=lambda _level, message: logs.append(message)),
+            ):
+                db.init_db(db_path=account_db_path)
+                parsed = {"name": "Fresh item", "price": "1600", "size": "41"}
+                for offset in range(3):
+                    product_id = f"product-fresh-{offset}"
+                    message_id = 300 + offset
+                    db.save_uploaded_product(
+                        product_id,
+                        {"name": f"Fresh item {offset}", "price": 1600, "size": 41},
+                        [],
+                    )
+                    db.save_telegram_product(
+                        11,
+                        message_id,
+                        "fresh",
+                        parsed,
+                        account_id="acc-1",
+                        telegram_message_date=now - timedelta(days=10 + offset),
+                    )
+                    db.mark_telegram_product_created(
+                        11,
+                        message_id,
+                        created_product_id=product_id,
+                        account_id="acc-1",
+                    )
+
+                result = dc.deactivate_old_telegram_products(
+                    older_than_days=183,
+                    limit=0,
+                    sleep_seconds=0,
+                    account_id="acc-1",
+                    deactivate_product_func=lambda _product_id: None,
+                )
+
+        self.assertEqual(result["checked"], 3)
+        self.assertEqual(result["active"], 3)
+        self.assertFalse(
+            any("Проверен товар для деактивации" in message for message in logs)
+        )
+        self.assertFalse(any(" action=ACTIVE" in message for message in logs))
+        self.assertTrue(
+            any("active_products=3" in message and "total_checked_products=3" in message for message in logs)
+        )
+
     def test_deactivate_old_telegram_products_checks_one_product_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -750,23 +806,18 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         ]
         self.assertTrue(
             any(
-                "Проверяю созданный товар из базы аккаунта." in message
+                "Queued old product candidate for deactivation." in message
                 and "account_id=acc-1." in message
                 and "source=telegram_products(deactivation_queue)." in message
-                and "telegram_source=telegram_products(shared_account_db)." in message
-                and "name=Checked item." in message
                 and "product_id=product-221." in message
-                and "checked_at_utc=" in message
-                and "product_age=" in message
                 and "threshold_days=183." in message
                 and "telegram_age_days=" in message
-                and "decision=eligible_for_deactivation." in message
                 for message in info_messages
             )
         )
         self.assertFalse(
             any(
-                "Проверяю созданный товар из базы аккаунта." in message
+                "Queued old product candidate for deactivation." in message
                 and "product_id=product-222." in message
                 for message in info_messages
             )

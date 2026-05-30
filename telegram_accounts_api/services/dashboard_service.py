@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
 import sqlite3
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -25,6 +28,7 @@ from telegram_accounts_api.utils.account_logging import (
     normalize_log_timestamp,
 )
 
+LOGGER = logging.getLogger(__name__)
 _PRODUCT_SUCCESS_PATTERN = re.compile(r"товар создан успешно", re.IGNORECASE)
 _RENDERED_LOG_PATTERN = re.compile(
     r"^\[(?P<timestamp>[^\]]+)\]\s+\[(?P<level>[^\]]+)\](?:\s+\[(?P<account_name>[^\]]+)\])?\s+(?P<message>.*)$"
@@ -42,6 +46,8 @@ SHARED_ACCOUNT_TASK_FAILED = "failed"
 SHARED_ACCOUNT_TASK_PENDING = "pending"
 SHARED_ACCOUNT_TASK_RETRY_SCHEDULED = "retry_scheduled"
 SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND = "skipped_not_found"
+DEFAULT_DASHBOARD_LOG_HISTORY_LINES = 500
+MAX_DASHBOARD_LOG_HISTORY_LINES = 50_000
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,7 @@ class _HistoryAggregateCacheEntry:
     earliest_entry_date: date | None
     daily_totals: dict[date, dict[str, int]]
     recent_entry_keys: set[tuple[str, str, str]]
+    scanned_lines: int
 
 
 class DashboardService:
@@ -59,10 +66,16 @@ class DashboardService:
         log_store: AccountLogStore,
         *,
         now_provider: Callable[[], datetime] | None = None,
+        history_line_limit: int | None = None,
     ) -> None:
         self.account_service = account_service
         self.log_store = log_store
         self.now_provider = now_provider or self._default_now
+        self.history_line_limit = (
+            self._resolve_history_line_limit()
+            if history_line_limit is None
+            else self._bound_history_line_limit(history_line_limit)
+        )
         self._history_cache: dict[
             tuple[str, str],
             _HistoryAggregateCacheEntry,
@@ -74,7 +87,9 @@ class DashboardService:
         period: DashboardPeriod = "all",
         date_from: date | None = None,
         date_to: date | None = None,
+        history_line_limit: int | None = None,
     ) -> DashboardSummaryRead:
+        started_at = time.perf_counter()
         accounts = await self.account_service.list_accounts()
         current_time = self.now_provider().astimezone()
         local_tz = current_time.tzinfo or UTC
@@ -82,6 +97,12 @@ class DashboardService:
         account_daily_totals: dict[str, dict[date, dict[str, int]]] = {}
         account_names = {account.id: account.name for account in accounts}
         earliest_entry_date: date | None = None
+        total_history_lines_scanned = 0
+        effective_history_line_limit = (
+            self.history_line_limit
+            if history_line_limit is None
+            else self._bound_history_line_limit(history_line_limit)
+        )
 
         for account in accounts:
             runtime_entries = self.log_store.list_entries(
@@ -92,8 +113,13 @@ class DashboardService:
                 account.id,
                 runtime_entries=runtime_entries,
                 local_tz=local_tz,
+                history_line_limit=effective_history_line_limit,
             )
             account_daily_totals[account.id] = daily_totals
+            total_history_lines_scanned += self._last_history_scanned_lines(
+                account.id,
+                local_tz=local_tz,
+            )
 
             if (
                 period == "all"
@@ -160,7 +186,7 @@ class DashboardService:
             for point_date in series_dates
         ]
 
-        return DashboardSummaryRead(
+        summary = DashboardSummaryRead(
             generated_at=generated_at,
             range_start=range_start,
             range_end=range_end,
@@ -179,6 +205,15 @@ class DashboardService:
                 account_names=account_names
             ),
         )
+        LOGGER.info(
+            "dashboard summary loaded account_count=%s history_line_limit=%s "
+            "history_lines_scanned=%s duration_ms=%s",
+            len(accounts),
+            effective_history_line_limit,
+            total_history_lines_scanned,
+            round((time.perf_counter() - started_at) * 1000),
+        )
+        return summary
 
     def _load_shared_deactivation_summary(
         self,
@@ -510,11 +545,13 @@ class DashboardService:
         *,
         runtime_entries: list[AccountLogEntry],
         local_tz,
+        history_line_limit: int,
     ) -> tuple[date | None, dict[date, dict[str, int]]]:
         history = self._load_cached_history_aggregate(
             account_id,
             local_tz=local_tz,
             runtime_entries=runtime_entries,
+            history_line_limit=history_line_limit,
         )
         daily_totals = {
             point_date: totals.copy()
@@ -525,6 +562,7 @@ class DashboardService:
             account_id,
             runtime_entries=runtime_entries,
             local_tz=local_tz,
+            history_line_limit=history_line_limit,
         )
 
         for entry in runtime_entries:
@@ -548,25 +586,33 @@ class DashboardService:
         *,
         local_tz,
         runtime_entries: list[AccountLogEntry],
+        history_line_limit: int,
     ) -> _HistoryAggregateCacheEntry:
         log_file = self.account_service.account_dir(account_id) / "logs" / "app.log"
         signature = self._get_log_file_signature(log_file)
-        cache_key = (account_id, str(local_tz))
+        cache_key = (account_id, f"{local_tz}:{history_line_limit}")
         cached = self._history_cache.get(cache_key)
         if cached is not None and cached.signature == signature:
             return cached
 
         recent_entry_key_limit = max(self.log_store.max_entries_per_account * 2, 200)
-        earliest_entry_date, daily_totals, recent_entry_keys = self._scan_log_history(
+        (
+            earliest_entry_date,
+            daily_totals,
+            recent_entry_keys,
+            scanned_lines,
+        ) = self._scan_log_history(
             log_file,
             local_tz=local_tz,
             recent_entry_key_limit=recent_entry_key_limit,
+            history_line_limit=history_line_limit,
         )
         cache_entry = _HistoryAggregateCacheEntry(
             signature=signature,
             earliest_entry_date=earliest_entry_date,
             daily_totals=daily_totals,
             recent_entry_keys=recent_entry_keys,
+            scanned_lines=scanned_lines,
         )
         self._history_cache[cache_key] = cache_entry
         return cache_entry
@@ -577,6 +623,7 @@ class DashboardService:
         *,
         runtime_entries: list[AccountLogEntry],
         local_tz,
+        history_line_limit: int,
     ) -> set[tuple[str, str, str]]:
         if not runtime_entries:
             return set()
@@ -584,6 +631,7 @@ class DashboardService:
             account_id,
             local_tz=local_tz,
             runtime_entries=runtime_entries,
+            history_line_limit=history_line_limit,
         )
         matched_keys: set[tuple[str, str, str]] = set()
         for entry in runtime_entries:
@@ -598,50 +646,104 @@ class DashboardService:
         *,
         local_tz,
         recent_entry_key_limit: int,
-    ) -> tuple[date | None, dict[date, dict[str, int]], set[tuple[str, str, str]]]:
+        history_line_limit: int,
+    ) -> tuple[date | None, dict[date, dict[str, int]], set[tuple[str, str, str]], int]:
         if not log_file.exists() or not log_file.is_file():
-            return None, {}, set()
+            return None, {}, set(), 0
 
         earliest_entry_date: date | None = None
         daily_totals: dict[date, dict[str, int]] = {}
         recent_entry_keys_queue: deque[tuple[str, str, str]] = deque(
             maxlen=max(1, recent_entry_key_limit)
         )
+        scanned_lines = 0
 
-        with log_file.open("r", encoding="utf-8", errors="replace") as handle:
-            for raw_line in handle:
-                match = _RENDERED_LOG_PATTERN.match(raw_line.strip())
-                if not match:
-                    continue
-                try:
-                    timestamp = normalize_log_timestamp(
-                        datetime.strptime(
-                            match.group("timestamp"),
-                            "%Y-%m-%d %H:%M:%S",
-                        )
+        try:
+            raw_lines = self._read_log_tail_lines(
+                log_file,
+                limit=history_line_limit,
+            )
+        except OSError:
+            return None, {}, set(), 0
+
+        for raw_line in raw_lines:
+            scanned_lines += 1
+            match = _RENDERED_LOG_PATTERN.match(raw_line.strip())
+            if not match:
+                continue
+            try:
+                timestamp = normalize_log_timestamp(
+                    datetime.strptime(
+                        match.group("timestamp"),
+                        "%Y-%m-%d %H:%M:%S",
                     )
-                except ValueError:
-                    continue
-
-                level = normalize_log_level(match.group("level"))
-                message = normalize_log_message(match.group("message") or "")
-                entry_key = (
-                    timestamp.replace(microsecond=0).isoformat(),
-                    level,
-                    message,
                 )
-                recent_entry_keys_queue.append(entry_key)
+            except ValueError:
+                continue
 
-                entry_date = timestamp.astimezone(local_tz).date()
-                if earliest_entry_date is None or entry_date < earliest_entry_date:
-                    earliest_entry_date = entry_date
-                totals = daily_totals.setdefault(entry_date, {"items": 0, "errors": 0})
-                if self._is_product_success(message):
-                    totals["items"] += 1
-                if level == "ERROR":
-                    totals["errors"] += 1
+            level = normalize_log_level(match.group("level"))
+            message = normalize_log_message(match.group("message") or "")
+            entry_key = (
+                timestamp.replace(microsecond=0).isoformat(),
+                level,
+                message,
+            )
+            recent_entry_keys_queue.append(entry_key)
 
-        return earliest_entry_date, daily_totals, set(recent_entry_keys_queue)
+            entry_date = timestamp.astimezone(local_tz).date()
+            if earliest_entry_date is None or entry_date < earliest_entry_date:
+                earliest_entry_date = entry_date
+            totals = daily_totals.setdefault(entry_date, {"items": 0, "errors": 0})
+            if self._is_product_success(message):
+                totals["items"] += 1
+            if level == "ERROR":
+                totals["errors"] += 1
+
+        return earliest_entry_date, daily_totals, set(recent_entry_keys_queue), scanned_lines
+
+    @staticmethod
+    def _read_log_tail_lines(log_file: Path, *, limit: int) -> list[str]:
+        bounded_limit = max(1, int(limit))
+        chunk_size = 64 * 1024
+        buffer = bytearray()
+        newline_count = 0
+
+        with log_file.open("rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+
+            while position > 0 and newline_count <= bounded_limit:
+                read_size = min(chunk_size, position)
+                position -= read_size
+                handle.seek(position)
+                chunk = handle.read(read_size)
+                buffer[:0] = chunk
+                newline_count = buffer.count(b"\n")
+
+        return buffer.decode("utf-8", errors="replace").splitlines()[-bounded_limit:]
+
+    def _last_history_scanned_lines(self, account_id: str, *, local_tz) -> int:
+        prefix = (account_id, f"{local_tz}:")
+        return sum(
+            entry.scanned_lines
+            for key, entry in self._history_cache.items()
+            if key[0] == prefix[0] and key[1].startswith(prefix[1])
+        )
+
+    @classmethod
+    def _resolve_history_line_limit(cls) -> int:
+        raw = os.getenv("SHAFA_DASHBOARD_LOG_HISTORY_LINES", "").strip()
+        if not raw:
+            return DEFAULT_DASHBOARD_LOG_HISTORY_LINES
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_DASHBOARD_LOG_HISTORY_LINES
+        return cls._bound_history_line_limit(value)
+
+    @staticmethod
+    def _bound_history_line_limit(value: int) -> int:
+        return min(max(int(value), 1), MAX_DASHBOARD_LOG_HISTORY_LINES)
 
     @staticmethod
     def _get_log_file_signature(log_file: Path) -> tuple[int, int] | None:

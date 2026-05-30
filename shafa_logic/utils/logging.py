@@ -2,6 +2,7 @@ import os
 import sys
 
 _COLORS = {
+    "DEBUG": "\033[90m",
     "INFO": "\033[34m",
     "WARN": "\033[33m",
     "ERROR": "\033[31m",

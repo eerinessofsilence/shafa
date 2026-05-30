@@ -17,6 +17,7 @@ async def get_dashboard_summary(
     period: Literal["all", "week", "month", "quarter", "custom"] = Query("all"),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
+    log_lines: int | None = Query(None, ge=1, le=50000),
     service: DashboardService = Depends(get_dashboard_service),
 ) -> DashboardSummaryRead:
     try:
@@ -24,6 +25,7 @@ async def get_dashboard_summary(
             period=period,
             date_from=date_from,
             date_to=date_to,
+            history_line_limit=log_lines,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

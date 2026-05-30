@@ -5819,6 +5819,7 @@ def plan_shared_old_product_deactivation(
     account_id: Optional[str] = None,
     dry_run: Optional[bool] = None,
 ) -> dict[str, int]:
+    started_at = time.perf_counter()
     age_days = max(
         DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
         if older_than_days is None
@@ -5853,7 +5854,9 @@ def plan_shared_old_product_deactivation(
         f"reconciled_memberships={reconcile_result.get('memberships')}. "
         f"checked={result.get('checked')}. old={result.get('old')}. "
         f"fresh={result.get('fresh')}. date_missing={result.get('date_missing')}. "
-        f"tasks={result.get('tasks')}. account_tasks={result.get('account_tasks')}.",
+        f"tasks={result.get('tasks')}. account_tasks={result.get('account_tasks')}. "
+        f"duration_ms={round((time.perf_counter() - started_at) * 1000)}. "
+        f"db_duration_ms={result.get('duration_ms')}.",
     )
     return result
 
@@ -6082,13 +6085,17 @@ def _deactivate_old_telegram_products_impl(
 
     def _finish_result() -> dict[str, object]:
         result["execution_time_seconds"] = round(time.perf_counter() - started_at, 3)
+        duration_ms = round(float(result["execution_time_seconds"]) * 1000)
         _safe_old_product_log(
             "INFO",
             "cleanup cycle end "
             f"account={account_label}. account_id={resolved_account_id}. "
             f"total_checked_products={result['checked']}. "
+            f"active_products={result['active']}. skipped_products={result['skipped']}. "
+            f"not_found_products={result['not_found']}. queued_count={result['found']}. "
             f"total_deactivated_products={result['deactivated']}. "
-            f"execution_time={result['execution_time_seconds']}s.",
+            f"failed_count={result['failed']}. execution_time={result['execution_time_seconds']}s. "
+            f"duration_ms={duration_ms}.",
         )
         return result
 
@@ -6440,44 +6447,31 @@ def _deactivate_old_telegram_products_impl(
                 result["active"] = int(result["active"]) + 1
             log_level = "INFO"
             lookup_reason = lookup_reason or lookup_method
-        _safe_old_product_log(
-            "INFO",
-            "Проверяю созданный товар из базы аккаунта. "
-            f"account_id={candidate_account_id}. "
-            f"source={source_label}. "
-            "telegram_source=telegram_products(shared_account_db). "
-            f"name={candidate_name}. product_id={product_id}. "
-            f"channel_id={channel_id if channel_id is not None else 'unknown'}. "
-            f"message_id={message_id if message_id is not None else 'unknown'}. "
-            f"telegram_found={str(channel_id is not None).lower()}. "
-            f"checked_at_utc={now_utc.isoformat()}. "
-            f"telegram_message_date={telegram_message_date}. "
-            f"product_age={product_age}. "
-            f"telegram_age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
-            f"threshold_days={age_days}. decision={decision}. "
-            f"action={action}. lookup={lookup_reason}.",
-        )
-        log(
-            "INFO",
-            "Проверен товар для деактивации: "
-            f"id_товара={product_id}. "
-            f"name=\"{_log_value(candidate_name)}\". "
-            f"дней={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
-            f"threshold_days={age_days}. action={action}. reason={lookup_reason}.",
-        )
-        _log_old_product_check(
-            level=log_level,
-            account_label=account_label,
-            product_name=candidate_name,
-            product_id=product_id,
-            message_id=message_id,
-            telegram_found=channel_id is not None,
-            channel_id=channel_id,
-            message_date=telegram_message_date if telegram_message_date != "-" else None,
-            age_days=telegram_age_days_int,
-            action=action,
-            reason=lookup_reason,
-        )
+        if action == "DELETE_REQUIRED":
+            _safe_old_product_log(
+                "INFO",
+                "Queued old product candidate for deactivation. "
+                f"account_id={candidate_account_id}. "
+                f"source={source_label}. product_id={product_id}. "
+                f"channel_id={channel_id if channel_id is not None else 'unknown'}. "
+                f"message_id={message_id if message_id is not None else 'unknown'}. "
+                f"telegram_message_date={telegram_message_date}. "
+                f"telegram_age_days={telegram_age_days if telegram_age_days is not None else 'unknown'}. "
+                f"threshold_days={age_days}. lookup={lookup_reason}.",
+            )
+            _log_old_product_check(
+                level=log_level,
+                account_label=account_label,
+                product_name=candidate_name,
+                product_id=product_id,
+                message_id=message_id,
+                telegram_found=channel_id is not None,
+                channel_id=channel_id,
+                message_date=telegram_message_date if telegram_message_date != "-" else None,
+                age_days=telegram_age_days_int,
+                action=action,
+                reason=lookup_reason,
+            )
         if (
             tracking_allowed
             and channel_id is not None

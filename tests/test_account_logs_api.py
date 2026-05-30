@@ -134,6 +134,26 @@ class AccountLogsApiTest(unittest.TestCase):
         )
         self.assertEqual([item["level"] for item in payload], ["INFO", "SUCCESS"])
 
+    def test_get_account_logs_default_returns_recent_tail_only(self) -> None:
+        self.log_store.max_entries_per_account = 1000
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        account_log.write_text(
+            "".join(
+                f"[2026-04-18 13:{index // 60:02d}:{index % 60:02d}] [INFO] [Alpha] line-{index}\n"
+                for index in range(260)
+            ),
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/accounts/acc-1/logs")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 200)
+        self.assertEqual(payload[0]["message"], "line-60")
+        self.assertEqual(payload[-1]["message"], "line-259")
+
     def test_get_account_logs_merges_file_history_with_live_runtime_entries(self) -> None:
         account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
         account_log.parent.mkdir(parents=True, exist_ok=True)

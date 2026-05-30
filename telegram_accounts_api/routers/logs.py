@@ -23,7 +23,7 @@ router = APIRouter(tags=["logs"])
 @router.get("/accounts/{account_id}/logs", response_model=list[AccountLogEntryRead])
 async def get_account_logs(
     account_id: str,
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=200, ge=1, le=1000),
     level: str | None = Query(default=None),
     since: str | None = Query(default=None),
     service: AccountService = Depends(get_account_service),
@@ -31,10 +31,7 @@ async def get_account_logs(
 ) -> list[AccountLogEntryRead]:
     await service.get_account(account_id)
     since_index, since_timestamp = _parse_since(since)
-    history_tail_limit = min(
-        store.max_entries_per_account,
-        max(limit * 4, limit),
-    )
+    history_tail_limit = min(max(limit * 4, limit), 5000)
     history_entries = load_account_log_file_entries(
         account_id,
         service.account_dir(account_id) / "logs" / "app.log",

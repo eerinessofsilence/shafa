@@ -614,12 +614,12 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Дата начала", response.json()["detail"])
 
-    def test_dashboard_summary_reads_full_history_not_only_log_tail(self) -> None:
+    def test_dashboard_summary_reads_limited_history_tail_by_default(self) -> None:
         account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
         account_log.parent.mkdir(parents=True, exist_ok=True)
         history_entries = []
-        for offset in range(130):
-            timestamp = self.now - timedelta(days=129 - offset)
+        for offset in range(700):
+            timestamp = self.now - timedelta(days=699 - offset)
             history_entries.append(
                 (
                     timestamp,
@@ -637,10 +637,39 @@ class DashboardApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(
             payload["range_start"],
-            (self.now.date() - timedelta(days=129)).isoformat(),
+            (self.now.date() - timedelta(days=499)).isoformat(),
         )
-        self.assertEqual(payload["item_successes_in_range"], 130)
-        self.assertEqual(len(payload["series"]), 130)
+        self.assertEqual(payload["item_successes_in_range"], 501)
+        self.assertEqual(len(payload["series"]), 500)
+        self.assertLessEqual(
+            max(entry.scanned_lines for entry in self.dashboard_service._history_cache.values()),
+            500,
+        )
+
+    def test_dashboard_summary_allows_configurable_history_tail(self) -> None:
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        self._write_history_log(
+            "acc-1",
+            [
+                (
+                    self.now - timedelta(days=599 - offset),
+                    "SUCCESS",
+                    f"Товар создан успешно. ID: {offset + 1000}.",
+                )
+                for offset in range(600)
+            ],
+        )
+
+        response = self.client.get("/dashboard/summary", params={"log_lines": 600})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["range_start"],
+            (self.now.date() - timedelta(days=599)).isoformat(),
+        )
+        self.assertEqual(payload["item_successes_in_range"], 601)
 
 
 if __name__ == "__main__":

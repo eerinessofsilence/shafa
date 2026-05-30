@@ -21,7 +21,7 @@ _SENSITIVE_VALUE_PATTERNS = (
 )
 _ANSI_ESCAPE_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _INLINE_LEVEL_PREFIX_PATTERN = re.compile(
-    r"^(?:\[(?P<level>INFO|WARN(?:ING)?|ERROR|OK|SUCCESS)\]\s*)+",
+    r"^(?:\[(?P<level>DEBUG|INFO|WARN(?:ING)?|ERROR|OK|SUCCESS)\]\s*)+",
     re.IGNORECASE,
 )
 _SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s_=+\-—–~.]{8,}$")

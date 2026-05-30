@@ -3753,6 +3753,7 @@ def plan_shared_deactivation_tasks(
     account_id: Optional[str] = None,
     dry_run: bool = False,
 ) -> dict[str, int]:
+    started_at = time.perf_counter()
     age_days = max(int(older_than_days), 183)
     row_limit = max(int(limit), 1)
     telegram_db_path = _telegram_products_db_path()
@@ -3955,6 +3956,7 @@ def plan_shared_deactivation_tasks(
         "tasks": tasks,
         "account_tasks": account_tasks,
         "dry_run": int(bool(dry_run)),
+        "duration_ms": round((time.perf_counter() - started_at) * 1000),
     }
 
 
