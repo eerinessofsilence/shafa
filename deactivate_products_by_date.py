@@ -112,6 +112,12 @@ def fetch_active_products(
             break
         after = next_after
 
+    print(f"Активных товаров Shafa всего: {len(products)}")
+    for index, product in enumerate(products[:5], start=1):
+        product_id = str(product.get("id") or "").strip() or "нет id"
+        name = str(product.get("name") or "").strip() or "без названия"
+        print(f"  sample {index}: {product_id} | {name}")
+
     return products
 
 

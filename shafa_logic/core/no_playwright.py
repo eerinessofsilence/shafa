@@ -144,14 +144,24 @@ def _load_storage_state_cookies(path: Path) -> list[dict]:
     return cookies if isinstance(cookies, list) else []
 
 
+def _current_storage_state_path() -> Path:
+    configured = os.getenv("SHAFA_STORAGE_STATE_PATH", "").strip()
+    return Path(configured).expanduser() if configured else Path(STORAGE_STATE_PATH)
+
+
+def _explicit_storage_state_path_configured() -> bool:
+    return bool(os.getenv("SHAFA_STORAGE_STATE_PATH", "").strip())
+
+
 def _load_shafa_cookies() -> list[dict]:
-    cookies = _load_storage_state_cookies(STORAGE_STATE_PATH)
+    storage_state_path = _current_storage_state_path()
+    cookies = _load_storage_state_cookies(storage_state_path)
     filtered = [
         cookie
         for cookie in cookies
         if _is_allowed_cookie_domain(cookie.get("domain", ""), ORIGIN_URL)
     ]
-    if not filtered:
+    if not filtered and not _explicit_storage_state_path_configured():
         cookies = load_cookies(ORIGIN_URL)
         filtered = [
             cookie
@@ -161,6 +171,33 @@ def _load_shafa_cookies() -> list[dict]:
     if filtered:
         save_cookies(filtered)
     return filtered
+
+
+def _cookie_debug_summary(cookies: list[dict]) -> str:
+    parts: list[str] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name") or "").strip()
+        domain = str(cookie.get("domain") or "").strip()
+        if not name:
+            continue
+        parts.append(f"{name}@{domain or '?'}")
+    return ", ".join(parts) if parts else "none"
+
+
+def _debug_request_auth(operation: str, cookies: list[dict]) -> None:
+    storage_state_path = _current_storage_state_path().resolve()
+    print(
+        "[Shafa auth debug] "
+        f"operation={operation} | "
+        f"account_name={os.getenv('SHAFA_ACCOUNT_NAME', '').strip()} | "
+        f"account_id={os.getenv('SHAFA_ACCOUNT_ID', '').strip()} | "
+        f"env_storage_state_path={os.getenv('SHAFA_STORAGE_STATE_PATH', '').strip()} | "
+        f"auth_path_used={storage_state_path} | "
+        f"auth_exists={storage_state_path.exists()} | "
+        f"cookies={_cookie_debug_summary(cookies)}"
+    )
 
 
 def _build_cookie_header(cookies: list[dict]) -> str:

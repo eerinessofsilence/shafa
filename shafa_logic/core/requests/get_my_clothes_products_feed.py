@@ -3,6 +3,7 @@ from typing import Optional
 
 from core.no_playwright import (
     _base_headers,
+    _debug_request_auth,
     _get_csrftoken_from_cookies,
     _load_shafa_cookies,
     _request_json,
@@ -124,6 +125,7 @@ def get_my_clothes_products_feed(
         raise ValueError("first must be >= 1")
 
     cookies = _load_shafa_cookies()
+    _debug_request_auth("WEB_MyClothesProductsFeed", cookies)
     if not cookies:
         log("ERROR", "No saved cookies. Log in via main.py first.")
         return {}

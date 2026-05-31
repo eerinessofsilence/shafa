@@ -354,6 +354,56 @@ class DeactivateProductsByDateTests(unittest.TestCase):
         self.assertEqual(result, {"deactivated": 0, "failed": 0, "mark_failed": 0})
         fetch_products.assert_not_called()
 
+    def test_shafa_cookie_loader_reads_storage_state_from_current_env(self) -> None:
+        from core import no_playwright
+
+        with tempfile.TemporaryDirectory() as raw_base:
+            base = Path(raw_base)
+            first_auth = base / "first-auth.json"
+            second_auth = base / "second-auth.json"
+            first_auth.write_text(
+                json.dumps(
+                    {
+                        "cookies": [
+                            {
+                                "name": "csrftoken",
+                                "value": "first-token",
+                                "domain": ".shafa.ua",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            second_auth.write_text(
+                json.dumps(
+                    {
+                        "cookies": [
+                            {
+                                "name": "csrftoken",
+                                "value": "second-token",
+                                "domain": ".shafa.ua",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.dict(os.environ, {"SHAFA_STORAGE_STATE_PATH": str(first_auth)}),
+                patch("core.no_playwright.save_cookies"),
+            ):
+                first_cookies = no_playwright._load_shafa_cookies()
+            with (
+                patch.dict(os.environ, {"SHAFA_STORAGE_STATE_PATH": str(second_auth)}),
+                patch("core.no_playwright.save_cookies"),
+            ):
+                second_cookies = no_playwright._load_shafa_cookies()
+
+        self.assertEqual(first_cookies[0]["value"], "first-token")
+        self.assertEqual(second_cookies[0]["value"], "second-token")
+
 
 if __name__ == "__main__":
     unittest.main()

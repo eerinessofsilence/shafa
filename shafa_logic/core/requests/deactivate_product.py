@@ -2,6 +2,7 @@ import json
 
 from core.no_playwright import (
     _base_headers,
+    _debug_request_auth,
     _get_csrftoken_from_cookies,
     _load_shafa_cookies,
     _request_json,
@@ -58,6 +59,7 @@ def deactivate_product(product_id: str) -> None:
         raise ValueError("product_id must be an integer") from exc
 
     cookies = _load_shafa_cookies()
+    _debug_request_auth("deactivateProducts", cookies)
     if not cookies:
         raise RuntimeError("No saved cookies. Log in via main.py first.")
 
