@@ -10,7 +10,10 @@ from shafa_control import AccountSessionStore
 from telegram_accounts_api.dependencies import get_account_service, get_auth_service
 from telegram_accounts_api.main import app
 from telegram_accounts_api.services.account_service import AccountService
-from telegram_accounts_api.services.auth_service import AccountAuthService, _windows_gui_python
+from telegram_accounts_api.services.auth_service import (
+    AccountAuthService,
+    _shafa_login_launch_command,
+)
 from telegram_accounts_api.utils.storage import JsonListStorage
 from tests.asgi_client import SyncASGITestClient, async_dependency
 
@@ -75,18 +78,31 @@ class ShafaBrowserLoginApiTest(unittest.TestCase):
         self.assertEqual(self.launched_commands, [("acc-1", ["main.py", "--login-shafa"])])
         self.assertIn("запущен", response.json()["message"].lower())
 
-    def test_windows_gui_python_prefers_pythonw_when_adjacent(self) -> None:
-        python_exe = self.base_dir / "venv" / "Scripts" / "python.exe"
-        pythonw_exe = self.base_dir / "venv" / "Scripts" / "pythonw.exe"
-        python_exe.parent.mkdir(parents=True, exist_ok=True)
-        python_exe.write_text("", encoding="utf-8")
-        pythonw_exe.write_text("", encoding="utf-8")
+    def test_windows_shafa_login_uses_direct_python_command(self) -> None:
+        with (
+            patch(
+                "telegram_accounts_api.services.auth_service.subprocess.CREATE_NO_WINDOW",
+                0x08000000,
+                create=True,
+            ),
+            patch(
+                "telegram_accounts_api.services.auth_service.subprocess.CREATE_NEW_PROCESS_GROUP",
+                0x00000200,
+                create=True,
+            ),
+        ):
+            command, creationflags = _shafa_login_launch_command(
+                r"C:\App\.venv\Scripts\python.exe",
+                ["main.py", "--login-shafa"],
+                windows=True,
+            )
 
-        self.assertEqual(_windows_gui_python(str(python_exe)), str(pythonw_exe))
-
-    def test_windows_gui_python_falls_back_to_original_command(self) -> None:
-        with patch("telegram_accounts_api.services.auth_service.shutil.which", return_value=None):
-            self.assertEqual(_windows_gui_python("python"), "python")
+        self.assertEqual(
+            command,
+            [r"C:\App\.venv\Scripts\python.exe", "main.py", "--login-shafa"],
+        )
+        self.assertFalse(command[0].lower().endswith("pythonw.exe"))
+        self.assertEqual(creationflags, 0x08000200)
 
     def test_shafa_login_launcher_passes_confirmation_file_env(self) -> None:
         project_dir = self.base_dir / "project" / "shafa_logic"

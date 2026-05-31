@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,26 +61,24 @@ def _preferred_project_dir(project_dir: Path) -> Path:
     return project_dir
 
 
-def _windows_gui_python(python_command: str) -> str:
-    candidate = Path(python_command)
-    if candidate.name.lower() == "python.exe":
-        pythonw_candidate = candidate.with_name("pythonw.exe")
-        if pythonw_candidate.exists():
-            return str(pythonw_candidate)
+def _shafa_login_launch_command(
+    python_command: str,
+    args: list[str],
+    *,
+    windows: bool | None = None,
+) -> tuple[list[str], int]:
+    if windows is None:
+        windows = os.name == "nt"
 
-    resolved = shutil.which(python_command)
-    if resolved:
-        resolved_path = Path(resolved)
-        if resolved_path.name.lower() == "python.exe":
-            pythonw_candidate = resolved_path.with_name("pythonw.exe")
-            if pythonw_candidate.exists():
-                return str(pythonw_candidate)
-
-    return python_command
-
-
-def _windows_start_command(executable: str, args: list[str]) -> list[str]:
-    return ["cmd", "/c", "start", "", executable, *args]
+    command = [python_command, *args]
+    creationflags = 0
+    if windows:
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess,
+            "CREATE_NEW_PROCESS_GROUP",
+            0,
+        )
+    return command, creationflags
 
 
 SHAFA_SETTINGS_REFERER_URL = "https://shafa.ua/uk/my/settings"
@@ -1042,13 +1039,7 @@ class AccountAuthService:
         log_file.write_text("", encoding="utf-8")
 
         python_command = self.runtime.account_python(account)
-        if os.name == "nt":
-            python_command = _windows_gui_python(python_command)
-        command = [python_command, *args]
-        creationflags = 0
-        if os.name == "nt":
-            command = _windows_start_command(python_command, args)
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        command, creationflags = _shafa_login_launch_command(python_command, args)
 
         env, _login_context = self.shafa_auth.create_login_context(
             account,
