@@ -95,6 +95,7 @@ from data.db import (
     save_telegram_channels,
     save_telegram_product,
     set_telegram_product_message_date,
+    shared_deactivation_plan_batch_size,
     skip_shared_deactivation_task_not_found_for_account,
     skip_telegram_product_deactivation_not_found,
     size_id_exists,
@@ -5815,10 +5816,10 @@ def backfill_created_product_message_dates(
 def plan_shared_old_product_deactivation(
     *,
     older_than_days: Optional[int] = None,
-    limit: int = 100,
+    limit: Optional[int] = None,
     account_id: Optional[str] = None,
     dry_run: Optional[bool] = None,
-) -> dict[str, int]:
+) -> dict[str, object]:
     started_at = time.perf_counter()
     age_days = max(
         DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
@@ -5828,9 +5829,10 @@ def plan_shared_old_product_deactivation(
     )
     resolved_account_id = str(account_id or _current_account_id()).strip() or "default"
     effective_dry_run = _shared_deactivation_dry_run() if dry_run is None else dry_run
+    batch_size = shared_deactivation_plan_batch_size(limit)
     try:
         backfill_created_product_message_dates(
-            limit=max(int(limit), 1),
+            limit=batch_size,
             account_id=account_id,
         )
     except Exception as exc:
@@ -5842,7 +5844,7 @@ def plan_shared_old_product_deactivation(
     reconcile_result = {"products": 0, "memberships": 0, "dates_copied": 0}
     result = plan_shared_deactivation_tasks(
         older_than_days=age_days,
-        limit=limit,
+        limit=batch_size,
         account_id=account_id,
         dry_run=effective_dry_run,
     )
@@ -5855,6 +5857,13 @@ def plan_shared_old_product_deactivation(
         f"checked={result.get('checked')}. old={result.get('old')}. "
         f"fresh={result.get('fresh')}. date_missing={result.get('date_missing')}. "
         f"tasks={result.get('tasks')}. account_tasks={result.get('account_tasks')}. "
+        f"batch_size={result.get('batch_size')}. "
+        f"processed_count={result.get('processed_count')}. "
+        f"queued_count={result.get('queued_count')}. "
+        f"fresh_count={result.get('fresh_count')}. "
+        f"date_missing_count={result.get('date_missing_count')}. "
+        f"skipped_count={result.get('skipped_count')}. "
+        f"has_more={result.get('has_more')}. "
         f"duration_ms={round((time.perf_counter() - started_at) * 1000)}. "
         f"db_duration_ms={result.get('duration_ms')}.",
     )

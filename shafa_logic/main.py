@@ -517,7 +517,7 @@ def _start_background_shared_deactivation_worker() -> tuple[threading.Event, thr
                         "Shared deactivation planner run started. "
                         f"account_id={os.getenv('SHAFA_ACCOUNT_ID', '').strip() or 'default'}.",
                     )
-                    planner_result = plan_shared_old_product_deactivation(limit=100)
+                    planner_result = plan_shared_old_product_deactivation()
                     last_planner_run_at = now
                     log(
                         "INFO",
@@ -574,7 +574,7 @@ def _shared_deactivation_plan_once() -> None:
         )
     from controller.data_controller import plan_shared_old_product_deactivation
 
-    result = plan_shared_old_product_deactivation(limit=100)
+    result = plan_shared_old_product_deactivation()
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 

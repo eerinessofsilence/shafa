@@ -36,6 +36,9 @@ _SQLITE_LOCK_ERROR_MARKERS = (
     "database table is locked",
     "database is busy",
 )
+SHARED_DEACTIVATION_PLAN_BATCH_SIZE_ENV = "SHAFA_SHARED_DEACTIVATION_PLAN_BATCH_SIZE"
+DEFAULT_SHARED_DEACTIVATION_PLAN_BATCH_SIZE = 100
+MAX_SHARED_DEACTIVATION_PLAN_BATCH_SIZE = 500
 
 TELEGRAM_PRODUCT_STATUS_QUEUED = "queued"
 TELEGRAM_PRODUCT_STATUS_PROCESSING = "processing"
@@ -3842,16 +3845,32 @@ def _shared_deactivation_has_seed_rows(
     return row is not None
 
 
+def shared_deactivation_plan_batch_size(value: Optional[int] = None) -> int:
+    if value is None:
+        raw = os.getenv(SHARED_DEACTIVATION_PLAN_BATCH_SIZE_ENV, "").strip()
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                value = DEFAULT_SHARED_DEACTIVATION_PLAN_BATCH_SIZE
+        else:
+            value = DEFAULT_SHARED_DEACTIVATION_PLAN_BATCH_SIZE
+    return min(
+        max(int(value), 1),
+        MAX_SHARED_DEACTIVATION_PLAN_BATCH_SIZE,
+    )
+
+
 def plan_shared_deactivation_tasks(
     *,
     older_than_days: int = 183,
-    limit: int = 100,
+    limit: Optional[int] = None,
     account_id: Optional[str] = None,
     dry_run: bool = False,
-) -> dict[str, int]:
+) -> dict[str, object]:
     started_at = time.perf_counter()
     age_days = max(int(older_than_days), 183)
-    row_limit = max(int(limit), 1)
+    row_limit = shared_deactivation_plan_batch_size(limit)
     telegram_db_path = _telegram_products_db_path()
     _ensure_db_initialized(telegram_db_path)
     with _connect(telegram_db_path) as conn:
@@ -3885,6 +3904,8 @@ def plan_shared_deactivation_tasks(
                     WHEN ? THEN 2
                     ELSE 3
                 END,
+                COALESCE(next_check_at, '') ASC,
+                updated_at ASC,
                 telegram_message_date ASC,
                 channel_id ASC,
                 message_id ASC
@@ -4049,7 +4070,15 @@ def plan_shared_deactivation_tasks(
                 )
                 update_shared_deactivation_parent_status(conn, resolved_task_id)
 
+    duration_ms = round((time.perf_counter() - started_at) * 1000)
     return {
+        "batch_size": row_limit,
+        "processed_count": checked,
+        "queued_count": tasks,
+        "fresh_count": fresh,
+        "date_missing_count": date_missing,
+        "skipped_count": 0,
+        "has_more": int(checked >= row_limit),
         "checked": checked,
         "old": old,
         "fresh": fresh,
@@ -4057,7 +4086,7 @@ def plan_shared_deactivation_tasks(
         "tasks": tasks,
         "account_tasks": account_tasks,
         "dry_run": int(bool(dry_run)),
-        "duration_ms": round((time.perf_counter() - started_at) * 1000),
+        "duration_ms": duration_ms,
     }
 
 
