@@ -59,6 +59,19 @@ class _HistoryAggregateCacheEntry:
     scanned_lines: int
 
 
+@dataclass(frozen=True)
+class _DashboardSummaryCacheEntry:
+    expires_at: float
+    summary: DashboardSummaryRead
+
+
+@dataclass(frozen=True)
+class _SharedDeactivationCacheEntry:
+    expires_at: float
+    signature: tuple[int, int] | None
+    summary: DashboardSharedDeactivationSummaryRead
+
+
 class DashboardService:
     def __init__(
         self,
@@ -67,6 +80,8 @@ class DashboardService:
         *,
         now_provider: Callable[[], datetime] | None = None,
         history_line_limit: int | None = None,
+        summary_cache_ttl_seconds: float | None = None,
+        deactivation_cache_ttl_seconds: float | None = None,
     ) -> None:
         self.account_service = account_service
         self.log_store = log_store
@@ -76,10 +91,29 @@ class DashboardService:
             if history_line_limit is None
             else self._bound_history_line_limit(history_line_limit)
         )
+        self.summary_cache_ttl_seconds = (
+            self._resolve_summary_cache_ttl_seconds()
+            if summary_cache_ttl_seconds is None
+            else max(float(summary_cache_ttl_seconds), 0.0)
+        )
+        self.deactivation_cache_ttl_seconds = (
+            self._resolve_deactivation_cache_ttl_seconds()
+            if deactivation_cache_ttl_seconds is None
+            else max(float(deactivation_cache_ttl_seconds), 0.0)
+        )
         self._history_cache: dict[
             tuple[str, str],
             _HistoryAggregateCacheEntry,
         ] = {}
+        self._summary_cache: dict[
+            tuple[DashboardPeriod, str | None, str | None, int],
+            _DashboardSummaryCacheEntry,
+        ] = {}
+        self._shared_deactivation_cache: dict[
+            tuple[str, int],
+            _SharedDeactivationCacheEntry,
+        ] = {}
+        self._dashboard_indexed_paths: set[str] = set()
 
     async def get_summary(
         self,
@@ -90,7 +124,36 @@ class DashboardService:
         history_line_limit: int | None = None,
     ) -> DashboardSummaryRead:
         started_at = time.perf_counter()
+        monotonic_started_at = time.monotonic()
+        effective_history_line_limit = (
+            self.history_line_limit
+            if history_line_limit is None
+            else self._bound_history_line_limit(history_line_limit)
+        )
+        cache_key = (
+            period,
+            date_from.isoformat() if date_from is not None else None,
+            date_to.isoformat() if date_to is not None else None,
+            effective_history_line_limit,
+        )
+        cached = self._summary_cache.get(cache_key)
+        if (
+            cached is not None
+            and self.summary_cache_ttl_seconds > 0
+            and cached.expires_at > monotonic_started_at
+        ):
+            LOGGER.info(
+                "dashboard summary cache hit period=%s history_line_limit=%s "
+                "duration_ms=%s",
+                period,
+                effective_history_line_limit,
+                round((time.perf_counter() - started_at) * 1000),
+            )
+            return cached.summary
+
+        account_list_started_at = time.perf_counter()
         accounts = await self.account_service.list_accounts()
+        account_list_ms = round((time.perf_counter() - account_list_started_at) * 1000)
         current_time = self.now_provider().astimezone()
         local_tz = current_time.tzinfo or UTC
         generated_at = current_time.astimezone(local_tz)
@@ -98,28 +161,23 @@ class DashboardService:
         account_names = {account.id: account.name for account in accounts}
         earliest_entry_date: date | None = None
         total_history_lines_scanned = 0
-        effective_history_line_limit = (
-            self.history_line_limit
-            if history_line_limit is None
-            else self._bound_history_line_limit(history_line_limit)
-        )
+        account_stats_ms = 0
 
         for account in accounts:
+            account_started_at = time.perf_counter()
             runtime_entries = self.log_store.list_entries(
                 account.id,
                 limit=self.log_store.max_entries_per_account,
             )
-            account_earliest_date, daily_totals = self._load_account_daily_totals(
+            account_earliest_date, daily_totals, scanned_lines = self._load_account_daily_totals(
                 account.id,
                 runtime_entries=runtime_entries,
                 local_tz=local_tz,
                 history_line_limit=effective_history_line_limit,
             )
             account_daily_totals[account.id] = daily_totals
-            total_history_lines_scanned += self._last_history_scanned_lines(
-                account.id,
-                local_tz=local_tz,
-            )
+            total_history_lines_scanned += scanned_lines
+            account_stats_ms += round((time.perf_counter() - account_started_at) * 1000)
 
             if (
                 period == "all"
@@ -186,6 +244,12 @@ class DashboardService:
             for point_date in series_dates
         ]
 
+        shared_summary_started_at = time.perf_counter()
+        shared_deactivation_summary = self._load_shared_deactivation_summary(
+            account_names=account_names
+        )
+        shared_stats_ms = round((time.perf_counter() - shared_summary_started_at) * 1000)
+
         summary = DashboardSummaryRead(
             generated_at=generated_at,
             range_start=range_start,
@@ -201,16 +265,23 @@ class DashboardService:
             top_error_account_name=top_error_account_name,
             top_error_account_errors=top_error_account_errors,
             series=series,
-            shared_deactivation=self._load_shared_deactivation_summary(
-                account_names=account_names
-            ),
+            shared_deactivation=shared_deactivation_summary,
         )
+        if self.summary_cache_ttl_seconds > 0:
+            self._summary_cache[cache_key] = _DashboardSummaryCacheEntry(
+                expires_at=monotonic_started_at + self.summary_cache_ttl_seconds,
+                summary=summary,
+            )
         LOGGER.info(
             "dashboard summary loaded account_count=%s history_line_limit=%s "
-            "history_lines_scanned=%s duration_ms=%s",
+            "history_lines_scanned=%s account_list_ms=%s account_stats_ms=%s "
+            "shared_stats_ms=%s duration_ms=%s",
             len(accounts),
             effective_history_line_limit,
             total_history_lines_scanned,
+            account_list_ms,
+            account_stats_ms,
+            shared_stats_ms,
             round((time.perf_counter() - started_at) * 1000),
         )
         return summary
@@ -221,9 +292,28 @@ class DashboardService:
         account_names: dict[str, str],
         recent_limit: int = 20,
     ) -> DashboardSharedDeactivationSummaryRead:
+        started_at = time.perf_counter()
+        shared_counts_ms = 0
+        direct_counts_ms = 0
+        recent_rows_ms = 0
         db_path = self.account_service.session_store.shared_telegram_db_file()
         if not db_path.exists():
             return DashboardSharedDeactivationSummaryRead()
+        cache_key = (str(db_path), max(int(recent_limit), 1))
+        current_signature = self._get_log_file_signature(db_path)
+        monotonic_started_at = time.monotonic()
+        cached = self._shared_deactivation_cache.get(cache_key)
+        if (
+            cached is not None
+            and self.deactivation_cache_ttl_seconds > 0
+            and cached.expires_at > monotonic_started_at
+            and cached.signature == current_signature
+        ):
+            LOGGER.info(
+                "dashboard shared deactivation cache hit duration_ms=%s",
+                round((time.perf_counter() - started_at) * 1000),
+            )
+            return cached.summary
 
         try:
             with sqlite3.connect(db_path) as conn:
@@ -234,10 +324,19 @@ class DashboardService:
                 )
                 if not shared_available and not telegram_products_available:
                     return DashboardSharedDeactivationSummaryRead()
+                indexed_path = str(db_path)
+                if indexed_path not in self._dashboard_indexed_paths:
+                    self._ensure_dashboard_indexes(
+                        conn,
+                        shared_available=shared_available,
+                        telegram_products_available=telegram_products_available,
+                    )
+                    self._dashboard_indexed_paths.add(indexed_path)
 
                 account_rows = []
                 recent_rows = []
                 if shared_available:
+                    shared_counts_started_at = time.perf_counter()
                     account_rows = conn.execute(
                         """
                         SELECT
@@ -264,6 +363,10 @@ class DashboardService:
                             SHARED_ACCOUNT_TASK_RETRY_SCHEDULED,
                         ),
                     ).fetchall()
+                    shared_counts_ms = round(
+                        (time.perf_counter() - shared_counts_started_at) * 1000
+                    )
+                    recent_rows_started_at = time.perf_counter()
                     recent_rows = conn.execute(
                         """
                         SELECT
@@ -297,10 +400,14 @@ class DashboardService:
                             max(int(recent_limit), 1),
                         ),
                     ).fetchall()
+                    recent_rows_ms += round(
+                        (time.perf_counter() - recent_rows_started_at) * 1000
+                    )
 
                 direct_account_rows = []
                 direct_recent_rows = []
                 if telegram_products_available:
+                    direct_counts_started_at = time.perf_counter()
                     shared_dedupe = (
                         """
                         AND NOT EXISTS (
@@ -325,58 +432,100 @@ class DashboardService:
                         if shared_available
                         else ()
                     )
-                    terminal_filter = """
-                        (
-                            deactivation_status = ?
-                            AND shafa_deactivated_at IS NOT NULL
-                        )
-                        OR (
-                            deactivation_status = ?
-                            OR (
-                                shafa_deleted_at IS NOT NULL
-                                AND shafa_deactivated_at IS NULL
-                            )
+                    terminal_products_cte = f"""
+                        WITH terminal_products AS (
+                            SELECT
+                                account_id,
+                                channel_id,
+                                message_id,
+                                parsed_data,
+                                created_product_id,
+                                deactivation_completed_at,
+                                shafa_deactivated_at,
+                                shafa_deleted_at,
+                                updated_at,
+                                deactivation_error,
+                                ? AS terminal_status,
+                                1 AS success_count,
+                                0 AS not_found_count
+                            FROM telegram_products
+                            WHERE deactivation_status = ?
+                              AND shafa_deactivated_at IS NOT NULL
+                              {shared_dedupe}
+                            UNION ALL
+                            SELECT
+                                account_id,
+                                channel_id,
+                                message_id,
+                                parsed_data,
+                                created_product_id,
+                                deactivation_completed_at,
+                                shafa_deactivated_at,
+                                shafa_deleted_at,
+                                updated_at,
+                                deactivation_error,
+                                ? AS terminal_status,
+                                0 AS success_count,
+                                1 AS not_found_count
+                            FROM telegram_products
+                            WHERE deactivation_status = ?
+                              {shared_dedupe}
+                            UNION ALL
+                            SELECT
+                                account_id,
+                                channel_id,
+                                message_id,
+                                parsed_data,
+                                created_product_id,
+                                deactivation_completed_at,
+                                shafa_deactivated_at,
+                                shafa_deleted_at,
+                                updated_at,
+                                deactivation_error,
+                                ? AS terminal_status,
+                                0 AS success_count,
+                                1 AS not_found_count
+                            FROM telegram_products INDEXED BY idx_telegram_products_deactivation_deleted
+                            WHERE shafa_deleted_at IS NOT NULL
+                              AND shafa_deactivated_at IS NULL
+                              AND (
+                                    deactivation_status IS NULL
+                                    OR deactivation_status != ?
+                                  )
+                              {shared_dedupe}
                         )
                     """
+                    terminal_params = (
+                        SHARED_ACCOUNT_TASK_COMPLETED,
+                        SHARED_ACCOUNT_TASK_COMPLETED,
+                        *shared_params,
+                        SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                        SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                        *shared_params,
+                        SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                        SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                        *shared_params,
+                    )
                     direct_account_rows = conn.execute(
-                        f"""
+                        terminal_products_cte
+                        + """
                         SELECT
                             account_id,
-                            SUM(
-                                CASE
-                                    WHEN deactivation_status = ?
-                                     AND shafa_deactivated_at IS NOT NULL
-                                        THEN 1
-                                    ELSE 0
-                                END
-                            ) AS deactivated_success_count,
-                            SUM(
-                                CASE
-                                    WHEN deactivation_status = ?
-                                      OR (
-                                            shafa_deleted_at IS NOT NULL
-                                            AND shafa_deactivated_at IS NULL
-                                         )
-                                        THEN 1
-                                    ELSE 0
-                                END
-                            ) AS not_found_treated_as_done_count
-                        FROM telegram_products
-                        WHERE ({terminal_filter})
-                          {shared_dedupe}
+                            SUM(success_count) AS deactivated_success_count,
+                            SUM(not_found_count) AS not_found_treated_as_done_count
+                        FROM terminal_products
                         GROUP BY account_id
                         ORDER BY account_id
                         """,
-                        (
-                            SHARED_ACCOUNT_TASK_COMPLETED,
-                            SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
-                            SHARED_ACCOUNT_TASK_COMPLETED,
-                            SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
-                            *shared_params,
-                        ),
+                        terminal_params,
                     ).fetchall()
+                    direct_counts_ms = round(
+                        (time.perf_counter() - direct_counts_started_at) * 1000
+                    )
+                    recent_rows_started_at = time.perf_counter()
                     direct_recent_rows = conn.execute(
-                        f"""
+                        terminal_products_cte
+                        + """
                         SELECT
                             account_id,
                             ('tg:' || channel_id || ':' || message_id)
@@ -389,12 +538,7 @@ class DashboardService:
                                 ELSE NULL
                             END AS product_title,
                             created_product_id AS shafa_product_id,
-                            CASE
-                                WHEN deactivation_status = ?
-                                 AND shafa_deactivated_at IS NOT NULL
-                                    THEN ?
-                                ELSE ?
-                            END AS status,
+                            terminal_status AS status,
                             COALESCE(
                                 deactivation_completed_at,
                                 shafa_deactivated_at,
@@ -403,22 +547,15 @@ class DashboardService:
                             ) AS completed_at,
                             'old_direct' AS reason,
                             deactivation_error AS last_error
-                        FROM telegram_products
-                        WHERE ({terminal_filter})
-                          {shared_dedupe}
+                        FROM terminal_products
                         ORDER BY datetime(completed_at) DESC, updated_at DESC
                         LIMIT ?
                         """,
-                        (
-                            SHARED_ACCOUNT_TASK_COMPLETED,
-                            SHARED_ACCOUNT_TASK_COMPLETED,
-                            SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
-                            SHARED_ACCOUNT_TASK_COMPLETED,
-                            SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
-                            *shared_params,
-                            max(int(recent_limit), 1),
-                        ),
+                        (*terminal_params, max(int(recent_limit), 1)),
                     ).fetchall()
+                    recent_rows_ms += round(
+                        (time.perf_counter() - recent_rows_started_at) * 1000
+                    )
         except sqlite3.Error:
             return DashboardSharedDeactivationSummaryRead()
 
@@ -502,7 +639,7 @@ class DashboardService:
         ]
 
         total_done = total_success + total_not_found
-        return DashboardSharedDeactivationSummaryRead(
+        summary = DashboardSharedDeactivationSummaryRead(
             total_deactivated_products=total_done,
             deactivated_success_count=total_success,
             not_found_treated_as_done_count=total_not_found,
@@ -510,6 +647,21 @@ class DashboardService:
             per_account=per_account,
             recent=recent,
         )
+        LOGGER.info(
+            "dashboard shared deactivation loaded shared_counts_ms=%s "
+            "direct_counts_ms=%s recent_rows_ms=%s duration_ms=%s",
+            shared_counts_ms,
+            direct_counts_ms,
+            recent_rows_ms,
+            round((time.perf_counter() - started_at) * 1000),
+        )
+        if self.deactivation_cache_ttl_seconds > 0:
+            self._shared_deactivation_cache[cache_key] = _SharedDeactivationCacheEntry(
+                expires_at=monotonic_started_at + self.deactivation_cache_ttl_seconds,
+                signature=self._get_log_file_signature(db_path),
+                summary=summary,
+            )
+        return summary
 
     @staticmethod
     def _shared_deactivation_tables_exist(conn: sqlite3.Connection) -> bool:
@@ -539,6 +691,60 @@ class DashboardService:
         ).fetchall()
         return {str(row["name"]) for row in rows} == set(table_names)
 
+    @staticmethod
+    def _ensure_dashboard_indexes(
+        conn: sqlite3.Connection,
+        *,
+        shared_available: bool,
+        telegram_products_available: bool,
+    ) -> None:
+        if telegram_products_available:
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_completed
+                    ON telegram_products(
+                        deactivation_status,
+                        shafa_deactivated_at,
+                        deactivation_completed_at,
+                        updated_at,
+                        account_id
+                    );
+                CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_skipped
+                    ON telegram_products(
+                        deactivation_status,
+                        deactivation_completed_at,
+                        updated_at,
+                        account_id
+                    );
+                CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_deleted
+                    ON telegram_products(
+                        shafa_deleted_at,
+                        shafa_deactivated_at,
+                        deactivation_completed_at,
+                        updated_at,
+                        account_id
+                    );
+                """
+            )
+        if shared_available:
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_shared_task_accounts_account_status_completed
+                    ON shared_deactivation_task_accounts(
+                        account_id,
+                        status,
+                        completed_at,
+                        updated_at
+                    );
+                CREATE INDEX IF NOT EXISTS idx_shared_task_accounts_status_completed
+                    ON shared_deactivation_task_accounts(
+                        status,
+                        completed_at,
+                        updated_at
+                    );
+                """
+            )
+
     def _load_account_daily_totals(
         self,
         account_id: str,
@@ -546,7 +752,7 @@ class DashboardService:
         runtime_entries: list[AccountLogEntry],
         local_tz,
         history_line_limit: int,
-    ) -> tuple[date | None, dict[date, dict[str, int]]]:
+    ) -> tuple[date | None, dict[date, dict[str, int]], int]:
         history = self._load_cached_history_aggregate(
             account_id,
             local_tz=local_tz,
@@ -578,7 +784,7 @@ class DashboardService:
             if earliest_entry_date is None or entry_date < earliest_entry_date:
                 earliest_entry_date = entry_date
 
-        return earliest_entry_date, daily_totals
+        return earliest_entry_date, daily_totals, history.scanned_lines
 
     def _load_cached_history_aggregate(
         self,
@@ -722,14 +928,6 @@ class DashboardService:
 
         return buffer.decode("utf-8", errors="replace").splitlines()[-bounded_limit:]
 
-    def _last_history_scanned_lines(self, account_id: str, *, local_tz) -> int:
-        prefix = (account_id, f"{local_tz}:")
-        return sum(
-            entry.scanned_lines
-            for key, entry in self._history_cache.items()
-            if key[0] == prefix[0] and key[1].startswith(prefix[1])
-        )
-
     @classmethod
     def _resolve_history_line_limit(cls) -> int:
         raw = os.getenv("SHAFA_DASHBOARD_LOG_HISTORY_LINES", "").strip()
@@ -744,6 +942,28 @@ class DashboardService:
     @staticmethod
     def _bound_history_line_limit(value: int) -> int:
         return min(max(int(value), 1), MAX_DASHBOARD_LOG_HISTORY_LINES)
+
+    @staticmethod
+    def _resolve_summary_cache_ttl_seconds() -> float:
+        raw = os.getenv("SHAFA_DASHBOARD_SUMMARY_CACHE_SECONDS", "").strip()
+        if not raw:
+            return 5.0
+        try:
+            value = float(raw)
+        except ValueError:
+            return 5.0
+        return min(max(value, 0.0), 60.0)
+
+    @staticmethod
+    def _resolve_deactivation_cache_ttl_seconds() -> float:
+        raw = os.getenv("SHAFA_DASHBOARD_DEACTIVATION_CACHE_SECONDS", "").strip()
+        if not raw:
+            return 15.0
+        try:
+            value = float(raw)
+        except ValueError:
+            return 15.0
+        return min(max(value, 0.0), 120.0)
 
     @staticmethod
     def _get_log_file_signature(log_file: Path) -> tuple[int, int] | None:

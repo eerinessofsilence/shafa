@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from telegram_accounts_api.services.dashboard_service import DashboardService
 from telegram_accounts_api.utils.account_logging import AccountLogStore
@@ -21,6 +22,47 @@ class DashboardServiceDeactivationTest(unittest.TestCase):
             account_service=account_service,
             log_store=AccountLogStore(),
         )
+
+    def test_shared_deactivation_summary_uses_ttl_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "telegram.sqlite3"
+            completed_at = datetime.now().replace(microsecond=0).isoformat()
+            self._create_telegram_products(
+                db_path,
+                [
+                    {
+                        "account_id": "acc-1",
+                        "channel_id": 21,
+                        "message_id": 1001,
+                        "shafa_product_id": "direct-a",
+                        "deactivation_status": "completed",
+                        "shafa_deactivated_at": completed_at,
+                        "completed_at": completed_at,
+                    },
+                ],
+            )
+            service = DashboardService(
+                account_service=SimpleNamespace(
+                    session_store=SimpleNamespace(shared_telegram_db_file=lambda: db_path)
+                ),
+                log_store=AccountLogStore(),
+                deactivation_cache_ttl_seconds=30,
+            )
+            original_connect = sqlite3.connect
+            connect_calls = 0
+
+            def counting_connect(*args, **kwargs):
+                nonlocal connect_calls
+                connect_calls += 1
+                return original_connect(*args, **kwargs)
+
+            with patch("telegram_accounts_api.services.dashboard_service.sqlite3.connect", counting_connect):
+                first = service._load_shared_deactivation_summary(account_names={"acc-1": "Alpha"})
+                second = service._load_shared_deactivation_summary(account_names={"acc-1": "Alpha"})
+
+        self.assertEqual(first.total_done_count, 1)
+        self.assertEqual(second.total_done_count, 1)
+        self.assertEqual(connect_calls, 1)
 
     def _create_telegram_products(self, db_path: Path, rows: list[dict[str, object]]) -> None:
         with sqlite3.connect(db_path) as conn:

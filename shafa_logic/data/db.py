@@ -293,8 +293,28 @@ def _create_shared_deactivation_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_shared_telegram_products_check
             ON shared_telegram_products(checked_status, next_check_at, last_checked_at);
+        CREATE INDEX IF NOT EXISTS idx_shared_telegram_products_check_due
+            ON shared_telegram_products(
+                checked_status,
+                datetime(next_check_at),
+                datetime(last_checked_at),
+                datetime(telegram_message_date),
+                channel_id,
+                message_id
+            );
+        CREATE INDEX IF NOT EXISTS idx_shared_telegram_products_due_next
+            ON shared_telegram_products(
+                next_check_at,
+                checked_status,
+                last_checked_at,
+                telegram_message_date,
+                channel_id,
+                message_id
+            );
         CREATE INDEX IF NOT EXISTS idx_shared_telegram_products_deactivation
             ON shared_telegram_products(deactivation_status);
+        CREATE INDEX IF NOT EXISTS idx_shared_telegram_products_channel_message
+            ON shared_telegram_products(channel_id, message_id);
 
         CREATE TABLE IF NOT EXISTS shared_telegram_product_accounts (
             telegram_product_key TEXT NOT NULL,
@@ -311,6 +331,8 @@ def _create_shared_deactivation_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_shared_product_accounts_account
             ON shared_telegram_product_accounts(account_id, account_product_status);
+        CREATE INDEX IF NOT EXISTS idx_shared_product_accounts_key_account
+            ON shared_telegram_product_accounts(telegram_product_key, account_id);
 
         CREATE TABLE IF NOT EXISTS shared_deactivation_tasks (
             task_id TEXT PRIMARY KEY,
@@ -356,6 +378,15 @@ def _create_shared_deactivation_tables(conn: sqlite3.Connection) -> None:
             );
         CREATE INDEX IF NOT EXISTS idx_shared_task_accounts_parent
             ON shared_deactivation_task_accounts(task_id, status);
+        CREATE INDEX IF NOT EXISTS idx_shared_task_accounts_account_status_completed
+            ON shared_deactivation_task_accounts(
+                account_id,
+                status,
+                completed_at,
+                updated_at
+            );
+        CREATE INDEX IF NOT EXISTS idx_shared_task_accounts_status_completed
+            ON shared_deactivation_task_accounts(status, completed_at, updated_at);
         """
     )
 
@@ -444,6 +475,8 @@ def init_db(db_path: Optional[Path] = None) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_uploaded_products_product_id
                 ON uploaded_products(product_id);
+            CREATE INDEX IF NOT EXISTS idx_uploaded_products_created_at
+                ON uploaded_products(created_at);
             CREATE TABLE IF NOT EXISTS invalid_uploaded_products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product_id TEXT,
@@ -752,6 +785,14 @@ def _ensure_uploaded_products_schema(conn: sqlite3.Connection) -> None:
     )
     _add_column_if_missing(conn, "uploaded_products", "shafa_created_at", "TEXT")
     _add_column_if_missing(conn, "uploaded_products", "status_title", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_uploaded_products_active_created "
+        "ON uploaded_products(is_active, shafa_created_at, created_at, product_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_uploaded_products_status_title "
+        "ON uploaded_products(status_title)"
+    )
 
 
 def _add_column_if_missing(
@@ -1237,8 +1278,31 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
         "ON telegram_products(account_id, shafa_deactivated_at)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_deleted_at "
+        "ON telegram_products(account_id, shafa_deleted_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_created_product "
+        "ON telegram_products(account_id, created_product_id)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_status "
         "ON telegram_products(account_id, deactivation_status, deactivation_queued_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_completed "
+        "ON telegram_products(deactivation_status, shafa_deactivated_at, "
+        "deactivation_completed_at, updated_at, account_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_skipped "
+        "ON telegram_products(deactivation_status, deactivation_completed_at, "
+        "updated_at, account_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_deleted "
+        "ON telegram_products(shafa_deleted_at, shafa_deactivated_at, "
+        "deactivation_completed_at, updated_at, account_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_lease "
@@ -3682,7 +3746,10 @@ def reconcile_shared_telegram_products(
                 )
             memberships_seen += 1
 
-        copied_dates = copy_shared_telegram_product_dates_from_memberships(conn)
+        copied_dates = copy_shared_telegram_product_dates_from_memberships(
+            conn,
+            limit=row_limit,
+        )
 
     return {
         "products": len(products_seen),
@@ -3693,9 +3760,14 @@ def reconcile_shared_telegram_products(
 
 def copy_shared_telegram_product_dates_from_memberships(
     conn: sqlite3.Connection,
+    *,
+    limit: Optional[int] = None,
 ) -> int:
+    row_limit = None if limit is None or int(limit) <= 0 else max(int(limit), 1)
+    limit_clause = "LIMIT ?" if row_limit is not None else ""
+    params: tuple[object, ...] = (row_limit,) if row_limit is not None else ()
     rows = conn.execute(
-        """
+        f"""
         SELECT
             shared.telegram_product_key,
             MIN(datetime(source.telegram_message_date)) AS copied_date
@@ -3710,7 +3782,9 @@ def copy_shared_telegram_product_dates_from_memberships(
           AND source.telegram_message_date IS NOT NULL
           AND TRIM(source.telegram_message_date) != ''
         GROUP BY shared.telegram_product_key
-        """
+        {limit_clause}
+        """,
+        params,
     ).fetchall()
     updated = 0
     for row in rows:
@@ -3746,6 +3820,28 @@ def copy_shared_telegram_product_dates_from_memberships(
     return updated
 
 
+def _shared_deactivation_has_seed_rows(
+    conn: sqlite3.Connection,
+    *,
+    account_id: Optional[str] = None,
+) -> bool:
+    if account_id is None:
+        row = conn.execute(
+            "SELECT 1 FROM shared_telegram_products LIMIT 1"
+        ).fetchone()
+        return row is not None
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM shared_telegram_product_accounts
+        WHERE account_id = ?
+        LIMIT 1
+        """,
+        (_current_account_id(account_id),),
+    ).fetchone()
+    return row is not None
+
+
 def plan_shared_deactivation_tasks(
     *,
     older_than_days: int = 183,
@@ -3758,12 +3854,17 @@ def plan_shared_deactivation_tasks(
     row_limit = max(int(limit), 1)
     telegram_db_path = _telegram_products_db_path()
     _ensure_db_initialized(telegram_db_path)
-    reconcile_shared_telegram_products(account_id=account_id)
+    with _connect(telegram_db_path) as conn:
+        shared_seeded = _shared_deactivation_has_seed_rows(
+            conn,
+            account_id=account_id,
+        )
+    if not shared_seeded:
+        reconcile_shared_telegram_products(account_id=account_id, limit=row_limit)
 
     checked = old = fresh = date_missing = tasks = account_tasks = 0
     cutoff = datetime.now(timezone.utc) - timedelta(days=age_days)
     with _connect(telegram_db_path) as conn:
-        copy_shared_telegram_product_dates_from_memberships(conn)
         rows = conn.execute(
             """
             SELECT *
@@ -3771,11 +3872,11 @@ def plan_shared_deactivation_tasks(
             WHERE (
                     checked_status IN (?, ?, ?)
                     OR last_checked_at IS NULL
-                    OR datetime(last_checked_at) <= datetime('now', '-1 day')
+                    OR last_checked_at <= datetime('now', '-1 day')
                   )
               AND (
                     next_check_at IS NULL
-                    OR datetime(next_check_at) <= datetime('now')
+                    OR next_check_at <= datetime('now')
                   )
             ORDER BY
                 CASE checked_status
@@ -3784,7 +3885,7 @@ def plan_shared_deactivation_tasks(
                     WHEN ? THEN 2
                     ELSE 3
                 END,
-                datetime(telegram_message_date) ASC,
+                telegram_message_date ASC,
                 channel_id ASC,
                 message_id ASC
             LIMIT ?

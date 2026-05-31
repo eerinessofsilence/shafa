@@ -50,6 +50,73 @@ class SharedDeactivationTests(unittest.TestCase):
             account_id=account_id,
         )
 
+    def test_planner_due_query_uses_next_check_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            with self._use_telegram_db(telegram_db_path):
+                db._ensure_db_initialized(telegram_db_path)
+                with sqlite3.connect(telegram_db_path) as conn:
+                    plan_rows = conn.execute(
+                        """
+                        EXPLAIN QUERY PLAN
+                        SELECT *
+                        FROM shared_telegram_products
+                        WHERE (
+                                checked_status IN (?, ?, ?)
+                                OR last_checked_at IS NULL
+                                OR last_checked_at <= datetime('now', '-1 day')
+                              )
+                          AND (
+                                next_check_at IS NULL
+                                OR next_check_at <= datetime('now')
+                              )
+                        ORDER BY
+                            CASE checked_status
+                                WHEN ? THEN 0
+                                WHEN ? THEN 1
+                                WHEN ? THEN 2
+                                ELSE 3
+                            END,
+                            telegram_message_date ASC,
+                            channel_id ASC,
+                            message_id ASC
+                        LIMIT ?
+                        """,
+                        (
+                            db.SHARED_PRODUCT_CHECK_UNCHECKED,
+                            db.SHARED_PRODUCT_CHECK_NEEDS_RETRY,
+                            db.SHARED_PRODUCT_CHECK_DATE_MISSING,
+                            db.SHARED_PRODUCT_CHECK_UNCHECKED,
+                            db.SHARED_PRODUCT_CHECK_NEEDS_RETRY,
+                            db.SHARED_PRODUCT_CHECK_DATE_MISSING,
+                            100,
+                        ),
+                    ).fetchall()
+
+        plan_text = "\n".join(str(row) for row in plan_rows)
+        self.assertIn("idx_shared_telegram_products_due_next", plan_text)
+        self.assertNotIn("SCAN shared_telegram_products", plan_text)
+
+    def test_planner_reconciliation_is_limited_to_batch_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
+            old_date = datetime.now(timezone.utc) - timedelta(days=200)
+            with self._use_telegram_db(telegram_db_path):
+                self._created_product(
+                    account_id="acc-1",
+                    product_id="product-a",
+                    message_date=old_date,
+                )
+
+                with patch.object(
+                    db,
+                    "reconcile_shared_telegram_products",
+                    wraps=db.reconcile_shared_telegram_products,
+                ) as reconcile_mock:
+                    db.plan_shared_deactivation_tasks(limit=17, dry_run=True)
+
+        self.assertEqual(reconcile_mock.call_args.kwargs["limit"], 17)
+
     def test_shared_schema_creation_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
@@ -196,6 +263,7 @@ class SharedDeactivationTests(unittest.TestCase):
                     product_id="product-c",
                     message_date=old_date,
                 )
+                db.reconcile_shared_telegram_products(account_id="acc-3")
                 db.plan_shared_deactivation_tasks(dry_run=False)
 
                 with sqlite3.connect(telegram_db_path) as conn:

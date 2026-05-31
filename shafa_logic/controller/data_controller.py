@@ -5839,7 +5839,7 @@ def plan_shared_old_product_deactivation(
             "shared deactivation planner could not backfill Telegram dates "
             f"account_id={resolved_account_id}. error={exc}.",
         )
-    reconcile_result = reconcile_shared_telegram_products(account_id=account_id)
+    reconcile_result = {"products": 0, "memberships": 0, "dates_copied": 0}
     result = plan_shared_deactivation_tasks(
         older_than_days=age_days,
         limit=limit,
