@@ -92,6 +92,7 @@ WOMEN_CATALOG_SLUG = "zhenskaya-obuv/krossovki"
 DEFAULT_CLOTES_CATEGORY = "verhnyaya-odezhda/palto"
 
 SIZE_CATALOG_SLUGS = (DEFAULT_CATALOG_SLUG, WOMEN_CATALOG_SLUG, DEFAULT_CLOTES_CATEGORY, "dlya-beremennyh/dzhinsy", "specodezhda/sfera-obsluzhivaniya", "nizhnee-bele-i-kupalniki/lifchiki")
+_AUTH_DEBUG_PRINTED_KEYS: set[tuple[str, str, str]] = set()
 
 
 def _debug_http_enabled() -> bool:
@@ -187,12 +188,24 @@ def _cookie_debug_summary(cookies: list[dict]) -> str:
 
 
 def _debug_request_auth(operation: str, cookies: list[dict]) -> None:
+    if os.getenv("SHAFA_DEBUG_AUTH", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
     storage_state_path = _current_storage_state_path().resolve()
+    account_id = os.getenv("SHAFA_ACCOUNT_ID", "").strip()
+    debug_key = (operation, account_id, str(storage_state_path))
+    if debug_key in _AUTH_DEBUG_PRINTED_KEYS:
+        return
+    _AUTH_DEBUG_PRINTED_KEYS.add(debug_key)
     print(
         "[Shafa auth debug] "
         f"operation={operation} | "
         f"account_name={os.getenv('SHAFA_ACCOUNT_NAME', '').strip()} | "
-        f"account_id={os.getenv('SHAFA_ACCOUNT_ID', '').strip()} | "
+        f"account_id={account_id} | "
         f"env_storage_state_path={os.getenv('SHAFA_STORAGE_STATE_PATH', '').strip()} | "
         f"auth_path_used={storage_state_path} | "
         f"auth_exists={storage_state_path.exists()} | "

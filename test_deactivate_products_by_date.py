@@ -244,6 +244,11 @@ class DeactivateProductsByDateTests(unittest.TestCase):
         self.assertTrue(args.parallel_accounts)
         self.assertEqual(args.max_workers, 4)
 
+    def test_debug_auth_argument_exists(self) -> None:
+        args = build_arg_parser().parse_args(["--debug-auth"])
+
+        self.assertTrue(args.debug_auth)
+
     def test_accounts_dir_can_be_passed_multiple_times(self) -> None:
         args = build_arg_parser().parse_args(
             ["--accounts-dir", "/tmp/one/accounts", "--accounts-dir", "/tmp/two/accounts"]
@@ -403,6 +408,41 @@ class DeactivateProductsByDateTests(unittest.TestCase):
 
         self.assertEqual(first_cookies[0]["value"], "first-token")
         self.assertEqual(second_cookies[0]["value"], "second-token")
+
+    def test_shafa_auth_debug_prints_once_per_account_path_and_operation(self) -> None:
+        from core import no_playwright
+
+        no_playwright._AUTH_DEBUG_PRINTED_KEYS.clear()
+        cookies = [{"name": "csrftoken", "domain": ".shafa.ua", "value": "secret"}]
+        with tempfile.TemporaryDirectory() as raw_base:
+            auth_path = Path(raw_base) / "auth.json"
+            auth_path.write_text('{"cookies":[]}', encoding="utf-8")
+            output = StringIO()
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "SHAFA_DEBUG_AUTH": "1",
+                        "SHAFA_ACCOUNT_ID": "acc-1",
+                        "SHAFA_ACCOUNT_NAME": "Account 1",
+                        "SHAFA_STORAGE_STATE_PATH": str(auth_path),
+                    },
+                ),
+                redirect_stdout(output),
+            ):
+                no_playwright._debug_request_auth("feed", cookies)
+                no_playwright._debug_request_auth("feed", cookies)
+                no_playwright._debug_request_auth("deactivate", cookies)
+
+        lines = [
+            line
+            for line in output.getvalue().splitlines()
+            if line.startswith("[Shafa auth debug]")
+        ]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("operation=feed", lines[0])
+        self.assertIn("operation=deactivate", lines[1])
+        self.assertNotIn("secret", output.getvalue())
 
 
 if __name__ == "__main__":

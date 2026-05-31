@@ -112,11 +112,12 @@ def fetch_active_products(
             break
         after = next_after
 
-    print(f"Активных товаров Shafa всего: {len(products)}")
-    for index, product in enumerate(products[:5], start=1):
-        product_id = str(product.get("id") or "").strip() or "нет id"
-        name = str(product.get("name") or "").strip() or "без названия"
-        print(f"  sample {index}: {product_id} | {name}")
+    if _debug_auth_enabled():
+        print(f"Активных товаров Shafa всего: {len(products)}")
+        for index, product in enumerate(products[:5], start=1):
+            product_id = str(product.get("id") or "").strip() or "нет id"
+            name = str(product.get("name") or "").strip() or "без названия"
+            print(f"  sample {index}: {product_id} | {name}")
 
     return products
 
@@ -240,6 +241,15 @@ def confirm_deactivation(count: int) -> bool:
         f"Деактивировать {count} товаров? Введите yes или да для подтверждения: "
     )
     return answer.strip().lower() in {"yes", "да"}
+
+
+def _debug_auth_enabled() -> bool:
+    return os.getenv("SHAFA_DEBUG_AUTH", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def project_root() -> Path:
@@ -1137,6 +1147,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Явная папка accounts/. Можно указать несколько раз.",
     )
+    parser.add_argument(
+        "--debug-auth",
+        action="store_true",
+        help="Печатать диагностику auth.json/cookies для Shafa-запросов.",
+    )
     return parser
 
 
@@ -1151,6 +1166,8 @@ def main() -> None:
             )
         if args.sleep_min > args.sleep_max:
             raise RuntimeError("--sleep-min не может быть больше --sleep-max")
+        if args.debug_auth:
+            os.environ["SHAFA_DEBUG_AUTH"] = "1"
 
         start_date = (
             parse_cli_date(args.from_date)
