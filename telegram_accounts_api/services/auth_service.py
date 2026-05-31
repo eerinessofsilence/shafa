@@ -1050,6 +1050,11 @@ class AccountAuthService:
             command = _windows_start_command(python_command, args)
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+        env, _login_context = self.shafa_auth.create_login_context(
+            account,
+            self.runtime.account_env(account),
+        )
+
         try:
             with log_file.open("a", encoding="utf-8") as stream:
                 stream.write(
@@ -1062,7 +1067,7 @@ class AccountAuthService:
                     stdin=subprocess.DEVNULL,
                     stdout=stream,
                     stderr=stream,
-                    env=self.runtime.account_env(account),
+                    env=env,
                     start_new_session=True,
                     creationflags=creationflags,
                 )

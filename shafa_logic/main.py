@@ -682,7 +682,8 @@ def _login_account() -> None:
     from data.const import STORAGE_STATE_PATH
     from data.db import init_db, save_cookies
 
-    confirmation_file = Path(os.getenv("SHAFA_LOGIN_CONFIRMATION_FILE", "").strip())
+    raw_confirmation_file = os.getenv("SHAFA_LOGIN_CONFIRMATION_FILE", "").strip()
+    confirmation_file = Path(raw_confirmation_file) if raw_confirmation_file else None
     init_db()
     with sync_playwright() as p:
         browser, browser_name = _launch_visible_browser(p, headless=False)
@@ -728,7 +729,7 @@ def _login_account() -> None:
                     ctx.storage_state(path=str(STORAGE_STATE_PATH))
                     cookies = ctx.cookies()
                     save_cookies(cookies)
-                    if confirmation_file:
+                    if confirmation_file is not None:
                         confirmation_file.write_text("ok\n", encoding="utf-8")
                     print(f"Вход сохранен. Cookies: {len(cookies)}.")
                     return

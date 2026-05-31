@@ -88,6 +88,40 @@ class ShafaBrowserLoginApiTest(unittest.TestCase):
         with patch("telegram_accounts_api.services.auth_service.shutil.which", return_value=None):
             self.assertEqual(_windows_gui_python("python"), "python")
 
+    def test_shafa_login_launcher_passes_confirmation_file_env(self) -> None:
+        project_dir = self.base_dir / "project" / "shafa_logic"
+        project_dir.mkdir(parents=True)
+        (project_dir / "main.py").write_text("print('login')\n", encoding="utf-8")
+        account = self.account_service.load_runtime_accounts()[0]
+        account.path = str(project_dir)
+        captured = {}
+
+        class _Process:
+            def poll(self):
+                return None
+
+        def _fake_popen(command, **kwargs):
+            captured["command"] = command
+            captured["env"] = kwargs["env"]
+            captured["cwd"] = kwargs["cwd"]
+            return _Process()
+
+        with (
+            patch(
+                "telegram_accounts_api.services.auth_service.subprocess.Popen",
+                side_effect=_fake_popen,
+            ),
+            patch("telegram_accounts_api.services.auth_service.time.sleep"),
+        ):
+            self.auth_service._launch_shafa_login(account, ["main.py", "--login-shafa"])
+
+        confirmation_file = self.accounts_dir / account.id / "shafa_login.confirm"
+        self.assertEqual(
+            captured["env"]["SHAFA_LOGIN_CONFIRMATION_FILE"],
+            str(confirmation_file),
+        )
+        self.assertEqual(captured["cwd"], str(project_dir))
+
 
 if __name__ == "__main__":
     unittest.main()
