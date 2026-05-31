@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from telegram_channels import extract_telegram_invite_hash, parse_id_bot_response, sanitize_channel_links
 from shafa_logic.utils.proxy import load_runtime_proxy_config
@@ -201,6 +202,11 @@ class TelegramService:
         invite_entity = await self._resolve_invite_entity(client, link)
         if invite_entity is not None:
             return _resolved_channel_from_entity(invite_entity)
+
+        username_entity = await self._resolve_public_username_entity(client, link)
+        if username_entity is not None:
+            return _resolved_channel_from_entity(username_entity)
+
         try:
             entity = await asyncio.wait_for(
                 client.get_entity(link),
@@ -254,6 +260,29 @@ class TelegramService:
             return chats[0]
         return getattr(result, "chat", None)
 
+    async def _resolve_public_username_entity(self, client, link: str) -> object | None:
+        username = _extract_public_telegram_username(link)
+        if not username:
+            return None
+
+        from telethon.tl.functions.contacts import ResolveUsernameRequest
+
+        try:
+            result = await asyncio.wait_for(
+                client(ResolveUsernameRequest(username)),
+                timeout=CHANNEL_ENTITY_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return None
+
+        chats = getattr(result, "chats", None) or []
+        if chats:
+            return chats[0]
+        users = getattr(result, "users", None) or []
+        if users:
+            return users[0]
+        return None
+
     async def _resolve_channel_via_id_bot(self, client, link: str) -> ResolvedTelegramChannel:
         async with client.conversation("id_bot") as conversation:
             await conversation.send_message(link)
@@ -290,6 +319,37 @@ def _get_peer_id(entity: object) -> int:
     from telethon.utils import get_peer_id
 
     return int(get_peer_id(entity))
+
+
+def _extract_public_telegram_username(link: str) -> str | None:
+    value = link.strip()
+    if not value:
+        return None
+    if "://" not in value:
+        value = f"https://{value}"
+
+    parsed = urlparse(value)
+    host = parsed.netloc.casefold()
+    if host.startswith("www."):
+        host = host[4:]
+    if host not in {"t.me", "telegram.me"}:
+        return None
+
+    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if not path_parts:
+        return None
+    if path_parts[0].casefold() == "s" and len(path_parts) > 1:
+        username = path_parts[1]
+    else:
+        username = path_parts[0]
+
+    if username.startswith("+") or username.casefold() == "joinchat":
+        return None
+    if not username.replace("_", "").isalnum():
+        return None
+    if len(username) < 5 or len(username) > 32:
+        return None
+    return username
 
 
 class _TelegramClientContext:

@@ -9,12 +9,16 @@ import pytest
 
 from shafa_logic.telegram_subscription.client import TelegramSessionInUseError
 from telegram_accounts_api.utils.exceptions import TelegramOperationError
-from telegram_accounts_api.services.telegram_service import TelegramService
+from telegram_accounts_api.services.telegram_service import TelegramService, _extract_public_telegram_username
 
 
 def _service() -> TelegramService:
+    account_service = SimpleNamespace(
+        account_dir=lambda account_id: Path("."),
+        runtime=SimpleNamespace(proxy_db_path=None),
+    )
     return TelegramService(
-        account_service=None,  # type: ignore[arg-type]
+        account_service=account_service,  # type: ignore[arg-type]
         template_service=None,  # type: ignore[arg-type]
         base_dir=Path("."),
     )
@@ -66,6 +70,52 @@ def test_resolve_single_channel_prefers_entity_without_id_bot() -> None:
     assert result.channel_id == -100123
     assert result.title == "Fast Channel"
     client.get_entity.assert_awaited_once_with("https://t.me/fast_channel")
+    client.conversation.assert_not_called()
+
+
+def test_extract_public_telegram_username_from_link() -> None:
+    assert _extract_public_telegram_username("https://t.me/Turbodrop") == "Turbodrop"
+    assert _extract_public_telegram_username("t.me/s/Turbodrop") == "Turbodrop"
+    assert _extract_public_telegram_username("https://t.me/+inviteHash") is None
+
+
+def test_resolve_single_channel_uses_public_username_request() -> None:
+    service = _service()
+    entity = SimpleNamespace(id=123, title="TurboDrop")
+    request_calls = []
+
+    class _ResolveUsernameRequest:
+        def __init__(self, username: str) -> None:
+            self.username = username
+
+    class _Client:
+        get_entity = AsyncMock(side_effect=RuntimeError("not found"))
+        conversation = Mock()
+
+        async def __call__(self, request):
+            request_calls.append(request.username)
+            return SimpleNamespace(chats=[entity])
+
+    client = _Client()
+
+    with (
+        patch(
+            "telegram_accounts_api.services.telegram_service._get_peer_id",
+            return_value=-100123,
+        ),
+        patch(
+            "telethon.tl.functions.contacts.ResolveUsernameRequest",
+            _ResolveUsernameRequest,
+        ),
+    ):
+        result = asyncio.run(
+            service._resolve_single_channel(client, "https://t.me/Turbodrop")
+        )
+
+    assert result.channel_id == -100123
+    assert result.title == "TurboDrop"
+    assert request_calls == ["Turbodrop"]
+    client.get_entity.assert_not_called()
     client.conversation.assert_not_called()
 
 
