@@ -120,6 +120,7 @@ class ShafaBrowserLoginApiTest(unittest.TestCase):
             captured["env"]["SHAFA_LOGIN_CONFIRMATION_FILE"],
             str(confirmation_file),
         )
+        self.assertEqual(captured["env"]["SHAFA_LOGIN_FRESH_CONTEXT"], "1")
         self.assertEqual(captured["cwd"], str(project_dir))
 
 

@@ -1054,6 +1054,7 @@ class AccountAuthService:
             account,
             self.runtime.account_env(account),
         )
+        env["SHAFA_LOGIN_FRESH_CONTEXT"] = "1"
 
         try:
             with log_file.open("a", encoding="utf-8") as stream:

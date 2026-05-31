@@ -47,6 +47,7 @@ def test_account_runtime_builds_env_and_paths(tmp_path: Path) -> None:
     assert "SHAFA_TELEGRAM_QUEUE_SEED_PENDING" not in env
     assert env["SHAFA_ACCOUNT_ID"] == "acc-1"
     assert env["SHAFA_ACCOUNT_NAME"] == "Primary"
+    assert env["SHAFA_ACCOUNT_PHONE"] == ""
     assert env["SHAFA_TELEGRAM_API_ID"] == "777000"
     assert env["SHAFA_TELEGRAM_API_HASH"] == "secret-hash"
 

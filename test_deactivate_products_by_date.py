@@ -249,6 +249,14 @@ class DeactivateProductsByDateTests(unittest.TestCase):
 
         self.assertTrue(args.debug_auth)
 
+    def test_parallel_progress_arguments_exist(self) -> None:
+        args = build_arg_parser().parse_args(
+            ["--progress-every", "10", "--verify-deactivation-flow"]
+        )
+
+        self.assertEqual(args.progress_every, 10)
+        self.assertTrue(args.verify_deactivation_flow)
+
     def test_accounts_dir_can_be_passed_multiple_times(self) -> None:
         args = build_arg_parser().parse_args(
             ["--accounts-dir", "/tmp/one/accounts", "--accounts-dir", "/tmp/two/accounts"]
@@ -358,6 +366,39 @@ class DeactivateProductsByDateTests(unittest.TestCase):
 
         self.assertEqual(result, {"deactivated": 0, "failed": 0, "mark_failed": 0})
         fetch_products.assert_not_called()
+
+    def test_verify_deactivation_flow_does_not_call_real_deactivate_or_mark(self) -> None:
+        candidates = [
+            ProductCandidate("101", "First", date(2026, 5, 29)),
+            ProductCandidate("102", "Second", date(2026, 5, 29)),
+        ]
+        processed = []
+        with (
+            patch("deactivate_products_by_date.time.sleep") as sleep,
+            redirect_stdout(StringIO()) as output,
+        ):
+            result = deactivate_candidates(
+                candidates,
+                deactivate_func=lambda product_id: (_ for _ in ()).throw(
+                    AssertionError("real deactivate called")
+                ),
+                mark_inactive_func=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("real mark called")
+                ),
+                sleep_min_seconds=10,
+                sleep_max_seconds=15,
+                account_name="Account 1",
+                progress_every=1,
+                verify_deactivation_flow=True,
+                on_candidate_processed=lambda candidate, success: processed.append(
+                    (candidate.product_id, success)
+                ),
+            )
+
+        self.assertEqual(result, {"deactivated": 2, "failed": 0, "mark_failed": 0})
+        self.assertEqual(processed, [("101", True), ("102", True)])
+        self.assertIn("OK simulated 101", output.getvalue())
+        sleep.assert_any_call(0.1)
 
     def test_shafa_cookie_loader_reads_storage_state_from_current_env(self) -> None:
         from core import no_playwright

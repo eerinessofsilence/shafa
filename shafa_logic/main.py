@@ -20,6 +20,7 @@ from utils.pipeline_activity import is_product_pipeline_active
 _ADD_CHANNEL = object()
 SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
 APP_MODE_ENV = "SHAFA_APP_MODE"
+SHAFA_LOGIN_FRESH_CONTEXT_ENV = "SHAFA_LOGIN_FRESH_CONTEXT"
 DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV = "SHAFA_DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR"
 DEACTIVATE_ONLY_ENV = "SHAFA_DEACTIVATE_ONLY"
 SHARED_DEACTIVATION_ENABLED_ENV = "SHAFA_SHARED_DEACTIVATION_ENABLED"
@@ -673,6 +674,173 @@ def _launch_visible_browser(playwright, *, headless: bool):
         raise
 
 
+def _login_fresh_context_enabled() -> bool:
+    return os.getenv(SHAFA_LOGIN_FRESH_CONTEXT_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _normalize_match_text(value: object) -> str:
+    return "".join(ch.casefold() for ch in str(value or "") if ch.isalnum())
+
+
+def _normalize_match_phone(value: object) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _shafa_cookie_header(cookies: list[dict]) -> str:
+    parts: list[str] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name") or "").strip()
+        value = cookie.get("value")
+        if not name or value in (None, ""):
+            continue
+        parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
+def _shafa_csrftoken(cookies: list[dict]) -> str:
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        if str(cookie.get("name") or "").strip() == "csrftoken":
+            return str(cookie.get("value") or "").strip()
+    return ""
+
+
+def _fetch_shafa_viewer_identity(cookies: list[dict]) -> dict[str, object]:
+    from urllib import request
+
+    from data.const import API_BATCH_URL, APP_PLATFORM, APP_VERSION, ORIGIN_URL
+    from utils.proxy import load_runtime_proxy_config, open_url
+
+    csrftoken = _shafa_csrftoken(cookies)
+    if not csrftoken:
+        raise RuntimeError("csrftoken not found in saved Shafa cookies")
+
+    query = """query WEB_MainInfoSettingsFormData {
+  viewer {
+    id
+    firstName
+    lastName
+    patronymic
+    email
+    phone
+    __typename
+  }
+}"""
+    payload = json.dumps(
+        [
+            {
+                "operationName": "WEB_MainInfoSettingsFormData",
+                "variables": {},
+                "query": query,
+            }
+        ]
+    ).encode("utf-8")
+    http_request = request.Request(
+        API_BATCH_URL,
+        data=payload,
+        headers={
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Content-Type": "application/json",
+            "Cookie": _shafa_cookie_header(cookies),
+            "Origin": ORIGIN_URL,
+            "Referer": "https://shafa.ua/uk/my/settings",
+            "User-Agent": "Mozilla/5.0",
+            "batch": "true",
+            "x-app-platform": APP_PLATFORM,
+            "x-app-version": APP_VERSION,
+            "x-csrftoken": csrftoken,
+        },
+        method="POST",
+    )
+    with open_url(
+        http_request,
+        config=load_runtime_proxy_config(),
+        timeout=20,
+    ) as response:
+        response_body = response.read().decode("utf-8", errors="replace")
+    parsed = json.loads(response_body)
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict):
+                viewer = item.get("data", {}).get("viewer")
+                if isinstance(viewer, dict):
+                    return viewer
+    if isinstance(parsed, dict):
+        viewer = parsed.get("data", {}).get("viewer")
+        if isinstance(viewer, dict):
+            return viewer
+    raise RuntimeError("Shafa profile response does not contain viewer")
+
+
+def _viewer_identity_text(viewer: dict[str, object]) -> str:
+    name = " ".join(
+        part
+        for part in (
+            str(viewer.get("firstName") or "").strip(),
+            str(viewer.get("lastName") or "").strip(),
+            str(viewer.get("patronymic") or "").strip(),
+        )
+        if part
+    )
+    parts = [
+        f"id={viewer.get('id') or ''}",
+        f"name={name or '-'}",
+        f"email={viewer.get('email') or '-'}",
+        f"phone={viewer.get('phone') or '-'}",
+    ]
+    return " | ".join(parts)
+
+
+def _saved_session_matches_local_account(viewer: dict[str, object]) -> bool:
+    local_name = os.getenv("SHAFA_ACCOUNT_NAME", "").strip()
+    local_phone = os.getenv("SHAFA_ACCOUNT_PHONE", "").strip()
+    viewer_name = " ".join(
+        str(viewer.get(key) or "").strip()
+        for key in ("firstName", "lastName", "patronymic")
+    )
+    viewer_identity = " ".join(
+        str(viewer.get(key) or "").strip()
+        for key in ("firstName", "lastName", "patronymic", "email", "phone")
+    )
+    local_phone_digits = _normalize_match_phone(local_phone)
+    viewer_phone_digits = _normalize_match_phone(viewer.get("phone"))
+    if local_phone_digits and viewer_phone_digits:
+        return local_phone_digits == viewer_phone_digits
+    local_name_key = _normalize_match_text(local_name)
+    viewer_name_key = _normalize_match_text(viewer_name)
+    viewer_identity_key = _normalize_match_text(viewer_identity)
+    if local_name_key and viewer_name_key:
+        return local_name_key in viewer_identity_key or viewer_name_key in local_name_key
+    return True
+
+
+def _verify_saved_shafa_login(cookies: list[dict]) -> None:
+    account_name = os.getenv("SHAFA_ACCOUNT_NAME", "").strip() or "default"
+    account_id = os.getenv("SHAFA_ACCOUNT_ID", "").strip() or "default"
+    storage_path = os.getenv("SHAFA_STORAGE_STATE_PATH", "").strip()
+    print(
+        "Проверяю сохранённую Shafa-сессию: "
+        f"local_account={account_name} | account_id={account_id} | auth={storage_path}"
+    )
+    try:
+        viewer = _fetch_shafa_viewer_identity(cookies)
+    except Exception as exc:
+        print(f"WARNING: не удалось проверить сохранённую Shafa-сессию: {exc}")
+        return
+    print(f"Фактический Shafa viewer: {_viewer_identity_text(viewer)}")
+    if not _saved_session_matches_local_account(viewer):
+        print("WARNING: saved Shafa session does not match selected local account")
+
+
 def _login_account() -> None:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
@@ -688,7 +856,11 @@ def _login_account() -> None:
     with sync_playwright() as p:
         browser, browser_name = _launch_visible_browser(p, headless=False)
         try:
-            ctx = new_context_with_storage(browser)
+            if _login_fresh_context_enabled():
+                print("Открываю чистый браузерный контекст для выбранного аккаунта Shafa.")
+                ctx = browser.new_context()
+            else:
+                ctx = new_context_with_storage(browser)
             page = ctx.new_page()
             page.set_default_timeout(60000)
             print(f"Открываю браузер Shafa через {browser_name}.")
@@ -729,6 +901,7 @@ def _login_account() -> None:
                     ctx.storage_state(path=str(STORAGE_STATE_PATH))
                     cookies = ctx.cookies()
                     save_cookies(cookies)
+                    _verify_saved_shafa_login(cookies)
                     if confirmation_file is not None:
                         confirmation_file.write_text("ok\n", encoding="utf-8")
                     print(f"Вход сохранен. Cookies: {len(cookies)}.")

@@ -169,12 +169,15 @@ def deactivate_candidates(
     sleep_min_seconds: float = 10.0,
     sleep_max_seconds: float = 15.0,
     on_candidate_processed: Optional[Callable[[ProductCandidate, bool], None]] = None,
+    account_name: str = "",
+    progress_every: int = 1,
+    verify_deactivation_flow: bool = False,
 ) -> dict[str, int]:
-    if deactivate_func is None:
+    if deactivate_func is None and not verify_deactivation_flow:
         from core.requests.deactivate_product import deactivate_product
 
         deactivate_func = deactivate_product
-    if mark_inactive_func is None:
+    if mark_inactive_func is None and not verify_deactivation_flow:
         from data.db import mark_uploaded_product_inactive
 
         mark_inactive_func = mark_uploaded_product_inactive
@@ -184,41 +187,83 @@ def deactivate_candidates(
     mark_failed = 0
     sleep_min = max(float(sleep_min_seconds), 0.0)
     sleep_max = max(float(sleep_max_seconds), 0.0)
+    normalized_progress_every = max(int(progress_every), 1)
+    progress_account_name = str(account_name or os.getenv("SHAFA_ACCOUNT_NAME") or "").strip()
+    progress_prefix = f"[{progress_account_name}] " if progress_account_name else ""
+
+    if candidates:
+        print(
+            f"First deactivation attempt for account {progress_account_name or 'current'}",
+            flush=True,
+        )
 
     for index, candidate in enumerate(candidates, start=1):
-        print(
-            f"[{index}/{len(candidates)}] Деактивирую "
-            f"{candidate.product_id} | {candidate.name}"
+        should_print_progress = (
+            index == 1
+            or index == len(candidates)
+            or index % normalized_progress_every == 0
         )
+        if should_print_progress:
+            print(
+                f"{progress_prefix}[{index}/{len(candidates)}] "
+                f"Deactivating {candidate.product_id} | {candidate.name}",
+                flush=True,
+            )
         success = False
         try:
-            deactivate_func(candidate.product_id)
+            if verify_deactivation_flow:
+                time.sleep(0.1)
+            else:
+                if deactivate_func is None:
+                    raise RuntimeError("deactivate_func is not configured")
+                deactivate_func(candidate.product_id)
         except Exception as exc:
             failed += 1
-            print(f"  ERROR: {exc}")
+            print(
+                f"{progress_prefix}ERROR {candidate.product_id}: {exc}",
+                flush=True,
+            )
         else:
             deactivated += 1
-            try:
-                mark_inactive_func(
-                    candidate.product_id,
-                    status_title="Деактивовано",
-                )
-            except Exception as exc:
-                mark_failed += 1
-                print(
-                    "  WARN: товар деактивирован, "
-                    f"но локальная БД не обновлена: {exc}"
-                )
+            if not verify_deactivation_flow:
+                try:
+                    if mark_inactive_func is None:
+                        raise RuntimeError("mark_inactive_func is not configured")
+                    mark_inactive_func(
+                        candidate.product_id,
+                        status_title="Деактивовано",
+                    )
+                except Exception as exc:
+                    mark_failed += 1
+                    print(
+                        f"{progress_prefix}WARN {candidate.product_id}: "
+                        f"товар деактивирован, но локальная БД не обновлена: {exc}",
+                        flush=True,
+                    )
+                else:
+                    if should_print_progress:
+                        print(
+                            f"{progress_prefix}OK {candidate.product_id}",
+                            flush=True,
+                        )
             else:
-                print("  OK")
+                if should_print_progress:
+                    print(
+                        f"{progress_prefix}OK simulated {candidate.product_id}",
+                        flush=True,
+                    )
             success = True
 
         if on_candidate_processed is not None:
             on_candidate_processed(candidate, success)
 
         if index < len(candidates):
-            delay = random.uniform(sleep_min, sleep_max)
-            print(f"  Жду {delay:.1f} секунд перед следующим товаром...")
+            delay = 0.1 if verify_deactivation_flow else random.uniform(sleep_min, sleep_max)
+            if should_print_progress:
+                print(
+                    f"{progress_prefix}Sleeping {delay:.1f} seconds before next product",
+                    flush=True,
+                )
             time.sleep(delay)
 
     return {
@@ -600,6 +645,10 @@ def process_current_account(
     yes: bool,
     candidates: Optional[list[ProductCandidate]] = None,
     on_candidate_processed: Optional[Callable[[ProductCandidate, bool], None]] = None,
+    account_name: str = "",
+    progress_every: int = 1,
+    verify_deactivation_flow: bool = False,
+    print_candidate_list: bool = True,
 ) -> dict[str, int]:
     if candidates is None:
         candidates = collect_current_account_candidates(
@@ -613,12 +662,13 @@ def process_current_account(
     if not candidates:
         return {"deactivated": 0, "failed": 0, "mark_failed": 0}
 
-    print_candidates(candidates)
+    if print_candidate_list:
+        print_candidates(candidates)
     if dry_run:
         print("dry-run: деактивация не выполнялась.")
         return {"deactivated": 0, "failed": 0, "mark_failed": 0}
 
-    if not yes and not confirm_deactivation(len(candidates)):
+    if not verify_deactivation_flow and not yes and not confirm_deactivation(len(candidates)):
         print("Отменено.")
         return {"deactivated": 0, "failed": 0, "mark_failed": 0}
 
@@ -627,6 +677,9 @@ def process_current_account(
         sleep_min_seconds=sleep_min_seconds,
         sleep_max_seconds=sleep_max_seconds,
         on_candidate_processed=on_candidate_processed,
+        account_name=account_name,
+        progress_every=progress_every,
+        verify_deactivation_flow=verify_deactivation_flow,
     )
     print(
         "Готово. "
@@ -729,37 +782,57 @@ def process_account_worker(
     dry_run: bool,
     yes: bool,
     candidates_data: list[dict[str, object]],
+    progress_every: int,
+    verify_deactivation_flow: bool,
 ) -> dict[str, object]:
-    output = StringIO()
     processed_count = 0
     try:
-        with redirect_stdout(output):
-            session = _session_from_data(session_data)
-            _apply_account_environment(session)
-            candidates = [
-                _candidate_from_data(candidate_data)
-                for candidate_data in candidates_data
-            ]
+        session = _session_from_data(session_data)
+        _apply_account_environment(session)
+        candidates = [
+            _candidate_from_data(candidate_data)
+            for candidate_data in candidates_data
+        ]
+        if verify_deactivation_flow:
+            candidates = candidates[:3]
+        print(
+            f"Worker started for account {session.name} with {len(candidates)} candidates",
+            flush=True,
+        )
 
-            def _count_processed(
-                candidate: ProductCandidate,
-                success: bool,
-            ) -> None:
-                nonlocal processed_count
-                processed_count += 1
+        def _count_processed(
+            candidate: ProductCandidate,
+            success: bool,
+        ) -> None:
+            nonlocal processed_count
+            processed_count += 1
 
-            result = process_current_account(
-                start_date=start_date,
-                end_date=end_date,
-                page_size=page_size,
-                sleep_min_seconds=sleep_min_seconds,
-                sleep_max_seconds=sleep_max_seconds,
-                dry_run=dry_run,
-                yes=yes,
-                candidates=candidates,
-                on_candidate_processed=_count_processed,
-            )
+        result = process_current_account(
+            start_date=start_date,
+            end_date=end_date,
+            page_size=page_size,
+            sleep_min_seconds=sleep_min_seconds,
+            sleep_max_seconds=sleep_max_seconds,
+            dry_run=dry_run,
+            yes=yes,
+            candidates=candidates,
+            on_candidate_processed=_count_processed,
+            account_name=session.name,
+            progress_every=progress_every,
+            verify_deactivation_flow=verify_deactivation_flow,
+            print_candidate_list=False,
+        )
+        print(
+            f"Worker finished for account {session.name}: "
+            f"deactivated={result['deactivated']} "
+            f"failed={result['failed']} mark_failed={result['mark_failed']}",
+            flush=True,
+        )
     except Exception as exc:
+        print(
+            f"Worker failed for account {session_data.get('name')}: {exc}",
+            flush=True,
+        )
         return {
             "ok": False,
             "error": str(exc),
@@ -767,7 +840,7 @@ def process_account_worker(
             "deactivated": 0,
             "failed": 0,
             "mark_failed": 0,
-            "log": output.getvalue(),
+            "log": "",
         }
     return {
         "ok": True,
@@ -776,7 +849,7 @@ def process_account_worker(
         "deactivated": result["deactivated"],
         "failed": result["failed"],
         "mark_failed": result["mark_failed"],
-        "log": output.getvalue(),
+        "log": "",
     }
 
 
@@ -901,6 +974,42 @@ def _print_all_account_summary(
     )
 
 
+def _print_deactivation_time_estimate(
+    collected: list[tuple[AccountSession, list[ProductCandidate]]],
+    *,
+    sleep_min_seconds: float,
+    sleep_max_seconds: float,
+    parallel_accounts: bool,
+    max_workers: int,
+) -> None:
+    average_sleep = (max(float(sleep_min_seconds), 0.0) + max(float(sleep_max_seconds), 0.0)) / 2
+    total_candidates = sum(len(candidates) for _, candidates in collected)
+    if total_candidates <= 0:
+        return
+    account_estimates = [
+        max(len(candidates) - 1, 0) * average_sleep
+        for _, candidates in collected
+    ]
+    if parallel_accounts:
+        worker_count = _clamped_workers(max_workers, len(collected))
+        worker_loads = [0.0 for _ in range(worker_count)]
+        for estimate in sorted(account_estimates, reverse=True):
+            lightest_index = min(range(worker_count), key=lambda index: worker_loads[index])
+            worker_loads[lightest_index] += estimate
+        total_seconds = max(worker_loads) if worker_loads else 0.0
+    else:
+        total_seconds = sum(account_estimates)
+    print(
+        "Estimated deactivation time from sleep only: "
+        f"~{total_seconds / 3600:.1f} hours "
+        f"(avg sleep {average_sleep:.1f}s, candidates {total_candidates})."
+    )
+    if total_candidates > 1000:
+        print(
+            "WARNING: this may take many hours because each product has random sleep."
+        )
+
+
 def process_all_accounts(
     *,
     accounts_folders_count: int,
@@ -914,6 +1023,8 @@ def process_all_accounts(
     yes: bool,
     parallel_accounts: bool,
     max_workers: int,
+    progress_every: int,
+    verify_deactivation_flow: bool,
 ) -> None:
     if parallel_accounts:
         collected, accounts_failed = _collect_all_account_candidates_parallel(
@@ -934,6 +1045,13 @@ def process_all_accounts(
     total_candidates = sum(len(candidates) for _, candidates in collected)
     remaining = total_candidates
     print(f"Всего товаров к деактивации по всем аккаунтам: {total_candidates}")
+    _print_deactivation_time_estimate(
+        collected,
+        sleep_min_seconds=sleep_min_seconds,
+        sleep_max_seconds=sleep_max_seconds,
+        parallel_accounts=parallel_accounts,
+        max_workers=max_workers,
+    )
 
     if dry_run:
         for index, (session, candidates) in enumerate(collected, start=1):
@@ -964,7 +1082,7 @@ def process_all_accounts(
         )
         return
 
-    if not yes and not confirm_deactivation(total_candidates):
+    if not verify_deactivation_flow and not yes and not confirm_deactivation(total_candidates):
         print("Отменено.")
         _print_all_account_summary(
             accounts_folders_count=accounts_folders_count,
@@ -992,6 +1110,11 @@ def process_all_accounts(
         ] = {}
         with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
             for index, (session, candidates) in enumerate(collected, start=1):
+                submitted_count = min(len(candidates), 3) if verify_deactivation_flow else len(candidates)
+                print(
+                    f"Submitting account {session.name} with {submitted_count} candidates",
+                    flush=True,
+                )
                 future = executor.submit(
                     process_account_worker,
                     _session_to_data(session),
@@ -1003,6 +1126,8 @@ def process_all_accounts(
                     False,
                     True,
                     [_candidate_to_data(candidate) for candidate in candidates],
+                    progress_every,
+                    verify_deactivation_flow,
                 )
                 future_to_session[future] = (index, session)
 
@@ -1067,6 +1192,7 @@ def process_all_accounts(
 
             try:
                 _apply_account_environment(session)
+                effective_candidates = candidates[:3] if verify_deactivation_flow else candidates
                 result = process_current_account(
                     start_date=start_date,
                     end_date=end_date,
@@ -1075,8 +1201,12 @@ def process_all_accounts(
                     sleep_max_seconds=sleep_max_seconds,
                     dry_run=False,
                     yes=True,
-                    candidates=candidates,
+                    candidates=effective_candidates,
                     on_candidate_processed=_decrement_remaining,
+                    account_name=session.name,
+                    progress_every=progress_every,
+                    verify_deactivation_flow=verify_deactivation_flow,
+                    print_candidate_list=False,
                 )
             except Exception as exc:
                 accounts_failed += 1
@@ -1136,6 +1266,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Максимум аккаунтов, обрабатываемых одновременно.",
     )
     parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1,
+        help="Печатать прогресс деактивации каждые N товаров.",
+    )
+    parser.add_argument(
+        "--verify-deactivation-flow",
+        action="store_true",
+        help="Проверить parallel/progress flow без реальной деактивации.",
+    )
+    parser.add_argument(
         "--accounts-search-root",
         action="append",
         default=None,
@@ -1168,6 +1309,7 @@ def main() -> None:
             raise RuntimeError("--sleep-min не может быть больше --sleep-max")
         if args.debug_auth:
             os.environ["SHAFA_DEBUG_AUTH"] = "1"
+        progress_every = max(int(args.progress_every), 1)
 
         start_date = (
             parse_cli_date(args.from_date)
@@ -1206,6 +1348,8 @@ def main() -> None:
                 yes=args.yes,
                 parallel_accounts=args.parallel_accounts,
                 max_workers=args.max_workers,
+                progress_every=progress_every,
+                verify_deactivation_flow=args.verify_deactivation_flow,
             )
             return
 
@@ -1228,6 +1372,9 @@ def main() -> None:
             sleep_max_seconds=args.sleep_max,
             dry_run=args.dry_run,
             yes=args.yes,
+            account_name=selected_account.name if selected_account is not None else "",
+            progress_every=progress_every,
+            verify_deactivation_flow=args.verify_deactivation_flow,
         )
     except (RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
