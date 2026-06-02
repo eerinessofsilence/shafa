@@ -2,6 +2,7 @@ import _test_path  # noqa: F401
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -18,6 +19,7 @@ from deactivate_products_by_date import (
     deactivate_candidates,
     fetch_active_products,
     find_all_accounts_dirs,
+    load_uploaded_product_dates_for_product_ids,
     list_account_sessions,
     parse_cli_date,
     process_current_account,
@@ -66,6 +68,10 @@ class DeactivateProductsByDateTests(unittest.TestCase):
             product_sale_label_date({"saleLabel": {"date": "2026-05-29"}}),
             date(2026, 5, 29),
         )
+        self.assertEqual(
+            product_sale_label_date({"saleLabel": {"date": "2026-05-29 19:57:46"}}),
+            date(2026, 5, 29),
+        )
         self.assertIsNone(product_sale_label_date({"saleLabel": {"date": "bad"}}))
         self.assertIsNone(product_sale_label_date({"saleLabel": None}))
 
@@ -100,6 +106,56 @@ class DeactivateProductsByDateTests(unittest.TestCase):
         self.assertEqual(candidates[0].product_id, "101")
         self.assertEqual(candidates[0].name, "In range")
         self.assertEqual(candidates[0].product_date, date(2026, 5, 29))
+        self.assertEqual(candidates[0].date_source, "saleLabel.date")
+
+    def test_select_products_for_deactivation_falls_back_to_account_db_date(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            account_db = Path(raw_dir) / "shafa.sqlite3"
+            with sqlite3.connect(account_db) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE uploaded_products (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_id TEXT,
+                        created_at TEXT,
+                        shafa_created_at TEXT
+                    )
+                    """
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO uploaded_products (
+                        product_id,
+                        created_at,
+                        shafa_created_at
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        ("201", "2026-05-08 19:57:46", ""),
+                        ("202", "2026-06-01 10:00:00", ""),
+                    ],
+                )
+
+            products = [
+                {"id": 201, "name": "No sale label"},
+                {"id": 202, "name": "Out of range"},
+            ]
+            with patch.dict(os.environ, {"SHAFA_DB_PATH": str(account_db)}, clear=True):
+                loaded_dates = load_uploaded_product_dates_for_product_ids(["201"])
+                candidates = select_products_for_deactivation(
+                    products,
+                    start_date=date(2026, 5, 8),
+                    end_date=date(2026, 5, 31),
+                )
+
+        self.assertEqual(
+            loaded_dates,
+            {"201": (date(2026, 5, 8), "uploaded_products.created_at")},
+        )
+        self.assertEqual([candidate.product_id for candidate in candidates], ["201"])
+        self.assertEqual(candidates[0].product_date, date(2026, 5, 8))
+        self.assertEqual(candidates[0].date_source, "uploaded_products.created_at")
 
     def test_fetch_active_products_paginates_and_deduplicates(self) -> None:
         pages = [

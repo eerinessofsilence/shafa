@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import random
+import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -20,6 +21,7 @@ class ProductCandidate:
     product_date: date
     price: object = None
     url: str = ""
+    date_source: str = "saleLabel.date"
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,10 @@ def parse_shafa_date(value: object) -> Optional[date]:
     try:
         return date.fromisoformat(text)
     except ValueError:
-        return None
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
 
 
 def product_sale_label_date(product: dict) -> Optional[date]:
@@ -58,6 +63,84 @@ def product_sale_label_date(product: dict) -> Optional[date]:
     if not isinstance(sale_label, dict):
         return None
     return parse_shafa_date(sale_label.get("date"))
+
+
+def _connect_sqlite(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _account_db_path() -> Path:
+    raw = str(os.getenv("SHAFA_DB_PATH") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve(strict=False)
+    return Path(__file__).resolve().parent / "data" / "shafa.sqlite3"
+
+
+def _row_value(row: sqlite3.Row, key: str, default: object = None) -> object:
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def load_uploaded_product_dates_for_product_ids(
+    product_ids: list[str],
+) -> dict[str, tuple[date, str]]:
+    normalized_ids = [
+        str(product_id or "").strip()
+        for product_id in product_ids
+        if str(product_id or "").strip()
+    ]
+    if not normalized_ids:
+        return {}
+    db_path = _account_db_path()
+    if not db_path.exists():
+        return {}
+    with _connect_sqlite(db_path) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='uploaded_products'"
+        ).fetchone()
+        if table is None:
+            return {}
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(uploaded_products)").fetchall()
+        }
+        if "product_id" not in columns:
+            return {}
+        date_columns = [
+            column for column in ("shafa_created_at", "created_at") if column in columns
+        ]
+        if not date_columns:
+            return {}
+        selected_columns = ["product_id", *date_columns]
+        if "id" in columns:
+            selected_columns.insert(0, "id")
+        placeholders = ",".join(["?"] * len(normalized_ids))
+        order_by = "id DESC" if "id" in columns else "product_id DESC"
+        rows = conn.execute(
+            f"""
+            SELECT {", ".join(selected_columns)}
+            FROM uploaded_products
+            WHERE product_id IN ({placeholders})
+            ORDER BY {order_by}
+            """,
+            tuple(normalized_ids),
+        ).fetchall()
+
+    dates: dict[str, tuple[date, str]] = {}
+    for row in rows:
+        product_id = str(_row_value(row, "product_id") or "").strip()
+        if not product_id or product_id in dates:
+            continue
+        for column in ("shafa_created_at", "created_at"):
+            parsed = parse_shafa_date(_row_value(row, column))
+            if parsed is not None:
+                dates[product_id] = (parsed, f"uploaded_products.{column}")
+                break
+    return dates
 
 
 def fetch_active_products(
@@ -132,11 +215,19 @@ def select_products_for_deactivation(
         raise ValueError("Дата начала не может быть позже даты конца")
 
     candidates: list[ProductCandidate] = []
+    account_db_dates = load_uploaded_product_dates_for_product_ids(
+        [str(product.get("id") or "").strip() for product in products]
+    )
     for product in products:
         product_date = product_sale_label_date(product)
+        date_source = "saleLabel.date"
+        product_id = str(product.get("id") or "").strip()
+        if product_date is None and product_id:
+            account_db_date = account_db_dates.get(product_id)
+            if account_db_date is not None:
+                product_date, date_source = account_db_date
         if product_date is None or product_date < start_date or product_date > end_date:
             continue
-        product_id = str(product.get("id") or "").strip()
         if not product_id:
             continue
         candidates.append(
@@ -146,6 +237,7 @@ def select_products_for_deactivation(
                 product_date=product_date,
                 price=product.get("price"),
                 url=str(product.get("url") or "").strip(),
+                date_source=date_source,
             )
         )
     return candidates
@@ -157,7 +249,8 @@ def print_candidates(candidates: list[ProductCandidate]) -> None:
         url = "" if not candidate.url else f" | {candidate.url}"
         print(
             f"{index}. {candidate.product_date.isoformat()} | "
-            f"{candidate.product_id} | {candidate.name}{price}{url}"
+            f"{candidate.product_id} | {candidate.name} | "
+            f"date_source={candidate.date_source}{price}{url}"
         )
 
 
@@ -628,9 +721,15 @@ def collect_current_account_candidates(
         start_date=start_date,
         end_date=end_date,
     )
+    sale_label_candidates = sum(
+        1 for candidate in candidates if candidate.date_source == "saleLabel.date"
+    )
+    account_db_candidates = len(candidates) - sale_label_candidates
     print(
         f"Загружено активных товаров: {len(products)}. "
-        f"Кандидатов по saleLabel.date: {len(candidates)}."
+        f"Кандидатов по saleLabel.date/account DB: {len(candidates)} "
+        f"(saleLabel.date={sale_label_candidates}, "
+        f"account_db={account_db_candidates})."
     )
     return candidates
 
@@ -657,7 +756,7 @@ def process_current_account(
             page_size=page_size,
         )
     else:
-        print(f"Кандидатов по saleLabel.date: {len(candidates)}.")
+        print(f"Кандидатов по saleLabel.date/account DB: {len(candidates)}.")
 
     if not candidates:
         return {"deactivated": 0, "failed": 0, "mark_failed": 0}
@@ -726,6 +825,7 @@ def _candidate_to_data(candidate: ProductCandidate) -> dict[str, object]:
         "product_date": candidate.product_date.isoformat(),
         "price": candidate.price,
         "url": candidate.url,
+        "date_source": candidate.date_source,
     }
 
 
@@ -736,6 +836,7 @@ def _candidate_from_data(data: dict[str, object]) -> ProductCandidate:
         product_date=parse_cli_date(data["product_date"]),
         price=data.get("price"),
         url=str(data.get("url") or ""),
+        date_source=str(data.get("date_source") or "saleLabel.date"),
     )
 
 
