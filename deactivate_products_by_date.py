@@ -69,6 +69,10 @@ def product_created_at_date(product: dict) -> Optional[date]:
     return parse_shafa_date(product.get("createdAt") or product.get("created_at"))
 
 
+def _date_in_range(value: date, *, start_date: date, end_date: date) -> bool:
+    return start_date <= value <= end_date
+
+
 def _connect_sqlite(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -223,44 +227,82 @@ def select_products_for_deactivation(
         [str(product.get("id") or "").strip() for product in products]
     )
     for product in products:
-        product_date = product_sale_label_date(product)
-        date_source = "saleLabel.date"
         product_id = str(product.get("id") or "").strip()
-        if product_date is None:
-            product_date = product_created_at_date(product)
-            date_source = "createdAt"
-        if product_date is None and product_id:
-            account_db_date = account_db_dates.get(product_id)
-            if account_db_date is not None:
-                product_date, date_source = account_db_date
-        if product_date is None or product_date < start_date or product_date > end_date:
-            continue
         if not product_id:
+            continue
+        date_candidates: list[tuple[Optional[date], str]] = [
+            (product_sale_label_date(product), "saleLabel.date"),
+            (product_created_at_date(product), "createdAt"),
+        ]
+        account_db_date = account_db_dates.get(product_id)
+        if account_db_date is not None:
+            date_candidates.append(account_db_date)
+        matched_date = None
+        matched_source = ""
+        for candidate_date, candidate_source in date_candidates:
+            if candidate_date is None:
+                continue
+            if _date_in_range(
+                candidate_date,
+                start_date=start_date,
+                end_date=end_date,
+            ):
+                matched_date = candidate_date
+                matched_source = candidate_source
+                break
+        if matched_date is None:
             continue
         candidates.append(
             ProductCandidate(
                 product_id=product_id,
                 name=str(product.get("name") or "").strip() or "без названия",
-                product_date=product_date,
+                product_date=matched_date,
                 price=product.get("price"),
                 url=str(product.get("url") or "").strip(),
-                date_source=date_source,
+                date_source=matched_source,
             )
         )
     return candidates
 
 
-def product_date_source_stats(products: list[dict]) -> dict[str, int]:
+def product_date_source_stats(
+    products: list[dict],
+    *,
+    start_date: date,
+    end_date: date,
+) -> dict[str, int]:
     product_ids = [str(product.get("id") or "").strip() for product in products]
     account_db_dates = load_uploaded_product_dates_for_product_ids(product_ids)
+    sale_label_dates = [
+        parsed
+        for product in products
+        if (parsed := product_sale_label_date(product)) is not None
+    ]
+    created_at_dates = [
+        parsed
+        for product in products
+        if (parsed := product_created_at_date(product)) is not None
+    ]
+    account_db_values = [item[0] for item in account_db_dates.values()]
     return {
-        "sale_label_date": sum(
-            1 for product in products if product_sale_label_date(product) is not None
+        "sale_label_date": len(sale_label_dates),
+        "sale_label_date_in_range": sum(
+            1
+            for value in sale_label_dates
+            if _date_in_range(value, start_date=start_date, end_date=end_date)
         ),
-        "created_at": sum(
-            1 for product in products if product_created_at_date(product) is not None
+        "created_at": len(created_at_dates),
+        "created_at_in_range": sum(
+            1
+            for value in created_at_dates
+            if _date_in_range(value, start_date=start_date, end_date=end_date)
         ),
         "account_db": len(account_db_dates),
+        "account_db_in_range": sum(
+            1
+            for value in account_db_values
+            if _date_in_range(value, start_date=start_date, end_date=end_date)
+        ),
     }
 
 
@@ -737,7 +779,11 @@ def collect_current_account_candidates(
 ) -> list[ProductCandidate]:
     print("Загружаю ACTIVE товары Shafa...")
     products = fetch_active_products(page_size=page_size)
-    date_stats = product_date_source_stats(products)
+    date_stats = product_date_source_stats(
+        products,
+        start_date=start_date,
+        end_date=end_date,
+    )
     candidates = select_products_for_deactivation(
         products,
         start_date=start_date,
@@ -752,9 +798,12 @@ def collect_current_account_candidates(
     account_db_candidates = len(candidates) - sale_label_candidates - created_at_candidates
     print(
         f"Загружено активных товаров: {len(products)}. "
-        f"Источники дат: saleLabel.date={date_stats['sale_label_date']}, "
-        f"createdAt={date_stats['created_at']}, "
-        f"account_db_matches={date_stats['account_db']}. "
+        f"Источники дат: saleLabel.date={date_stats['sale_label_date']} "
+        f"(in_range={date_stats['sale_label_date_in_range']}), "
+        f"createdAt={date_stats['created_at']} "
+        f"(in_range={date_stats['created_at_in_range']}), "
+        f"account_db_matches={date_stats['account_db']} "
+        f"(in_range={date_stats['account_db_in_range']}). "
         f"Кандидатов по saleLabel.date/createdAt/account DB: {len(candidates)} "
         f"(saleLabel.date={sale_label_candidates}, "
         f"createdAt={created_at_candidates}, "

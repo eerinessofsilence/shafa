@@ -146,6 +146,32 @@ class DeactivateProductsByDateTests(unittest.TestCase):
         self.assertEqual(candidates[0].product_date, date(2026, 5, 8))
         self.assertEqual(candidates[0].date_source, "createdAt")
 
+    def test_select_products_for_deactivation_uses_created_at_when_sale_label_out_of_range(self) -> None:
+        products = [
+            {
+                "id": 211,
+                "name": "Created in range",
+                "createdAt": "2026-05-08T19:57:46+00:00",
+                "saleLabel": {"date": "2026-06-02"},
+            },
+            {
+                "id": 212,
+                "name": "No date in range",
+                "createdAt": "2026-06-01T10:00:00+00:00",
+                "saleLabel": {"date": "2026-06-02"},
+            },
+        ]
+
+        candidates = select_products_for_deactivation(
+            products,
+            start_date=date(2026, 5, 8),
+            end_date=date(2026, 5, 31),
+        )
+
+        self.assertEqual([candidate.product_id for candidate in candidates], ["211"])
+        self.assertEqual(candidates[0].product_date, date(2026, 5, 8))
+        self.assertEqual(candidates[0].date_source, "createdAt")
+
     def test_select_products_for_deactivation_falls_back_to_account_db_date(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             account_db = Path(raw_dir) / "shafa.sqlite3"
