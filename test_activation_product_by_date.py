@@ -28,6 +28,8 @@ from activation_product_by_date import (
     backfill_missing_telegram_message_dates_for_product_ids,
     build_arg_parser,
     clear_telegram_message_dates_for_product_ids,
+    collect_current_account_candidates,
+    list_inactive_uploaded_products_from_account_db,
     mark_uploaded_product_active,
     parse_telegram_datetime,
     select_product_for_activation_by_telegram_identity,
@@ -179,7 +181,263 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual(candidates[0].telegram_age_days, 100)
         self.assertEqual(candidates[0].channel_id, 11)
         self.assertEqual(candidates[0].message_id, 501)
+        self.assertEqual(candidates[0].age_source, "telegram_message_date")
         self.assertEqual(candidates[1].telegram_age_days, 183)
+
+    def test_select_products_uses_account_db_created_at_when_telegram_mapping_missing(self) -> None:
+        today = date(2026, 6, 2)
+        with tempfile.TemporaryDirectory() as raw_dir:
+            account_db = Path(raw_dir) / "shafa.sqlite3"
+            with sqlite3.connect(account_db) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE uploaded_products (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_id TEXT,
+                        name TEXT,
+                        price INTEGER,
+                        raw_payload TEXT,
+                        created_at TEXT,
+                        shafa_created_at TEXT,
+                        is_active INTEGER,
+                        status_title TEXT
+                    )
+                    """
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO uploaded_products (
+                        product_id,
+                        name,
+                        price,
+                        raw_payload,
+                        created_at,
+                        shafa_created_at,
+                        is_active,
+                        status_title
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            "201",
+                            "Fresh local inactive",
+                            860,
+                            "{}",
+                            (today - timedelta(days=25)).isoformat(),
+                            "",
+                            0,
+                            "Деактивовано",
+                        ),
+                        (
+                            "202",
+                            "Old local inactive",
+                            500,
+                            "{}",
+                            (today - timedelta(days=220)).isoformat(),
+                            "",
+                            0,
+                            "Деактивовано",
+                        ),
+                        (
+                            "203",
+                            "Active local",
+                            500,
+                            "{}",
+                            (today - timedelta(days=25)).isoformat(),
+                            "",
+                            1,
+                            "Активно",
+                        ),
+                    ],
+                )
+
+            with patch.dict(os.environ, {"SHAFA_DB_PATH": str(account_db)}, clear=True):
+                products = list_inactive_uploaded_products_from_account_db()
+                candidates = select_products_for_activation(
+                    products,
+                    today=today,
+                    max_age_days=183,
+                )
+
+        self.assertEqual([product["id"] for product in products], ["202", "201"])
+        self.assertEqual([candidate.product_id for candidate in candidates], ["201"])
+        self.assertEqual(candidates[0].telegram_age_days, 25)
+        self.assertEqual(candidates[0].age_source, "account_db_created_at")
+        self.assertIsNone(candidates[0].channel_id)
+        self.assertIsNone(candidates[0].message_id)
+
+    def test_collection_backfills_missing_telegram_date_by_created_product_id(self) -> None:
+        today = date(2026, 6, 2)
+        with tempfile.TemporaryDirectory() as raw_dir:
+            base = Path(raw_dir)
+            account_db = base / "shafa.sqlite3"
+            telegram_db = base / "telegram_feed.sqlite3"
+            self._create_account_db(account_db)
+            with sqlite3.connect(telegram_db) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE telegram_products (
+                        account_id TEXT,
+                        channel_id INTEGER,
+                        message_id INTEGER,
+                        created_product_id TEXT,
+                        status TEXT,
+                        created INTEGER,
+                        telegram_message_date TEXT,
+                        parsed_data TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO telegram_products (
+                        account_id,
+                        channel_id,
+                        message_id,
+                        created_product_id,
+                        status,
+                        created,
+                        telegram_message_date,
+                        parsed_data,
+                        updated_at
+                    )
+                    VALUES ('legacy-acc', -1001849992155, 156539, '101', 'created', 1, '', '{}', datetime('now'))
+                    """
+                )
+
+            def fake_backfill(rows: list[dict[str, object]]) -> dict[str, int]:
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["account_id"], "legacy-acc")
+                self.assertEqual(str(rows[0]["created_product_id"]), "101")
+                with sqlite3.connect(telegram_db) as conn:
+                    conn.execute(
+                        """
+                        UPDATE telegram_products
+                        SET telegram_message_date = ?
+                        WHERE account_id = ? AND channel_id = ? AND message_id = ?
+                        """,
+                        (
+                            (today - timedelta(days=25)).isoformat(),
+                            rows[0]["account_id"],
+                            rows[0]["channel_id"],
+                            rows[0]["message_id"],
+                        ),
+                    )
+                return {"updated": 1, "failed": 0}
+
+            stats: dict[str, int] = {}
+            with patch.dict(
+                os.environ,
+                {
+                    "SHAFA_ACCOUNT_ID": "acc-1",
+                    "SHAFA_DB_PATH": str(account_db),
+                    "SHAFA_SHARED_TELEGRAM_DB_PATH": str(telegram_db),
+                },
+                clear=True,
+            ):
+                with patch("activation_product_by_date.fetch_inactive_products", return_value=[]):
+                    with patch(
+                        "activation_product_by_date._backfill_telegram_message_dates_from_telegram_async",
+                        side_effect=fake_backfill,
+                    ):
+                        with redirect_stdout(StringIO()):
+                            candidates = collect_current_account_candidates(
+                                page_size=50,
+                                product_types=["INACTIVE"],
+                                max_age_days=183,
+                                telegram_date_backfill_limit=10,
+                                telegram_date_backfill_batch_size=50,
+                                telegram_date_backfill_sleep_min_seconds=0,
+                                telegram_date_backfill_sleep_max_seconds=0,
+                                backfill_stats=stats,
+                            )
+
+            with sqlite3.connect(telegram_db) as conn:
+                stored_date = conn.execute(
+                    "SELECT telegram_message_date FROM telegram_products WHERE created_product_id = '101'"
+                ).fetchone()[0]
+
+        self.assertEqual([candidate.product_id for candidate in candidates], ["101"])
+        self.assertEqual(candidates[0].age_source, "telegram_message_date")
+        self.assertEqual(candidates[0].channel_id, -1001849992155)
+        self.assertEqual(candidates[0].message_id, 156539)
+        self.assertEqual(stats["date_backfill_checked"], 1)
+        self.assertEqual(stats["date_loaded_from_telegram"], 1)
+        self.assertEqual(stats["date_load_failed"], 0)
+        self.assertEqual(stored_date, (today - timedelta(days=25)).isoformat())
+
+    def test_collection_skips_when_missing_telegram_date_backfill_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            base = Path(raw_dir)
+            account_db = base / "shafa.sqlite3"
+            telegram_db = base / "telegram_feed.sqlite3"
+            self._create_account_db(account_db)
+            with sqlite3.connect(telegram_db) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE telegram_products (
+                        account_id TEXT,
+                        channel_id INTEGER,
+                        message_id INTEGER,
+                        created_product_id TEXT,
+                        status TEXT,
+                        created INTEGER,
+                        telegram_message_date TEXT,
+                        parsed_data TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO telegram_products (
+                        account_id,
+                        channel_id,
+                        message_id,
+                        created_product_id,
+                        status,
+                        created,
+                        telegram_message_date,
+                        parsed_data,
+                        updated_at
+                    )
+                    VALUES ('legacy-acc', -1001849992155, 156539, '101', 'created', 1, NULL, '{}', datetime('now'))
+                    """
+                )
+
+            stats: dict[str, int] = {}
+            with patch.dict(
+                os.environ,
+                {
+                    "SHAFA_ACCOUNT_ID": "acc-1",
+                    "SHAFA_DB_PATH": str(account_db),
+                    "SHAFA_SHARED_TELEGRAM_DB_PATH": str(telegram_db),
+                },
+                clear=True,
+            ):
+                with patch("activation_product_by_date.fetch_inactive_products", return_value=[]):
+                    with patch(
+                        "activation_product_by_date._backfill_telegram_message_dates_from_telegram_async",
+                        return_value={"updated": 0, "failed": 1},
+                    ):
+                        with redirect_stdout(StringIO()):
+                            candidates = collect_current_account_candidates(
+                                page_size=50,
+                                product_types=["INACTIVE"],
+                                max_age_days=183,
+                                telegram_date_backfill_limit=10,
+                                telegram_date_backfill_batch_size=50,
+                                telegram_date_backfill_sleep_min_seconds=0,
+                                telegram_date_backfill_sleep_max_seconds=0,
+                                backfill_stats=stats,
+                            )
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(stats["date_backfill_checked"], 1)
+        self.assertEqual(stats["date_loaded_from_telegram"], 0)
+        self.assertEqual(stats["date_load_failed"], 1)
 
     def test_select_product_by_telegram_identity_uses_telegram_date_boundary(self) -> None:
         today = date(2026, 6, 2)

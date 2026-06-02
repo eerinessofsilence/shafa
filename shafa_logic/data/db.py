@@ -1289,6 +1289,14 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
         "ON telegram_products(account_id, created_product_id)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_created_product_id "
+        "ON telegram_products(created_product_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_channel_message "
+        "ON telegram_products(channel_id, message_id)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telegram_products_deactivation_status "
         "ON telegram_products(account_id, deactivation_status, deactivation_queued_at)"
     )
