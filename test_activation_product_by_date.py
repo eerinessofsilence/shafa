@@ -627,6 +627,8 @@ class ActivationProductByDateTests(unittest.TestCase):
                 "50",
                 "--clear-telegram-dates-limit",
                 "2",
+                "--exclude-account-id",
+                "АКК 3",
                 "--telegram-date-backfill-batch-size",
                 "25",
                 "--telegram-date-backfill-sleep-min",
@@ -643,6 +645,7 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual(args.message_id, 501)
         self.assertEqual(args.telegram_date_backfill_limit, 50)
         self.assertEqual(args.clear_telegram_dates_limit, 2)
+        self.assertEqual(args.exclude_account_id, ["АКК 3"])
         self.assertEqual(args.telegram_date_backfill_batch_size, 25)
         self.assertEqual(args.telegram_date_backfill_sleep_min, 30)
         self.assertEqual(args.telegram_date_backfill_sleep_max, 60)

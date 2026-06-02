@@ -696,6 +696,47 @@ def _find_account_session(
     raise RuntimeError(f"Аккаунт не найден. Доступны: {available}")
 
 
+def _session_matches_selector(session: AccountSession, selector: str) -> bool:
+    normalized = str(selector or "").strip()
+    if not normalized:
+        return False
+    return (
+        session.account_id == normalized
+        or session.name == normalized
+        or session.account_id.startswith(normalized)
+    )
+
+
+def filter_excluded_sessions(
+    sessions: list[AccountSession],
+    exclude_selectors: Optional[list[str]],
+) -> list[AccountSession]:
+    selectors = [
+        str(selector or "").strip()
+        for selector in (exclude_selectors or [])
+        if str(selector or "").strip()
+    ]
+    if not selectors:
+        return sessions
+    kept: list[AccountSession] = []
+    matched_selectors: set[str] = set()
+    for session in sessions:
+        matched = [
+            selector
+            for selector in selectors
+            if _session_matches_selector(session, selector)
+        ]
+        if matched:
+            matched_selectors.update(matched)
+            print(f"Excluded Shafa session: {session.name} | {session.account_id}")
+            continue
+        kept.append(session)
+    for selector in selectors:
+        if selector not in matched_selectors:
+            print(f"WARN: exclude account selector did not match any session: {selector}")
+    return kept
+
+
 def _prompt_account_session(sessions: list[AccountSession]) -> AccountSession:
     print("Найдено несколько сохранённых Shafa-сессий. Выберите аккаунт:")
     for index, account in enumerate(sessions, start=1):
@@ -1429,6 +1470,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="ID или точное имя аккаунта из папки accounts/",
     )
     parser.add_argument(
+        "--exclude-account-id",
+        action="append",
+        default=None,
+        help=(
+            "Исключить аккаунт при --all-accounts. Можно указать несколько раз. "
+            "Принимает ID, префикс ID или точное имя аккаунта."
+        ),
+    )
+    parser.add_argument(
         "--all-accounts",
         action="store_true",
         help="Обработать все найденные аккаунты Shafa.",
@@ -1509,6 +1559,7 @@ def main() -> None:
                 accounts_search_roots=args.accounts_search_root,
             )
             sessions = list_account_sessions(accounts_dirs=accounts_folders)
+            sessions = filter_excluded_sessions(sessions, args.exclude_account_id)
             if not sessions:
                 raise RuntimeError(
                     "Не нашёл сохранённые cookies Shafa. Войди в аккаунт через "

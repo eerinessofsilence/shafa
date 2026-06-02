@@ -24,6 +24,7 @@ from deactivate_products_by_date import (
     _session_from_data,
     _session_to_data,
     configure_account_environment,
+    filter_excluded_sessions,
     find_all_accounts_dirs,
     list_account_sessions,
     parse_cli_date,
@@ -2256,6 +2257,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="ID или точное имя аккаунта из папки accounts/",
     )
     parser.add_argument(
+        "--exclude-account-id",
+        action="append",
+        default=None,
+        help=(
+            "Исключить аккаунт при --all-accounts. Можно указать несколько раз. "
+            "Принимает ID, префикс ID или точное имя аккаунта."
+        ),
+    )
+    parser.add_argument(
         "--all-accounts",
         action="store_true",
         help="Обработать все найденные аккаунты Shafa.",
@@ -2355,6 +2365,7 @@ def main() -> None:
                 accounts_search_roots=args.accounts_search_root,
             )
             sessions = list_account_sessions(accounts_dirs=accounts_folders)
+            sessions = filter_excluded_sessions(sessions, args.exclude_account_id)
             if not sessions:
                 raise RuntimeError(
                     "Не нашёл сохранённые cookies Shafa. Войди в аккаунт через "

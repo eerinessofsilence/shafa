@@ -18,6 +18,7 @@ from deactivate_products_by_date import (
     configure_account_environment,
     deactivate_candidates,
     fetch_active_products,
+    filter_excluded_sessions,
     find_all_accounts_dirs,
     load_uploaded_product_dates_for_product_ids,
     list_account_sessions,
@@ -363,6 +364,55 @@ class DeactivateProductsByDateTests(unittest.TestCase):
 
         self.assertTrue(args.parallel_accounts)
         self.assertEqual(args.max_workers, 4)
+
+    def test_exclude_account_id_argument_can_be_repeated(self) -> None:
+        args = build_arg_parser().parse_args(
+            [
+                "--all-accounts",
+                "--exclude-account-id",
+                "АКК 3",
+                "--exclude-account-id",
+                "9581",
+            ]
+        )
+
+        self.assertEqual(args.exclude_account_id, ["АКК 3", "9581"])
+
+    def test_filter_excluded_sessions_matches_name_and_id_prefix(self) -> None:
+        sessions = [
+            AccountSession(
+                account_id="4c5aee1836914210a7ee55cd10085c0f",
+                name="АКК 3",
+                state_dir=Path("/tmp/accounts/acc-3"),
+                auth_path=Path("/tmp/accounts/acc-3/auth.json"),
+                db_path=Path("/tmp/accounts/acc-3/shafa.sqlite3"),
+                media_dir=Path("/tmp/accounts/acc-3/media"),
+            ),
+            AccountSession(
+                account_id="9581d7c3522c4ffbbfc7a35f8e48e710",
+                name="АКК 3 одежда",
+                state_dir=Path("/tmp/accounts/acc-3-clothes"),
+                auth_path=Path("/tmp/accounts/acc-3-clothes/auth.json"),
+                db_path=Path("/tmp/accounts/acc-3-clothes/shafa.sqlite3"),
+                media_dir=Path("/tmp/accounts/acc-3-clothes/media"),
+            ),
+            AccountSession(
+                account_id="e4f58c3c93c94afebf497a1878a3edd6",
+                name="Шафа 10 акк ALL",
+                state_dir=Path("/tmp/accounts/acc-10"),
+                auth_path=Path("/tmp/accounts/acc-10/auth.json"),
+                db_path=Path("/tmp/accounts/acc-10/shafa.sqlite3"),
+                media_dir=Path("/tmp/accounts/acc-10/media"),
+            ),
+        ]
+
+        with redirect_stdout(StringIO()):
+            filtered = filter_excluded_sessions(sessions, ["АКК 3", "9581"])
+
+        self.assertEqual(
+            [(session.name, session.account_id) for session in filtered],
+            [("Шафа 10 акк ALL", "e4f58c3c93c94afebf497a1878a3edd6")],
+        )
 
     def test_debug_auth_argument_exists(self) -> None:
         args = build_arg_parser().parse_args(["--debug-auth"])
