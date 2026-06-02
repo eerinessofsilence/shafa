@@ -24,6 +24,7 @@ from deactivate_products_by_date import (
     parse_cli_date,
     process_current_account,
     product_sale_label_date,
+    product_created_at_date,
     select_products_for_deactivation,
 )
 
@@ -75,6 +76,17 @@ class DeactivateProductsByDateTests(unittest.TestCase):
         self.assertIsNone(product_sale_label_date({"saleLabel": {"date": "bad"}}))
         self.assertIsNone(product_sale_label_date({"saleLabel": None}))
 
+    def test_product_created_at_date_reads_feed_created_at(self) -> None:
+        self.assertEqual(
+            product_created_at_date({"createdAt": "2026-05-08T19:57:46+00:00"}),
+            date(2026, 5, 8),
+        )
+        self.assertEqual(
+            product_created_at_date({"created_at": "2026-05-09 10:00:00"}),
+            date(2026, 5, 9),
+        )
+        self.assertIsNone(product_created_at_date({"createdAt": ""}))
+
     def test_select_products_for_deactivation_filters_inclusive_range(self) -> None:
         products = [
             {
@@ -107,6 +119,32 @@ class DeactivateProductsByDateTests(unittest.TestCase):
         self.assertEqual(candidates[0].name, "In range")
         self.assertEqual(candidates[0].product_date, date(2026, 5, 29))
         self.assertEqual(candidates[0].date_source, "saleLabel.date")
+
+    def test_select_products_for_deactivation_uses_created_at_when_sale_label_missing(self) -> None:
+        products = [
+            {
+                "id": 201,
+                "name": "Fresh created",
+                "createdAt": "2026-05-08T19:57:46+00:00",
+                "saleLabel": None,
+            },
+            {
+                "id": 202,
+                "name": "Old created",
+                "createdAt": "2026-06-01T10:00:00+00:00",
+                "saleLabel": None,
+            },
+        ]
+
+        candidates = select_products_for_deactivation(
+            products,
+            start_date=date(2026, 5, 8),
+            end_date=date(2026, 5, 31),
+        )
+
+        self.assertEqual([candidate.product_id for candidate in candidates], ["201"])
+        self.assertEqual(candidates[0].product_date, date(2026, 5, 8))
+        self.assertEqual(candidates[0].date_source, "createdAt")
 
     def test_select_products_for_deactivation_falls_back_to_account_db_date(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:

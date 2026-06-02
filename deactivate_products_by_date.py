@@ -65,6 +65,10 @@ def product_sale_label_date(product: dict) -> Optional[date]:
     return parse_shafa_date(sale_label.get("date"))
 
 
+def product_created_at_date(product: dict) -> Optional[date]:
+    return parse_shafa_date(product.get("createdAt") or product.get("created_at"))
+
+
 def _connect_sqlite(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -222,6 +226,9 @@ def select_products_for_deactivation(
         product_date = product_sale_label_date(product)
         date_source = "saleLabel.date"
         product_id = str(product.get("id") or "").strip()
+        if product_date is None:
+            product_date = product_created_at_date(product)
+            date_source = "createdAt"
         if product_date is None and product_id:
             account_db_date = account_db_dates.get(product_id)
             if account_db_date is not None:
@@ -241,6 +248,20 @@ def select_products_for_deactivation(
             )
         )
     return candidates
+
+
+def product_date_source_stats(products: list[dict]) -> dict[str, int]:
+    product_ids = [str(product.get("id") or "").strip() for product in products]
+    account_db_dates = load_uploaded_product_dates_for_product_ids(product_ids)
+    return {
+        "sale_label_date": sum(
+            1 for product in products if product_sale_label_date(product) is not None
+        ),
+        "created_at": sum(
+            1 for product in products if product_created_at_date(product) is not None
+        ),
+        "account_db": len(account_db_dates),
+    }
 
 
 def print_candidates(candidates: list[ProductCandidate]) -> None:
@@ -716,6 +737,7 @@ def collect_current_account_candidates(
 ) -> list[ProductCandidate]:
     print("Загружаю ACTIVE товары Shafa...")
     products = fetch_active_products(page_size=page_size)
+    date_stats = product_date_source_stats(products)
     candidates = select_products_for_deactivation(
         products,
         start_date=start_date,
@@ -724,11 +746,18 @@ def collect_current_account_candidates(
     sale_label_candidates = sum(
         1 for candidate in candidates if candidate.date_source == "saleLabel.date"
     )
-    account_db_candidates = len(candidates) - sale_label_candidates
+    created_at_candidates = sum(
+        1 for candidate in candidates if candidate.date_source == "createdAt"
+    )
+    account_db_candidates = len(candidates) - sale_label_candidates - created_at_candidates
     print(
         f"Загружено активных товаров: {len(products)}. "
-        f"Кандидатов по saleLabel.date/account DB: {len(candidates)} "
+        f"Источники дат: saleLabel.date={date_stats['sale_label_date']}, "
+        f"createdAt={date_stats['created_at']}, "
+        f"account_db_matches={date_stats['account_db']}. "
+        f"Кандидатов по saleLabel.date/createdAt/account DB: {len(candidates)} "
         f"(saleLabel.date={sale_label_candidates}, "
+        f"createdAt={created_at_candidates}, "
         f"account_db={account_db_candidates})."
     )
     return candidates
@@ -756,7 +785,7 @@ def process_current_account(
             page_size=page_size,
         )
     else:
-        print(f"Кандидатов по saleLabel.date/account DB: {len(candidates)}.")
+        print(f"Кандидатов по saleLabel.date/createdAt/account DB: {len(candidates)}.")
 
     if not candidates:
         return {"deactivated": 0, "failed": 0, "mark_failed": 0}
