@@ -18,10 +18,12 @@ for path in (ROOT_DIR, SHAFA_LOGIC_DIR):
 
 from activation_product_by_date import (
     ActivationCandidate,
+    AccountSession,
     DEFAULT_ACTIVATION_SLEEP_MAX_SECONDS,
     DEFAULT_ACTIVATION_SLEEP_MIN_SECONDS,
     DEFAULT_MAX_ACCOUNT_WORKERS,
     DEFAULT_TELEGRAM_DATE_BACKFILL_LIMIT,
+    _default_shared_telegram_db_path,
     activate_candidates,
     backfill_missing_telegram_message_dates_for_product_ids,
     build_arg_parser,
@@ -387,6 +389,22 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertTrue(args.parallel_accounts)
         self.assertEqual(args.max_workers, DEFAULT_MAX_ACCOUNT_WORKERS)
         self.assertEqual(args.max_workers, 5)
+
+    def test_default_shared_db_path_uses_accounts_base_dir(self) -> None:
+        session = AccountSession(
+            account_id="acc-1",
+            name="Account 1",
+            state_dir=Path("C:/repo/runtime/desktop-backend-data/accounts/acc-1"),
+            auth_path=Path("C:/repo/runtime/desktop-backend-data/accounts/acc-1/auth.json"),
+            db_path=Path("C:/repo/runtime/desktop-backend-data/accounts/acc-1/shafa.sqlite3"),
+            media_dir=Path("C:/repo/runtime/desktop-backend-data/accounts/acc-1/media"),
+            accounts_dir=Path("C:/repo/runtime/desktop-backend-data/accounts"),
+        )
+
+        self.assertEqual(
+            _default_shared_telegram_db_path(session),
+            Path("C:/repo/runtime/desktop-backend-data/telegram_shared/telegram_feed.sqlite3"),
+        )
 
 
 if __name__ == "__main__":

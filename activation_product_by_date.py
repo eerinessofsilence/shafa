@@ -60,7 +60,12 @@ def _ensure_shafa_logic_on_path() -> None:
             sys.path.insert(0, text_path)
 
 
-def _default_shared_telegram_db_path() -> Path:
+def _default_shared_telegram_db_path(
+    selected: Optional[AccountSession] = None,
+) -> Path:
+    if selected is not None:
+        accounts_dir = selected.accounts_dir or selected.state_dir.parent
+        return accounts_dir.parent / "telegram_shared" / "telegram_feed.sqlite3"
     return SCRIPT_ROOT / "telegram_shared" / "telegram_feed.sqlite3"
 
 
@@ -74,7 +79,7 @@ def _apply_account_environment(selected: AccountSession) -> None:
     _apply_deactivation_account_environment(selected)
     if not explicit_shared_db_path:
         os.environ["SHAFA_SHARED_TELEGRAM_DB_PATH"] = str(
-            _default_shared_telegram_db_path()
+            _default_shared_telegram_db_path(selected)
         )
     if not explicit_telegram_session_path:
         os.environ["SHAFA_TELEGRAM_SESSION_PATH"] = str(
@@ -369,6 +374,41 @@ def _load_missing_telegram_date_rows_for_product_ids(
             (account_id, *normalized_ids, row_limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _count_telegram_rows_for_product_ids(product_ids: list[str]) -> int:
+    normalized_ids = [
+        str(product_id or "").strip()
+        for product_id in product_ids
+        if str(product_id or "").strip()
+    ]
+    if not normalized_ids:
+        return 0
+    telegram_db_path = _shared_telegram_db_path()
+    if not telegram_db_path.exists():
+        return 0
+    account_id = _current_account_id()
+    if not account_id:
+        return 0
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    with _connect_sqlite(telegram_db_path) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telegram_products'"
+        ).fetchone()
+        if table is None:
+            return 0
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM telegram_products
+            WHERE account_id = ?
+              AND created_product_id IN ({placeholders})
+              AND status = 'created'
+              AND created = 1
+            """,
+            (account_id, *normalized_ids),
+        ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
 
 
 def clear_telegram_message_dates_for_product_ids(
@@ -1092,6 +1132,15 @@ def _add_backfill_stats(target: dict[str, int], source: dict[str, int]) -> None:
         target[key] = int(target.get(key, 0)) + int(source.get(key, 0))
 
 
+def _is_shafa_auth_error_message(message: object) -> bool:
+    normalized = str(message or "").lower()
+    return (
+        "user not authenticated" in normalized
+        or "not authenticated" in normalized
+        or "no saved cookies" in normalized
+    )
+
+
 def collect_current_account_candidates(
     page_size: int,
     product_types: list[str],
@@ -1111,6 +1160,12 @@ def collect_current_account_candidates(
         for product in products
         if str(product.get("id") or "").strip()
     ]
+    matched_telegram_rows = _count_telegram_rows_for_product_ids(product_ids)
+    print(
+        "Telegram DB lookup: "
+        f"path={_shared_telegram_db_path()} "
+        f"matched_created_product_rows={matched_telegram_rows}."
+    )
     if clear_telegram_dates_limit > 0:
         cleared = clear_telegram_message_dates_for_product_ids(
             product_ids,
@@ -1296,9 +1351,11 @@ def collect_account_candidates_worker(
                 backfill_stats=backfill_stats,
             )
     except Exception as exc:
+        auth_failed = _is_shafa_auth_error_message(exc)
         return {
             "ok": False,
             "error": str(exc),
+            "auth_failed": auth_failed,
             "candidates": [],
             "candidate_count": 0,
             "backfill_stats": backfill_stats,
@@ -1307,6 +1364,7 @@ def collect_account_candidates_worker(
     return {
         "ok": True,
         "error": "",
+        "auth_failed": False,
         "candidates": [_candidate_to_data(candidate) for candidate in candidates],
         "candidate_count": len(candidates),
         "backfill_stats": backfill_stats,
@@ -1419,9 +1477,10 @@ def _collect_all_account_candidates_sequential(
     telegram_date_backfill_sleep_min_seconds: float,
     telegram_date_backfill_sleep_max_seconds: float,
     clear_telegram_dates_limit: int,
-) -> tuple[list[tuple[AccountSession, list[ActivationCandidate]]], int, dict[str, int]]:
+) -> tuple[list[tuple[AccountSession, list[ActivationCandidate]]], int, int, dict[str, int]]:
     collected: list[tuple[AccountSession, list[ActivationCandidate]]] = []
     accounts_failed = 0
+    accounts_auth_failed = 0
     backfill_totals = _empty_backfill_stats()
     for index, session in enumerate(sessions, start=1):
         _print_account_header(index, len(sessions), session, phase="activation collection")
@@ -1441,12 +1500,16 @@ def _collect_all_account_candidates_sequential(
             )
             _add_backfill_stats(backfill_totals, account_backfill_stats)
         except Exception as exc:
+            if _is_shafa_auth_error_message(exc):
+                accounts_auth_failed += 1
+                print(f"WARN: account skipped, Shafa session is not authenticated: {exc}")
+                continue
             accounts_failed += 1
             print(f"ERROR: account collection failed: {exc}")
             continue
         print(f"Кандидатов для аккаунта: {len(candidates)}")
         collected.append((session, candidates))
-    return collected, accounts_failed, backfill_totals
+    return collected, accounts_failed, accounts_auth_failed, backfill_totals
 
 
 def _collect_all_account_candidates_parallel(
@@ -1460,9 +1523,10 @@ def _collect_all_account_candidates_parallel(
     telegram_date_backfill_sleep_max_seconds: float,
     clear_telegram_dates_limit: int,
     max_workers: int,
-) -> tuple[list[tuple[AccountSession, list[ActivationCandidate]]], int, dict[str, int]]:
+) -> tuple[list[tuple[AccountSession, list[ActivationCandidate]]], int, int, dict[str, int]]:
     collected: list[tuple[AccountSession, list[ActivationCandidate]]] = []
     accounts_failed = 0
+    accounts_auth_failed = 0
     backfill_totals = _empty_backfill_stats()
     worker_count = _clamped_workers(max_workers, len(sessions))
     future_to_session: dict[concurrent.futures.Future, tuple[int, AccountSession]] = {}
@@ -1493,6 +1557,10 @@ def _collect_all_account_candidates_parallel(
             try:
                 result = future.result()
             except Exception as exc:
+                if _is_shafa_auth_error_message(exc):
+                    accounts_auth_failed += 1
+                    print(f"WARN: account skipped, Shafa session is not authenticated: {exc}")
+                    continue
                 accounts_failed += 1
                 print(f"ERROR: account collection failed: {exc}")
                 continue
@@ -1504,6 +1572,13 @@ def _collect_all_account_candidates_parallel(
                 result_stats = result.get("backfill_stats")
                 if isinstance(result_stats, dict):
                     _add_backfill_stats(backfill_totals, result_stats)
+                if result.get("auth_failed"):
+                    accounts_auth_failed += 1
+                    print(
+                        "WARN: account skipped, Shafa session is not authenticated: "
+                        f"{result.get('error')}"
+                    )
+                    continue
                 accounts_failed += 1
                 print(f"ERROR: account collection failed: {result.get('error')}")
                 continue
@@ -1517,7 +1592,7 @@ def _collect_all_account_candidates_parallel(
             ]
             print(f"Кандидатов для аккаунта: {len(candidates)}")
             collected.append((session, candidates))
-    return collected, accounts_failed, backfill_totals
+    return collected, accounts_failed, accounts_auth_failed, backfill_totals
 
 
 def _print_all_account_summary(
@@ -1525,6 +1600,7 @@ def _print_all_account_summary(
     accounts_folders_count: int,
     accounts_processed: int,
     accounts_failed: int,
+    accounts_auth_skipped: int,
     total_candidates: int,
     total_activated: int,
     total_failed: int,
@@ -1539,6 +1615,7 @@ def _print_all_account_summary(
         f"Accounts folders found: {accounts_folders_count}. "
         f"Accounts processed: {accounts_processed}. "
         f"Accounts failed: {accounts_failed}. "
+        f"Accounts auth skipped: {accounts_auth_skipped}. "
         f"Total candidates: {total_candidates}. "
         f"Total activated: {total_activated}. "
         f"Total failed: {total_failed}. "
@@ -1572,8 +1649,14 @@ def process_all_accounts(
     clear_telegram_dates_limit: int,
 ) -> None:
     backfill_totals = _empty_backfill_stats()
+    accounts_auth_skipped = 0
     if parallel_accounts:
-        collected, accounts_failed, backfill_totals = _collect_all_account_candidates_parallel(
+        (
+            collected,
+            accounts_failed,
+            accounts_auth_skipped,
+            backfill_totals,
+        ) = _collect_all_account_candidates_parallel(
             sessions=sessions,
             page_size=page_size,
             product_types=product_types,
@@ -1586,7 +1669,12 @@ def process_all_accounts(
             max_workers=max_workers,
         )
     else:
-        collected, accounts_failed, backfill_totals = _collect_all_account_candidates_sequential(
+        (
+            collected,
+            accounts_failed,
+            accounts_auth_skipped,
+            backfill_totals,
+        ) = _collect_all_account_candidates_sequential(
             sessions=sessions,
             page_size=page_size,
             product_types=product_types,
@@ -1610,6 +1698,7 @@ def process_all_accounts(
             accounts_folders_count=accounts_folders_count,
             accounts_processed=len(collected),
             accounts_failed=accounts_failed,
+            accounts_auth_skipped=accounts_auth_skipped,
             total_candidates=total_candidates,
             total_activated=0,
             total_failed=0,
@@ -1626,6 +1715,7 @@ def process_all_accounts(
             accounts_folders_count=accounts_folders_count,
             accounts_processed=len(collected),
             accounts_failed=accounts_failed,
+            accounts_auth_skipped=accounts_auth_skipped,
             total_candidates=total_candidates,
             total_activated=0,
             total_failed=0,
@@ -1643,6 +1733,7 @@ def process_all_accounts(
             accounts_folders_count=accounts_folders_count,
             accounts_processed=len(collected),
             accounts_failed=accounts_failed,
+            accounts_auth_skipped=accounts_auth_skipped,
             total_candidates=total_candidates,
             total_activated=0,
             total_failed=0,
@@ -1791,6 +1882,7 @@ def process_all_accounts(
         accounts_folders_count=accounts_folders_count,
         accounts_processed=len(collected),
         accounts_failed=accounts_failed,
+        accounts_auth_skipped=accounts_auth_skipped,
         total_candidates=total_candidates,
         total_activated=total_activated,
         total_failed=total_failed,
