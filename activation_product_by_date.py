@@ -466,6 +466,27 @@ def _load_missing_telegram_date_rows_for_product_ids(
     *,
     limit: int,
 ) -> list[dict[str, object]]:
+    return _load_telegram_date_rows_for_product_ids(
+        product_ids,
+        limit=limit,
+        missing_only=True,
+    )
+
+
+def _iter_chunks(items: list[str], chunk_size: int) -> list[list[str]]:
+    normalized_chunk_size = max(int(chunk_size), 1)
+    return [
+        items[index : index + normalized_chunk_size]
+        for index in range(0, len(items), normalized_chunk_size)
+    ]
+
+
+def _load_telegram_date_rows_for_product_ids(
+    product_ids: list[str],
+    *,
+    limit: int,
+    missing_only: bool = False,
+) -> list[dict[str, object]]:
     normalized_ids = [
         str(product_id or "").strip()
         for product_id in product_ids
@@ -477,15 +498,27 @@ def _load_missing_telegram_date_rows_for_product_ids(
     if not telegram_db_path.exists():
         return []
     account_id = _current_account_id()
-    placeholders = ",".join(["?"] * len(normalized_ids))
     row_limit = max(int(limit), 1)
+    missing_condition = """
+              AND (
+                    telegram_message_date IS NULL
+                    OR TRIM(telegram_message_date) = ''
+              )
+    """ if missing_only else ""
+    account_order = "CASE WHEN account_id = ? THEN 0 ELSE 1 END," if account_id else ""
+    account_order_params = (account_id,) if account_id else ()
+    selected: list[dict[str, object]] = []
+    selected_product_ids: set[str] = set()
     with _connect_sqlite(telegram_db_path) as conn:
         table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telegram_products'"
         ).fetchone()
         if table is None:
             return []
-        if account_id:
+        for id_chunk in _iter_chunks(list(dict.fromkeys(normalized_ids)), 800):
+            if len(selected) >= row_limit:
+                break
+            placeholders = ",".join(["?"] * len(id_chunk))
             rows = conn.execute(
                 f"""
                 SELECT
@@ -495,50 +528,35 @@ def _load_missing_telegram_date_rows_for_product_ids(
                     created_product_id,
                     telegram_message_date
                 FROM telegram_products
-                WHERE account_id = ?
-                  AND created_product_id IN ({placeholders})
+                WHERE created_product_id IN ({placeholders})
                   AND status = 'created'
                   AND created = 1
                   AND created_product_id IS NOT NULL
                   AND TRIM(created_product_id) != ''
                   AND created_product_id NOT LIKE 'SKIPPED_%'
-                  AND (
-                        telegram_message_date IS NULL
-                        OR TRIM(telegram_message_date) = ''
-                  )
-                ORDER BY channel_id ASC, message_id ASC
-                LIMIT ?
+                  {missing_condition}
+                ORDER BY
+                    {account_order}
+                    CASE
+                        WHEN telegram_message_date IS NOT NULL
+                         AND TRIM(telegram_message_date) != '' THEN 0
+                        ELSE 1
+                    END,
+                    updated_at DESC,
+                    channel_id ASC,
+                    message_id ASC
                 """,
-                (account_id, *normalized_ids, row_limit),
+                (*id_chunk, *account_order_params),
             ).fetchall()
-            if rows:
-                return [dict(row) for row in rows]
-        rows = conn.execute(
-            f"""
-            SELECT
-                account_id,
-                channel_id,
-                message_id,
-                created_product_id,
-                telegram_message_date
-            FROM telegram_products
-            WHERE created_product_id IN ({placeholders})
-              AND status = 'created'
-              AND created = 1
-              AND created_product_id IS NOT NULL
-              AND TRIM(created_product_id) != ''
-              AND created_product_id NOT LIKE 'SKIPPED_%'
-              AND (
-                    telegram_message_date IS NULL
-                    OR TRIM(telegram_message_date) = ''
-              )
-            GROUP BY created_product_id
-            ORDER BY channel_id ASC, message_id ASC
-            LIMIT ?
-            """,
-            (*normalized_ids, row_limit),
-        ).fetchall()
-    return [dict(row) for row in rows]
+            for row in rows:
+                product_id = str(row["created_product_id"] or "").strip()
+                if not product_id or product_id in selected_product_ids:
+                    continue
+                selected_product_ids.add(product_id)
+                selected.append(dict(row))
+                if len(selected) >= row_limit:
+                    break
+    return selected
 
 
 def _count_telegram_rows_for_product_ids(product_ids: list[str]) -> int:
@@ -674,14 +692,6 @@ def _update_telegram_message_date(
     return bool(cursor.rowcount)
 
 
-def _telegram_date_backfill_row_key(row: dict[str, object]) -> tuple[str, int, int]:
-    return (
-        str(row.get("account_id") or ""),
-        int(row.get("channel_id") or 0),
-        int(row.get("message_id") or 0),
-    )
-
-
 async def _backfill_telegram_message_dates_from_telegram_async(
     rows: list[dict[str, object]],
 ) -> dict[str, int]:
@@ -770,6 +780,7 @@ def backfill_missing_telegram_message_dates_for_product_ids(
     batch_size: int = DEFAULT_TELEGRAM_DATE_BACKFILL_BATCH_SIZE,
     sleep_min_seconds: float = 30.0,
     sleep_max_seconds: float = 60.0,
+    refresh_existing: bool = True,
 ) -> dict[str, int]:
     total_limit = max(int(limit), 0)
     if total_limit <= 0:
@@ -781,55 +792,39 @@ def backfill_missing_telegram_message_dates_for_product_ids(
     checked = 0
     updated = 0
     failed = 0
+    rows_to_refresh = _load_telegram_date_rows_for_product_ids(
+        product_ids,
+        limit=total_limit,
+        missing_only=not refresh_existing,
+    )
+    if not rows_to_refresh:
+        return {"checked": 0, "updated": 0, "failed": 0}
+
     batch_index = 0
-    attempted_keys: set[tuple[str, int, int]] = set()
-    while checked < total_limit:
-        remaining = total_limit - checked
-        rows = _load_missing_telegram_date_rows_for_product_ids(
-            product_ids,
-            limit=min(normalized_batch_size, remaining),
-        )
-        rows = [
-            row
-            for row in rows
-            if _telegram_date_backfill_row_key(row) not in attempted_keys
-        ]
-        if not rows:
-            break
-        for row in rows:
-            attempted_keys.add(_telegram_date_backfill_row_key(row))
+    for offset in range(0, len(rows_to_refresh), normalized_batch_size):
+        rows = rows_to_refresh[offset : offset + normalized_batch_size]
         batch_index += 1
         print(
-            "Telegram date backfill batch start: "
+            "Telegram date refresh batch start: "
             f"batch={batch_index} size={len(rows)} "
-            f"checked_so_far={checked} total_limit={total_limit}."
+            f"checked_so_far={checked} total_rows={len(rows_to_refresh)} "
+            f"refresh_existing={str(refresh_existing).lower()}."
         )
         result = asyncio.run(_backfill_telegram_message_dates_from_telegram_async(rows))
         checked += len(rows)
         updated += int(result["updated"])
         failed += int(result["failed"])
         print(
-            "Telegram date backfill batch done: "
+            "Telegram date refresh batch done: "
             f"batch={batch_index} checked={len(rows)} "
             f"updated={int(result['updated'])} failed={int(result['failed'])}."
         )
-        if checked >= total_limit:
-            break
-        next_rows = _load_missing_telegram_date_rows_for_product_ids(
-            product_ids,
-            limit=1,
-        )
-        next_rows = [
-            row
-            for row in next_rows
-            if _telegram_date_backfill_row_key(row) not in attempted_keys
-        ]
-        if not next_rows:
+        if offset + normalized_batch_size >= len(rows_to_refresh):
             break
         delay = random.uniform(sleep_min, sleep_max)
         if delay > 0:
             print(
-                "Telegram date backfill sleeping before next batch: "
+                "Telegram date refresh sleeping before next batch: "
                 f"{delay:.1f} seconds."
             )
             time.sleep(delay)
@@ -966,20 +961,20 @@ def select_product_for_activation_by_telegram_identity(
             f"account_id={_current_account_id() or 'unknown'}"
         )
         return None
-    if parse_telegram_datetime(telegram_row["telegram_message_date"]) is None:
-        backfill_missing_telegram_message_dates_for_product_ids(
-            [str(telegram_row["created_product_id"])],
-            limit=1,
-            batch_size=telegram_date_backfill_batch_size,
-            sleep_min_seconds=telegram_date_backfill_sleep_min_seconds,
-            sleep_max_seconds=telegram_date_backfill_sleep_max_seconds,
-        )
-        telegram_row = _load_telegram_row_for_identity(
-            telegram_id=int(telegram_id),
-            message_id=int(message_id),
-        )
-        if telegram_row is None:
-            return None
+    backfill_missing_telegram_message_dates_for_product_ids(
+        [str(telegram_row["created_product_id"])],
+        limit=1,
+        batch_size=telegram_date_backfill_batch_size,
+        sleep_min_seconds=telegram_date_backfill_sleep_min_seconds,
+        sleep_max_seconds=telegram_date_backfill_sleep_max_seconds,
+        refresh_existing=True,
+    )
+    telegram_row = _load_telegram_row_for_identity(
+        telegram_id=int(telegram_id),
+        message_id=int(message_id),
+    )
+    if telegram_row is None:
+        return None
     return _candidate_from_telegram_row(
         telegram_row,
         today=today or date.today(),
@@ -1000,25 +995,14 @@ def _candidate_from_product(
 
     telegram_row = _load_telegram_row_for_product(product_id)
     age_source = "telegram_message_date"
-    channel_id = None
-    message_id = None
-    if telegram_row is not None:
-        telegram_datetime = parse_telegram_datetime(telegram_row["telegram_message_date"])
-        if telegram_datetime is None:
-            return None
-        telegram_date = telegram_datetime.date()
-        channel_id = int(telegram_row["channel_id"])
-        message_id = int(telegram_row["message_id"])
-    else:
-        fallback_datetime = parse_telegram_datetime(
-            product.get("_account_db_created_at")
-            or _row_value(uploaded_row, "shafa_created_at")
-            or _row_value(uploaded_row, "created_at")
-        )
-        if fallback_datetime is None:
-            return None
-        telegram_date = fallback_datetime.date()
-        age_source = "account_db_created_at"
+    if telegram_row is None:
+        return None
+    telegram_datetime = parse_telegram_datetime(telegram_row["telegram_message_date"])
+    if telegram_datetime is None:
+        return None
+    telegram_date = telegram_datetime.date()
+    channel_id = int(telegram_row["channel_id"])
+    message_id = int(telegram_row["message_id"])
 
     age_days = (today - telegram_date).days
     if age_days < 0 or age_days > max_age_days:
@@ -1440,16 +1424,17 @@ def collect_current_account_candidates(
                 batch_size=telegram_date_backfill_batch_size,
                 sleep_min_seconds=telegram_date_backfill_sleep_min_seconds,
                 sleep_max_seconds=telegram_date_backfill_sleep_max_seconds,
+                refresh_existing=True,
             )
         except Exception as exc:
-            print(f"WARN: Telegram date backfill failed: {exc}")
+            print(f"WARN: Telegram date refresh failed: {exc}")
         else:
             stats["date_backfill_checked"] += int(backfill_result["checked"])
             stats["date_loaded_from_telegram"] += int(backfill_result["updated"])
             stats["date_load_failed"] += int(backfill_result["failed"])
             if backfill_result["checked"]:
                 print(
-                    "Telegram date backfill: "
+                    "Telegram date refresh: "
                     f"checked={backfill_result['checked']} "
                     f"updated={backfill_result['updated']} "
                     f"failed={backfill_result['failed']}."
@@ -1462,7 +1447,7 @@ def collect_current_account_candidates(
     )
     print(
         f"Загружено неактивных товаров Shafa: {len(shafa_products)}. "
-        f"Кандидатов младше {max_age_days} дней по Telegram/account DB: "
+        f"Кандидатов младше {max_age_days} дней по Telegram: "
         f"{len(candidates)}."
     )
     return candidates
@@ -1504,7 +1489,7 @@ def process_current_account(
         )
     else:
         print(
-            f"Кандидатов младше {max_age_days} дней по Telegram/account DB: "
+            f"Кандидатов младше {max_age_days} дней по Telegram: "
             f"{len(candidates)}."
         )
 
@@ -2194,27 +2179,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_TELEGRAM_DATE_BACKFILL_LIMIT,
         help=(
-            "Общий лимит товаров без telegram_message_date, которые добираются из Telegram "
-            "перед расчётом возраста. 0 отключает backfill."
+            "Общий лимит товаров, для которых дата сообщения refresh-ится из Telegram "
+            "перед расчётом возраста. 0 отключает Telegram refresh."
         ),
     )
     parser.add_argument(
         "--telegram-date-backfill-batch-size",
         type=int,
         default=DEFAULT_TELEGRAM_DATE_BACKFILL_BATCH_SIZE,
-        help="Размер одной партии Telegram date backfill.",
+        help="Размер одной партии Telegram date refresh.",
     )
     parser.add_argument(
         "--telegram-date-backfill-sleep-min",
         type=float,
         default=30.0,
-        help="Минимальная пауза между партиями Telegram date backfill.",
+        help="Минимальная пауза между партиями Telegram date refresh.",
     )
     parser.add_argument(
         "--telegram-date-backfill-sleep-max",
         type=float,
         default=60.0,
-        help="Максимальная пауза между партиями Telegram date backfill.",
+        help="Максимальная пауза между партиями Telegram date refresh.",
     )
     parser.add_argument(
         "--clear-telegram-dates-limit",

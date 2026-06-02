@@ -24,6 +24,7 @@ from activation_product_by_date import (
     DEFAULT_MAX_ACCOUNT_WORKERS,
     DEFAULT_TELEGRAM_DATE_BACKFILL_LIMIT,
     _default_shared_telegram_db_path,
+    _load_telegram_date_rows_for_product_ids,
     activate_candidates,
     backfill_missing_telegram_message_dates_for_product_ids,
     build_arg_parser,
@@ -184,7 +185,7 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual(candidates[0].age_source, "telegram_message_date")
         self.assertEqual(candidates[1].telegram_age_days, 183)
 
-    def test_select_products_uses_account_db_created_at_when_telegram_mapping_missing(self) -> None:
+    def test_select_products_requires_telegram_mapping_even_when_account_db_date_exists(self) -> None:
         today = date(2026, 6, 2)
         with tempfile.TemporaryDirectory() as raw_dir:
             account_db = Path(raw_dir) / "shafa.sqlite3"
@@ -261,11 +262,7 @@ class ActivationProductByDateTests(unittest.TestCase):
                 )
 
         self.assertEqual([product["id"] for product in products], ["202", "201"])
-        self.assertEqual([candidate.product_id for candidate in candidates], ["201"])
-        self.assertEqual(candidates[0].telegram_age_days, 25)
-        self.assertEqual(candidates[0].age_source, "account_db_created_at")
-        self.assertIsNone(candidates[0].channel_id)
-        self.assertIsNone(candidates[0].message_id)
+        self.assertEqual(candidates, [])
 
     def test_collection_backfills_missing_telegram_date_by_created_product_id(self) -> None:
         today = date(2026, 6, 2)
@@ -457,18 +454,22 @@ class ActivationProductByDateTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                exact = select_product_for_activation_by_telegram_identity(
-                    11,
-                    504,
-                    today=today,
-                    max_age_days=183,
-                )
-                too_old = select_product_for_activation_by_telegram_identity(
-                    11,
-                    505,
-                    today=today,
-                    max_age_days=183,
-                )
+                with patch(
+                    "activation_product_by_date.backfill_missing_telegram_message_dates_for_product_ids",
+                    return_value={"checked": 1, "updated": 1, "failed": 0},
+                ):
+                    exact = select_product_for_activation_by_telegram_identity(
+                        11,
+                        504,
+                        today=today,
+                        max_age_days=183,
+                    )
+                    too_old = select_product_for_activation_by_telegram_identity(
+                        11,
+                        505,
+                        today=today,
+                        max_age_days=183,
+                    )
 
         self.assertIsNotNone(exact)
         self.assertEqual(exact.product_id, "104")
@@ -578,16 +579,45 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual(cleared, 2)
         self.assertEqual(missing_count, 2)
 
+    def test_load_telegram_date_rows_can_refresh_existing_dates(self) -> None:
+        today = date(2026, 6, 2)
+        with tempfile.TemporaryDirectory() as raw_dir:
+            telegram_db = Path(raw_dir) / "telegram_feed.sqlite3"
+            self._create_telegram_db(telegram_db, today)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "SHAFA_ACCOUNT_ID": "acc-1",
+                    "SHAFA_SHARED_TELEGRAM_DB_PATH": str(telegram_db),
+                },
+                clear=True,
+            ):
+                refresh_rows = _load_telegram_date_rows_for_product_ids(
+                    ["101"],
+                    limit=10,
+                    missing_only=False,
+                )
+                missing_rows = _load_telegram_date_rows_for_product_ids(
+                    ["101"],
+                    limit=10,
+                    missing_only=True,
+                )
+
+        self.assertEqual(len(refresh_rows), 1)
+        self.assertEqual(str(refresh_rows[0]["created_product_id"]), "101")
+        self.assertEqual(refresh_rows[0]["channel_id"], 11)
+        self.assertEqual(missing_rows, [])
+
     def test_backfill_missing_dates_batches_and_sleeps_between_batches(self) -> None:
         with patch(
-            "activation_product_by_date._load_missing_telegram_date_rows_for_product_ids",
-            side_effect=[
-                [{"message_id": 1}, {"message_id": 2}],
-                [{"message_id": 3}],
-                [{"message_id": 3}],
-                [],
+            "activation_product_by_date._load_telegram_date_rows_for_product_ids",
+            return_value=[
+                {"account_id": "acc-1", "channel_id": 11, "message_id": 1},
+                {"account_id": "acc-1", "channel_id": 11, "message_id": 2},
+                {"account_id": "acc-1", "channel_id": 11, "message_id": 3},
             ],
-        ) as load_missing:
+        ) as load_rows:
             with patch(
                 "activation_product_by_date._backfill_telegram_message_dates_from_telegram_async",
                 side_effect=[
@@ -607,7 +637,11 @@ class ActivationProductByDateTests(unittest.TestCase):
                             )
 
         self.assertEqual(result, {"checked": 3, "updated": 2, "failed": 1})
-        self.assertEqual(load_missing.call_count, 3)
+        load_rows.assert_called_once_with(
+            ["101", "102", "103"],
+            limit=3,
+            missing_only=False,
+        )
         uniform.assert_called_once_with(30.0, 60.0)
         sleep.assert_not_called()
 
