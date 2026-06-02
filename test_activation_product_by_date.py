@@ -505,6 +505,29 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual(activated, ["101"])
         self.assertEqual(marked, [("101", "Активно")])
 
+    def test_activate_candidates_can_emit_live_logs_through_callback(self) -> None:
+        candidates = [
+            ActivationCandidate("101", "Fresh", date(2026, 3, 1), 94),
+        ]
+        logs = []
+
+        with redirect_stdout(StringIO()) as stdout:
+            result = activate_candidates(
+                candidates,
+                activate_func=lambda product_id: None,
+                mark_active_func=lambda product_id, *, status_title: True,
+                sleep_min_seconds=0,
+                sleep_max_seconds=0,
+                account_name="Account 1",
+                log_func=logs.append,
+            )
+
+        self.assertEqual(result, {"activated": 1, "failed": 0, "mark_failed": 0})
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertTrue(any("First activation attempt" in line for line in logs))
+        self.assertTrue(any("Activating 101" in line for line in logs))
+        self.assertTrue(any("OK 101" in line for line in logs))
+
     def test_mark_uploaded_product_active_updates_account_db(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             account_db = Path(raw_dir) / "shafa.sqlite3"

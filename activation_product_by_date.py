@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import concurrent.futures
+import multiprocessing
+import queue
 from contextlib import redirect_stdout
 from io import StringIO
 import json
@@ -1230,6 +1232,7 @@ def activate_candidates(
     account_name: str = "",
     progress_every: int = 1,
     verify_activation_flow: bool = False,
+    log_func: Optional[Callable[[str], None]] = None,
 ) -> dict[str, int]:
     if activate_func is None and not verify_activation_flow:
         activate_func = activate_product
@@ -1245,10 +1248,15 @@ def activate_candidates(
     progress_account_name = str(account_name or os.getenv("SHAFA_ACCOUNT_NAME") or "").strip()
     progress_prefix = f"[{progress_account_name}] " if progress_account_name else ""
 
+    def _log(message: str) -> None:
+        if log_func is not None:
+            log_func(message)
+        else:
+            print(message, flush=True)
+
     if candidates:
-        print(
+        _log(
             f"First activation attempt for account {progress_account_name or 'current'}",
-            flush=True,
         )
 
     for index, candidate in enumerate(candidates, start=1):
@@ -1258,10 +1266,9 @@ def activate_candidates(
             or index % normalized_progress_every == 0
         )
         if should_print_progress:
-            print(
+            _log(
                 f"{progress_prefix}[{index}/{len(candidates)}] "
                 f"Activating {candidate.product_id} | {candidate.name}",
-                flush=True,
             )
         success = False
         try:
@@ -1273,7 +1280,7 @@ def activate_candidates(
                 activate_func(candidate.product_id)
         except Exception as exc:
             failed += 1
-            print(f"{progress_prefix}ERROR {candidate.product_id}: {exc}", flush=True)
+            _log(f"{progress_prefix}ERROR {candidate.product_id}: {exc}")
         else:
             activated += 1
             if not verify_activation_flow:
@@ -1283,16 +1290,15 @@ def activate_candidates(
                     mark_active_func(candidate.product_id, status_title="Активно")
                 except Exception as exc:
                     mark_failed += 1
-                    print(
+                    _log(
                         f"{progress_prefix}WARN {candidate.product_id}: "
                         f"товар активирован, но локальная БД не обновлена: {exc}",
-                        flush=True,
                     )
                 else:
                     if should_print_progress:
-                        print(f"{progress_prefix}OK {candidate.product_id}", flush=True)
+                        _log(f"{progress_prefix}OK {candidate.product_id}")
             elif should_print_progress:
-                print(f"{progress_prefix}OK simulated {candidate.product_id}", flush=True)
+                _log(f"{progress_prefix}OK simulated {candidate.product_id}")
             success = True
 
         if on_candidate_processed is not None:
@@ -1301,9 +1307,8 @@ def activate_candidates(
         if index < len(candidates):
             delay = 0.1 if verify_activation_flow else random.uniform(sleep_min, sleep_max)
             if should_print_progress:
-                print(
+                _log(
                     f"{progress_prefix}Sleeping {delay:.1f} seconds before next product",
-                    flush=True,
                 )
             time.sleep(delay)
 
@@ -1332,6 +1337,25 @@ def _empty_backfill_stats() -> dict[str, int]:
 def _add_backfill_stats(target: dict[str, int], source: dict[str, int]) -> None:
     for key in _empty_backfill_stats():
         target[key] = int(target.get(key, 0)) + int(source.get(key, 0))
+
+
+def _emit_live_log(message: str, log_queue: object = None) -> None:
+    if log_queue is not None:
+        try:
+            log_queue.put(str(message))
+            return
+        except Exception:
+            pass
+    print(str(message), flush=True)
+
+
+def _drain_live_log_queue(log_queue: object) -> None:
+    while True:
+        try:
+            message = log_queue.get_nowait()
+        except queue.Empty:
+            break
+        print(str(message), flush=True)
 
 
 def _is_shafa_auth_error_message(message: object) -> bool:
@@ -1462,6 +1486,7 @@ def process_current_account(
     progress_every: int = 1,
     verify_activation_flow: bool = False,
     print_candidate_list: bool = True,
+    live_log_func: Optional[Callable[[str], None]] = None,
 ) -> dict[str, int]:
     backfill_stats = _empty_backfill_stats()
     if candidates is None:
@@ -1518,6 +1543,7 @@ def process_current_account(
         account_name=account_name,
         progress_every=progress_every,
         verify_activation_flow=verify_activation_flow,
+        log_func=live_log_func,
     )
     print(
         "Готово. "
@@ -1628,6 +1654,7 @@ def process_account_worker(
     candidates_data: list[dict[str, object]],
     progress_every: int,
     verify_activation_flow: bool,
+    log_queue: object = None,
 ) -> dict[str, object]:
     processed_count = 0
     try:
@@ -1639,9 +1666,9 @@ def process_account_worker(
         ]
         if verify_activation_flow:
             candidates = candidates[:3]
-        print(
-            f"Worker started for account {session.name} with {len(candidates)} candidates",
-            flush=True,
+        _emit_live_log(
+            f"[{session.name}] Worker started with {len(candidates)} candidates",
+            log_queue,
         )
 
         def _count_processed(
@@ -1670,17 +1697,18 @@ def process_account_worker(
             progress_every=progress_every,
             verify_activation_flow=verify_activation_flow,
             print_candidate_list=False,
+            live_log_func=lambda message: _emit_live_log(message, log_queue),
         )
-        print(
+        _emit_live_log(
             f"Worker finished for account {session.name}: "
             f"activated={result['activated']} "
             f"failed={result['failed']} mark_failed={result['mark_failed']}",
-            flush=True,
+            log_queue,
         )
     except Exception as exc:
-        print(
+        _emit_live_log(
             f"Worker failed for account {session_data.get('name')}: {exc}",
-            flush=True,
+            log_queue,
         )
         return {
             "ok": False,
@@ -1998,75 +2026,89 @@ def process_all_accounts(
             concurrent.futures.Future,
             tuple[int, AccountSession],
         ] = {}
-        with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
-            for index, (session, candidates) in enumerate(collected, start=1):
-                submitted_count = min(len(candidates), 3) if verify_activation_flow else len(candidates)
-                print(
-                    f"Submitting account {session.name} with {submitted_count} candidates",
-                    flush=True,
-                )
-                future = executor.submit(
-                    process_account_worker,
-                    _session_to_data(session),
-                    page_size,
-                    sleep_min_seconds,
-                    sleep_max_seconds,
-                    product_types,
-                    max_age_days,
-                    telegram_date_backfill_limit,
-                    telegram_date_backfill_batch_size,
-                    telegram_date_backfill_sleep_min_seconds,
-                    telegram_date_backfill_sleep_max_seconds,
-                    clear_telegram_dates_limit,
-                    [_candidate_to_data(candidate) for candidate in candidates],
-                    progress_every,
-                    verify_activation_flow,
-                )
-                future_to_session[future] = (index, session)
+        with multiprocessing.Manager() as manager:
+            live_log_queue = manager.Queue()
+            with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
+                for index, (session, candidates) in enumerate(collected, start=1):
+                    submitted_count = min(len(candidates), 3) if verify_activation_flow else len(candidates)
+                    print(
+                        f"Submitting account {session.name} with {submitted_count} candidates",
+                        flush=True,
+                    )
+                    future = executor.submit(
+                        process_account_worker,
+                        _session_to_data(session),
+                        page_size,
+                        sleep_min_seconds,
+                        sleep_max_seconds,
+                        product_types,
+                        max_age_days,
+                        telegram_date_backfill_limit,
+                        telegram_date_backfill_batch_size,
+                        telegram_date_backfill_sleep_min_seconds,
+                        telegram_date_backfill_sleep_max_seconds,
+                        clear_telegram_dates_limit,
+                        [_candidate_to_data(candidate) for candidate in candidates],
+                        progress_every,
+                        verify_activation_flow,
+                        live_log_queue,
+                    )
+                    future_to_session[future] = (index, session)
 
-            for future in concurrent.futures.as_completed(future_to_session):
-                index, session = future_to_session[future]
-                completed_accounts += 1
-                _print_account_header(
-                    index,
-                    len(collected),
-                    session,
-                    phase="activation",
-                )
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    accounts_failed += 1
-                    remaining = max(total_candidates - processed_candidates, 0)
-                    print(f"ERROR: account failed: {exc}")
-                    continue
+                while future_to_session:
+                    done, _ = concurrent.futures.wait(
+                        future_to_session,
+                        timeout=0.5,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    _drain_live_log_queue(live_log_queue)
+                    if not done:
+                        continue
+                    for future in done:
+                        index, session = future_to_session.pop(future)
+                        completed_accounts += 1
+                        _print_account_header(
+                            index,
+                            len(collected),
+                            session,
+                            phase="activation",
+                        )
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            accounts_failed += 1
+                            remaining = max(total_candidates - processed_candidates, 0)
+                            print(f"ERROR: account failed: {exc}", flush=True)
+                            continue
 
-                processed_count = int(result.get("processed_count") or 0)
-                processed_candidates += processed_count
-                if not result.get("ok"):
-                    accounts_failed += 1
-                    remaining = max(total_candidates - processed_candidates, 0)
-                    print(f"ERROR: account failed: {result.get('error')}")
-                    continue
+                        processed_count = int(result.get("processed_count") or 0)
+                        processed_candidates += processed_count
+                        if not result.get("ok"):
+                            accounts_failed += 1
+                            remaining = max(total_candidates - processed_candidates, 0)
+                            print(f"ERROR: account failed: {result.get('error')}", flush=True)
+                            continue
 
-                total_activated += int(result.get("activated") or 0)
-                total_failed += int(result.get("failed") or 0)
-                total_mark_failed += int(result.get("mark_failed") or 0)
-                backfill_totals["date_backfill_checked"] += int(
-                    result.get("date_backfill_checked") or 0
-                )
-                backfill_totals["date_loaded_from_telegram"] += int(
-                    result.get("date_loaded_from_telegram") or 0
-                )
-                backfill_totals["date_load_failed"] += int(
-                    result.get("date_load_failed") or 0
-                )
-                remaining = max(total_candidates - processed_candidates, 0)
-                print(
-                    "Глобально обработано аккаунтов: "
-                    f"{completed_accounts}/{len(collected)}. "
-                    f"Осталось товаров примерно: {remaining}"
-                )
+                        total_activated += int(result.get("activated") or 0)
+                        total_failed += int(result.get("failed") or 0)
+                        total_mark_failed += int(result.get("mark_failed") or 0)
+                        backfill_totals["date_backfill_checked"] += int(
+                            result.get("date_backfill_checked") or 0
+                        )
+                        backfill_totals["date_loaded_from_telegram"] += int(
+                            result.get("date_loaded_from_telegram") or 0
+                        )
+                        backfill_totals["date_load_failed"] += int(
+                            result.get("date_load_failed") or 0
+                        )
+                        remaining = max(total_candidates - processed_candidates, 0)
+                        print(
+                            "Глобально обработано аккаунтов: "
+                            f"{completed_accounts}/{len(collected)}. "
+                            f"Осталось товаров примерно: {remaining}",
+                            flush=True,
+                        )
+                _drain_live_log_queue(live_log_queue)
     else:
         for index, (session, candidates) in enumerate(collected, start=1):
             _print_account_header(index, len(collected), session, phase="activation")
