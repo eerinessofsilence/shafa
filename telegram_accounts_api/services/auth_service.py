@@ -431,7 +431,7 @@ class AccountAuthService:
             if not self.store.is_valid_shafa_session(account):
                 auth_path.unlink(missing_ok=True)
                 log(account_id, "WARNING", "Rejected Shafa cookies: valid session cookie was not found.")
-                raise BadRequestError("Cookies Shafa должны содержать непустой csrftoken для shafa.ua.")
+                raise BadRequestError("Cookies Shafa должны содержать непустой csrftoken или shafa_csrftoken для shafa.ua.")
             self.store.write_account_manifest(account)
             log(account_id, "INFO", "Shafa session saved.")
             return await self.get_shafa_status(account_id)
@@ -649,7 +649,7 @@ class AccountAuthService:
     ) -> dict[str, Any]:
         csrftoken = self._get_csrftoken_from_cookies(cookies)
         if not csrftoken:
-            raise BadRequestError("Cookies Shafa должны содержать csrftoken.")
+            raise BadRequestError("Cookies Shafa должны содержать csrftoken или shafa_csrftoken.")
 
         payload = json.dumps(
             [
@@ -779,7 +779,7 @@ class AccountAuthService:
     def _get_csrftoken_from_cookies(cookies: list[dict[str, Any]]) -> str:
         for cookie in cookies:
             name = str(cookie.get("name") or "").strip()
-            if name == "csrftoken":
+            if name in {"csrftoken", "shafa_csrftoken"}:
                 return str(cookie.get("value") or "").strip()
         return ""
 

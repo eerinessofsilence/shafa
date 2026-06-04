@@ -386,7 +386,7 @@ class AccountSessionStore:
                 continue
             if AccountSessionStore._is_allowed_shafa_domain(domain):
                 has_shafa_cookie = True
-                if name == "csrftoken":
+                if name in {"csrftoken", "shafa_csrftoken"}:
                     value = cookie.get("value")
                     if isinstance(value, str) and value.strip():
                         has_csrftoken = True

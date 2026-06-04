@@ -87,7 +87,7 @@ def _load_storage_cookies(auth_path: Path) -> list[dict[str, Any]]:
 
 def _csrftoken(cookies: list[dict[str, Any]]) -> str:
     for cookie in cookies:
-        if str(cookie.get("name") or "").strip() == "csrftoken":
+        if str(cookie.get("name") or "").strip() in {"csrftoken", "shafa_csrftoken"}:
             return str(cookie.get("value") or "").strip()
     return ""
 

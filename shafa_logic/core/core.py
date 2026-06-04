@@ -22,7 +22,14 @@ def base_headers(csrftoken: str) -> dict:
 
 def get_csrftoken_from_context(ctx: BrowserContext) -> Optional[str]:
     cookies = ctx.cookies(ORIGIN_URL)
-    return next((c["value"] for c in cookies if c["name"] == "csrftoken"), None)
+    return next(
+        (
+            c["value"]
+            for c in cookies
+            if c.get("name") in {"csrftoken", "shafa_csrftoken"}
+        ),
+        None,
+    )
 
 
 def read_response_json(resp, preview: int = 2000) -> dict:

@@ -204,6 +204,12 @@ def test_session_store_rejects_shafa_session_without_shafa_csrftoken(tmp_path: P
     )
     assert store.is_valid_shafa_session(account) is False
 
+    store.auth_file(account).write_text(
+        '{"cookies":[{"name":"shafa_csrftoken","value":"token","domain":"shafa.ua"}]}',
+        encoding="utf-8",
+    )
+    assert store.is_valid_shafa_session(account) is True
+
 
 def test_session_store_persists_telegram_credentials_in_env_file(tmp_path: Path) -> None:
     store = AccountSessionStore(

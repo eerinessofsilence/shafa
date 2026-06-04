@@ -399,12 +399,12 @@ def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
             json={
                 "cookies": [
                     {
-                        "name": "csrftoken",
+                        "name": "shafa_csrftoken",
                         "value": "token-123",
                         "secure": True,
                     },
                     {
-                        "name": "sessionid",
+                        "name": "shafa_sessionid",
                         "value": "session-456",
                         "domain": ".shafa.ua",
                     },
@@ -417,7 +417,7 @@ def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
     account = Account(id=account_id, name="Shafa", path="/tmp/project")
     saved_state = json.loads(store.auth_file(account).read_text(encoding="utf-8"))
     assert saved_state["cookies"][0]["domain"] == ".shafa.ua"
-    assert saved_state["cookies"][0]["name"] == "csrftoken"
+    assert saved_state["cookies"][0]["name"] == "shafa_csrftoken"
     assert store.is_valid_shafa_session(account) is True
 
 

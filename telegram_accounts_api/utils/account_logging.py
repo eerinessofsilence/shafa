@@ -16,7 +16,7 @@ _MAX_LOG_ENTRIES_PER_ACCOUNT = 1000
 _ACCOUNT_LOGGER_NAME = "telegram_accounts_api.account"
 _HANDLER_NAME = "telegram_accounts_api.account_log_handler"
 _SENSITIVE_VALUE_PATTERNS = (
-    re.compile(r"(?i)\b(password|api_hash|token|sessionid|csrftoken|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)"),
+    re.compile(r"(?i)\b(password|api_hash|token|sessionid|csrftoken|shafa_sessionid|shafa_csrftoken|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)"),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+"),
 )
 _ANSI_ESCAPE_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")

@@ -235,7 +235,7 @@ def _build_cookie_header(cookies: list[dict]) -> str:
 
 def _get_csrftoken_from_cookies(cookies: list[dict]) -> Optional[str]:
     for cookie in cookies:
-        if cookie.get("name") == "csrftoken":
+        if cookie.get("name") in {"csrftoken", "shafa_csrftoken"}:
             return cookie.get("value")
     return None
 

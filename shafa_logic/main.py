@@ -713,7 +713,7 @@ def _shafa_csrftoken(cookies: list[dict]) -> str:
     for cookie in cookies:
         if not isinstance(cookie, dict):
             continue
-        if str(cookie.get("name") or "").strip() == "csrftoken":
+        if str(cookie.get("name") or "").strip() in {"csrftoken", "shafa_csrftoken"}:
             return str(cookie.get("value") or "").strip()
     return ""
 
