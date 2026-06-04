@@ -134,7 +134,13 @@ type TelegramChannelDraft = Pick<TelegramChannel, 'handle'>;
 type ActionTone = ButtonTone;
 type AccountEditableField = 'name' | 'path' | 'timer' | 'markup' | 'proxyId';
 type AccountDraft = Pick<AccountRow, AccountEditableField>;
-type AccountSortField = 'name' | 'timer' | 'channels' | 'status' | 'errors';
+type AccountSortField =
+  | 'name'
+  | 'timer'
+  | 'channels'
+  | 'sessions'
+  | 'status'
+  | 'errors';
 type AccountSortDirection = 'asc' | 'desc';
 type AccountBulkActionId = 'open' | 'close' | 'delete';
 type PaginationEllipsisKey = 'left' | 'right';
@@ -150,6 +156,7 @@ const accountTableHeaders: Array<{
   { id: 'name', label: 'Имя' },
   { id: 'timer', label: 'Таймер' },
   { id: 'channels', label: 'Каналы' },
+  { id: 'sessions', label: 'Сессии' },
   { id: 'status', label: 'Статус' },
   { id: 'errors', label: 'Ошибки' },
 ];
@@ -1552,6 +1559,11 @@ function getAccountSortValue(account: AccountRow, field: AccountSortField) {
       return Number.parseInt(account.timer, 10) || 0;
     case 'channels':
       return account.telegramChannels.length;
+    case 'sessions':
+      return [
+        account.shafaSessionExists ? '1' : '0',
+        account.telegramSessionExists ? '1' : '0',
+      ].join('');
     case 'status':
       return account.statusLabel;
     case 'errors':

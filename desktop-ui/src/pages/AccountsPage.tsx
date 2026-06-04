@@ -700,6 +700,28 @@ function AccountsPage({
                             </span>
                           </td>
                           <td className={rowCellClassName}>
+                            <div className="flex flex-wrap gap-2">
+                              <StatusPill
+                                tone={
+                                  account.shafaSessionExists
+                                    ? 'success'
+                                    : 'neutral'
+                                }
+                              >
+                                Shafa
+                              </StatusPill>
+                              <StatusPill
+                                tone={
+                                  account.telegramSessionExists
+                                    ? 'success'
+                                    : 'neutral'
+                                }
+                              >
+                                Telegram
+                              </StatusPill>
+                            </div>
+                          </td>
+                          <td className={rowCellClassName}>
                             <AccountStatusBadge tone={account.statusTone}>
                               {account.statusLabel}
                             </AccountStatusBadge>
@@ -1908,6 +1930,7 @@ function ShafaSessionCard({
     if (status?.connected) {
       setIsBrowserLoginPending(false);
       setFeedback('Сессия Shafa сохранена. Аккаунт подключён.');
+      void onReloadAccounts();
       return;
     }
 
@@ -1918,7 +1941,7 @@ function ShafaSessionCard({
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [isBrowserLoginPending, onRefreshStatuses, status?.connected]);
+  }, [isBrowserLoginPending, onRefreshStatuses, onReloadAccounts, status?.connected]);
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];

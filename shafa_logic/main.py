@@ -19,7 +19,6 @@ from utils.pipeline_activity import is_product_pipeline_active
 
 _ADD_CHANNEL = object()
 SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
-SHAFA_SETTINGS_URL = "https://shafa.ua/uk/my/settings"
 APP_MODE_ENV = "SHAFA_APP_MODE"
 SHAFA_LOGIN_FRESH_CONTEXT_ENV = "SHAFA_LOGIN_FRESH_CONTEXT"
 DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV = "SHAFA_DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR"
@@ -915,21 +914,6 @@ def _is_shafa_auth_page_url(url: str) -> bool:
     return any(token in normalized for token in ("/login", "/register"))
 
 
-def _save_shafa_login_best_effort(
-    ctx,
-    storage_state_path: Path,
-    confirmation_file: Path | None,
-    save_cookies: Callable[[list[dict]], None],
-) -> bool:
-    cookies = ctx.cookies()
-    if not cookies:
-        return False
-    ctx.storage_state(path=str(storage_state_path))
-    save_cookies(cookies)
-    print(f"Сохранил текущую Shafa-сессию перед закрытием браузера. Cookies: {len(cookies)}.")
-    return True
-
-
 def _login_account() -> None:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
@@ -1005,10 +989,6 @@ def _login_account() -> None:
                         return
                 if auth_page_left_at is not None and time.time() - auth_page_left_at >= 8:
                     try:
-                        page.goto(SHAFA_SETTINGS_URL, wait_until="domcontentloaded", timeout=60000)
-                    except PlaywrightTimeoutError:
-                        pass
-                    try:
                         page.wait_for_load_state("networkidle", timeout=3000)
                     except PlaywrightTimeoutError:
                         pass
@@ -1018,11 +998,9 @@ def _login_account() -> None:
                         confirmation_file,
                         save_cookies,
                     ):
-                        _save_shafa_login_best_effort(
-                            ctx,
-                            STORAGE_STATE_PATH,
-                            confirmation_file,
-                            save_cookies,
+                        print(
+                            "Сессия Shafa не подтверждена, auth.json не обновлен. "
+                            "Закрываю браузер."
                         )
                     print("Закрываю браузер Shafa после выхода со страницы входа.")
                     return

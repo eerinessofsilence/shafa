@@ -542,7 +542,7 @@ def test_login_account_closes_after_auth_page_disappears(monkeypatch) -> None:
             self._urls = iter(
                 [
                     "https://shafa.ua/uk/login",
-                    "https://shafa.ua/uk/my/settings",
+                    "https://shafa.ua/uk/",
                 ]
             )
             self.url = "https://shafa.ua/uk/login"
@@ -625,5 +625,5 @@ def test_login_account_closes_after_auth_page_disappears(monkeypatch) -> None:
     module._login_account()
 
     assert closed == ["context", "browser"]
-    assert storage_writes == ["/tmp/auth.json"]
-    assert saved_cookies == [[{"name": "csrftoken", "value": "token", "domain": ".shafa.ua"}]]
+    assert storage_writes == []
+    assert saved_cookies == []

@@ -392,23 +392,25 @@ def test_shafa_auth_api_saves_cookies_for_backend(tmp_path: Path) -> None:
     assert created.status_code == 201
     account_id = created.json()["id"]
 
-    response = client.post(
-        f"/accounts/{account_id}/auth/shafa/cookies",
-        json={
-            "cookies": [
-                {
-                    "name": "csrftoken",
-                    "value": "token-123",
-                    "secure": True,
-                },
-                {
-                    "name": "sessionid",
-                    "value": "session-456",
-                    "domain": ".shafa.ua",
-                },
-            ]
-        },
-    )
+    auth_service = asyncio.run(app.dependency_overrides[get_auth_service]())
+    with patch.object(auth_service, "_fetch_shafa_profile", return_value={}):
+        response = client.post(
+            f"/accounts/{account_id}/auth/shafa/cookies",
+            json={
+                "cookies": [
+                    {
+                        "name": "csrftoken",
+                        "value": "token-123",
+                        "secure": True,
+                    },
+                    {
+                        "name": "sessionid",
+                        "value": "session-456",
+                        "domain": ".shafa.ua",
+                    },
+                ]
+            },
+        )
 
     assert response.status_code == 200
     assert response.json()["connected"] is True
@@ -462,6 +464,55 @@ def test_shafa_auth_api_returns_profile_fields(tmp_path: Path) -> None:
     assert response.json()["connected"] is True
     assert response.json()["email"] == "seller@example.com"
     assert response.json()["phone"] == "+380501112233"
+    manifest = json.loads((store.account_dir(account) / "account.json").read_text(encoding="utf-8"))
+    assert manifest["browser_session_valid"] is True
+
+
+def test_shafa_auth_status_clears_unauthenticated_cookies(tmp_path: Path) -> None:
+    client, store = _make_client(tmp_path)
+
+    created = client.post(
+        "/accounts",
+        json={"name": "Shafa", "path": str(Path("/tmp/project")), "phone": "", "channel_links": []},
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+    account = Account(id=account_id, name="Shafa", path="/tmp/project")
+
+    store.auth_file(account).write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "csrftoken",
+                        "value": "token-123",
+                        "domain": ".shafa.ua",
+                    },
+                    {
+                        "name": "sessionid",
+                        "value": "session-456",
+                        "domain": ".shafa.ua",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    auth_service = asyncio.run(app.dependency_overrides[get_auth_service]())
+    with patch.object(
+        auth_service,
+        "_fetch_shafa_profile",
+        side_effect=RuntimeError("User not authenticated."),
+    ):
+        response = client.get(f"/accounts/{account_id}/auth/shafa")
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert response.json()["cookies_count"] == 0
+    assert store.auth_file(account).exists() is False
+    manifest = json.loads((store.account_dir(account) / "account.json").read_text(encoding="utf-8"))
+    assert manifest["browser_session_valid"] is False
 
 
 def test_shafa_logout_clears_cookies_and_returns_disconnected_status(tmp_path: Path) -> None:

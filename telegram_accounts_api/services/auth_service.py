@@ -397,9 +397,15 @@ class AccountAuthService:
                 profile = self._fetch_shafa_profile(account, cookies)
             except Exception as exc:
                 log(account_id, "WARNING", f"Failed to fetch Shafa profile data: {exc}")
+                connected = False
+                if self._is_shafa_auth_failure(exc):
+                    self.store.delete_shafa_session(account)
+                    cookies = []
+                    cookies_count = 0
             else:
                 email = str(profile.get("email") or "").strip()
                 phone = str(profile.get("phone") or "").strip()
+        self.store.write_account_manifest(account)
 
         return ShafaAuthStatusResponse(
             account_id=account.id,
@@ -723,19 +729,51 @@ class AccountAuthService:
         except json.JSONDecodeError as exc:
             raise RuntimeError("Ответ профиля Shafa не является корректным JSON.") from exc
 
+        error_messages: list[str] = []
         if isinstance(parsed_response, list):
             for item in parsed_response:
                 if not isinstance(item, dict):
                     continue
-                viewer = item.get("data", {}).get("viewer")
+                errors = item.get("errors")
+                if isinstance(errors, list):
+                    error_messages.extend(
+                        str(error.get("message") or "").strip()
+                        for error in errors
+                        if isinstance(error, dict) and error.get("message")
+                    )
+                data = item.get("data")
+                viewer = data.get("viewer") if isinstance(data, dict) else None
                 if isinstance(viewer, dict):
                     return viewer
         elif isinstance(parsed_response, dict):
-            viewer = parsed_response.get("data", {}).get("viewer")
+            errors = parsed_response.get("errors")
+            if isinstance(errors, list):
+                error_messages.extend(
+                    str(error.get("message") or "").strip()
+                    for error in errors
+                    if isinstance(error, dict) and error.get("message")
+                )
+            data = parsed_response.get("data")
+            viewer = data.get("viewer") if isinstance(data, dict) else None
             if isinstance(viewer, dict):
                 return viewer
 
+        if error_messages:
+            raise RuntimeError("; ".join(error_messages))
         raise RuntimeError("Ответ профиля Shafa не содержит данные viewer.")
+
+    @staticmethod
+    def _is_shafa_auth_failure(exc: Exception) -> bool:
+        message = " ".join(str(exc).split()).casefold()
+        return any(
+            marker in message
+            for marker in (
+                "user not authenticated",
+                "not authenticated",
+                "unauthorized",
+                "forbidden",
+            )
+        )
 
     @staticmethod
     def _get_csrftoken_from_cookies(cookies: list[dict[str, Any]]) -> str:
