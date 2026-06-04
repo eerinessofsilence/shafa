@@ -534,6 +534,139 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual(stats["date_backfill_checked"], 1)
         self.assertEqual(stats["date_loaded_from_telegram"], 1)
 
+    def test_collection_backfills_by_shared_feed_product_account_mapping(self) -> None:
+        today = date(2026, 6, 2)
+        with tempfile.TemporaryDirectory() as raw_dir:
+            base = Path(raw_dir)
+            account_db = base / "shafa.sqlite3"
+            telegram_db = base / "telegram_feed.sqlite3"
+            with sqlite3.connect(account_db) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE uploaded_products (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_id TEXT,
+                        name TEXT,
+                        raw_payload TEXT,
+                        status_title TEXT,
+                        is_active INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO uploaded_products (
+                        product_id, name, raw_payload, status_title, is_active
+                    )
+                    VALUES ('888', 'Shared feed inactive', '{}', 'Деактивовано', 0)
+                    """
+                )
+            with sqlite3.connect(telegram_db) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE telegram_products (
+                        account_id TEXT,
+                        channel_id INTEGER,
+                        message_id INTEGER,
+                        raw_message TEXT,
+                        parsed_data TEXT,
+                        status TEXT,
+                        created INTEGER,
+                        created_product_id TEXT,
+                        telegram_message_date TEXT,
+                        updated_at TEXT,
+                        UNIQUE(account_id, channel_id, message_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE shared_telegram_products (
+                        telegram_product_key TEXT PRIMARY KEY,
+                        channel_id INTEGER,
+                        message_id INTEGER,
+                        telegram_message_date TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE shared_telegram_product_accounts (
+                        telegram_product_key TEXT,
+                        account_id TEXT,
+                        shafa_product_id TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO shared_telegram_products (
+                        telegram_product_key, channel_id, message_id, telegram_message_date, updated_at
+                    )
+                    VALUES ('11:601', 11, 601, '', datetime('now'))
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO shared_telegram_product_accounts (
+                        telegram_product_key, account_id, shafa_product_id
+                    )
+                    VALUES ('11:601', 'acc-1', '888')
+                    """
+                )
+
+            def fake_backfill(rows: list[dict[str, object]]) -> dict[str, int]:
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(str(rows[0]["created_product_id"]), "888")
+                self.assertEqual(rows[0]["channel_id"], 11)
+                self.assertEqual(rows[0]["message_id"], 601)
+                updated = _update_telegram_message_date(
+                    account_id=str(rows[0]["account_id"]),
+                    channel_id=int(rows[0]["channel_id"]),
+                    message_id=int(rows[0]["message_id"]),
+                    telegram_message_date=datetime.combine(
+                        today - timedelta(days=25),
+                        datetime.min.time(),
+                        tzinfo=timezone.utc,
+                    ),
+                    created_product_id=rows[0]["created_product_id"],
+                )
+                return {"updated": int(updated), "failed": 0 if updated else 1}
+
+            stats: dict[str, int] = {}
+            with patch.dict(
+                os.environ,
+                {
+                    "SHAFA_ACCOUNT_ID": "acc-1",
+                    "SHAFA_DB_PATH": str(account_db),
+                    "SHAFA_SHARED_TELEGRAM_DB_PATH": str(telegram_db),
+                },
+                clear=True,
+            ):
+                with patch("activation_product_by_date.fetch_inactive_products", return_value=[]):
+                    with patch(
+                        "activation_product_by_date._backfill_telegram_message_dates_from_telegram_async",
+                        side_effect=fake_backfill,
+                    ):
+                        with redirect_stdout(StringIO()):
+                            candidates = collect_current_account_candidates(
+                                page_size=50,
+                                product_types=["INACTIVE"],
+                                max_age_days=183,
+                                telegram_date_backfill_limit=10,
+                                telegram_date_backfill_batch_size=50,
+                                telegram_date_backfill_sleep_min_seconds=0,
+                                telegram_date_backfill_sleep_max_seconds=0,
+                                backfill_stats=stats,
+                            )
+
+        self.assertEqual([candidate.product_id for candidate in candidates], ["888"])
+        self.assertEqual(candidates[0].channel_id, 11)
+        self.assertEqual(candidates[0].message_id, 601)
+        self.assertEqual(stats["date_backfill_checked"], 1)
+        self.assertEqual(stats["date_loaded_from_telegram"], 1)
+
     def test_collection_skips_when_missing_telegram_date_backfill_fails(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             base = Path(raw_dir)
@@ -1043,10 +1176,18 @@ class ActivationProductByDateTests(unittest.TestCase):
                 os.environ["SHAFA_SHARED_TELEGRAM_DB_PATH"],
                 str(Path("C:/one/telegram_shared/telegram_feed.sqlite3")),
             )
+            self.assertEqual(
+                os.environ["SHAFA_CREATION_PRODUCTS_DB_PATH"],
+                str(Path("C:/one/telegram_shared/creation_products.sqlite3")),
+            )
             _apply_account_environment(second)
             self.assertEqual(
                 os.environ["SHAFA_SHARED_TELEGRAM_DB_PATH"],
                 str(Path("C:/two/telegram_shared/telegram_feed.sqlite3")),
+            )
+            self.assertEqual(
+                os.environ["SHAFA_CREATION_PRODUCTS_DB_PATH"],
+                str(Path("C:/two/telegram_shared/creation_products.sqlite3")),
             )
 
 

@@ -48,6 +48,9 @@ _INITIAL_SHARED_TELEGRAM_DB_PATH = str(
 _INITIAL_TELEGRAM_SESSION_PATH = str(
     os.getenv("SHAFA_TELEGRAM_SESSION_PATH") or ""
 ).strip()
+_INITIAL_CREATION_PRODUCTS_DB_PATH = str(
+    os.getenv("SHAFA_CREATION_PRODUCTS_DB_PATH") or ""
+).strip()
 ACTIVATION_CHECK_STATUS_ELIGIBLE = "eligible_for_activation"
 ACTIVATION_CHECK_STATUS_TOO_OLD = "too_old_for_activation"
 ACTIVATION_CHECK_STATUS_MISSING_DATE = "missing_telegram_message_date"
@@ -95,6 +98,15 @@ def _default_shared_telegram_db_path(
     return SCRIPT_ROOT / "telegram_shared" / "telegram_feed.sqlite3"
 
 
+def _default_creation_products_db_path(
+    selected: Optional[AccountSession] = None,
+) -> Path:
+    if selected is not None:
+        accounts_dir = selected.accounts_dir or selected.state_dir.parent
+        return accounts_dir.parent / "telegram_shared" / "creation_products.sqlite3"
+    return _shared_telegram_db_path().with_name("creation_products.sqlite3")
+
+
 def _apply_account_environment(selected: AccountSession) -> None:
     _apply_deactivation_account_environment(selected)
     if _INITIAL_SHARED_TELEGRAM_DB_PATH:
@@ -108,6 +120,12 @@ def _apply_account_environment(selected: AccountSession) -> None:
     else:
         os.environ["SHAFA_TELEGRAM_SESSION_PATH"] = str(
             selected.state_dir / "telegram.session"
+        )
+    if _INITIAL_CREATION_PRODUCTS_DB_PATH:
+        os.environ["SHAFA_CREATION_PRODUCTS_DB_PATH"] = _INITIAL_CREATION_PRODUCTS_DB_PATH
+    else:
+        os.environ["SHAFA_CREATION_PRODUCTS_DB_PATH"] = str(
+            _default_creation_products_db_path(selected)
         )
     _load_account_telegram_credentials(selected)
 
@@ -351,6 +369,13 @@ def _shared_telegram_db_path() -> Path:
     if raw:
         return Path(raw).expanduser().resolve(strict=False)
     return _default_shared_telegram_db_path()
+
+
+def _creation_products_db_path() -> Path:
+    raw = str(os.getenv("SHAFA_CREATION_PRODUCTS_DB_PATH") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve(strict=False)
+    return _default_creation_products_db_path()
 
 
 def _current_account_id() -> str:
@@ -709,6 +734,189 @@ def _load_telegram_row_for_message_id(message_id: int) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
+def _load_shared_telegram_account_refs_for_product_ids(
+    product_ids: list[str],
+    *,
+    limit: int,
+    missing_only: bool = False,
+) -> list[dict[str, object]]:
+    telegram_db_path = _shared_telegram_db_path()
+    if not telegram_db_path.exists():
+        return []
+    normalized_ids = list(
+        dict.fromkeys(
+            str(product_id or "").strip()
+            for product_id in product_ids
+            if str(product_id or "").strip()
+        )
+    )
+    if not normalized_ids:
+        return []
+    account_id = _current_account_id()
+    row_limit = max(int(limit), 1)
+    missing_condition = (
+        """
+              AND (
+                    shared.telegram_message_date IS NULL
+                    OR TRIM(shared.telegram_message_date) = ''
+              )
+        """
+        if missing_only
+        else ""
+    )
+    account_order = "CASE WHEN accounts.account_id = ? THEN 0 ELSE 1 END," if account_id else ""
+    account_order_params = (account_id,) if account_id else ()
+    selected: list[dict[str, object]] = []
+    selected_product_ids: set[str] = set()
+    with _connect_sqlite(telegram_db_path) as conn:
+        tables = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if not {"shared_telegram_product_accounts", "shared_telegram_products"}.issubset(tables):
+            return []
+        for id_chunk in _iter_chunks(normalized_ids, 800):
+            if len(selected) >= row_limit:
+                break
+            placeholders = ",".join(["?"] * len(id_chunk))
+            rows = conn.execute(
+                f"""
+                SELECT
+                    accounts.account_id AS account_id,
+                    shared.channel_id AS channel_id,
+                    shared.message_id AS message_id,
+                    accounts.shafa_product_id AS created_product_id,
+                    shared.telegram_message_date AS telegram_message_date
+                FROM shared_telegram_product_accounts AS accounts
+                JOIN shared_telegram_products AS shared
+                  ON shared.telegram_product_key = accounts.telegram_product_key
+                WHERE accounts.shafa_product_id IN ({placeholders})
+                  AND accounts.shafa_product_id IS NOT NULL
+                  AND TRIM(accounts.shafa_product_id) != ''
+                  {missing_condition}
+                ORDER BY
+                    {account_order}
+                    CASE
+                        WHEN shared.telegram_message_date IS NOT NULL
+                         AND TRIM(shared.telegram_message_date) != '' THEN 0
+                        ELSE 1
+                    END,
+                    shared.updated_at DESC,
+                    shared.channel_id ASC,
+                    shared.message_id ASC
+                """,
+                (*id_chunk, *account_order_params),
+            ).fetchall()
+            for row in rows:
+                product_id = str(row["created_product_id"] or "").strip()
+                if not product_id or product_id in selected_product_ids:
+                    continue
+                selected_product_ids.add(product_id)
+                selected.append(dict(row))
+                if len(selected) >= row_limit:
+                    break
+    return selected
+
+
+def _creation_product_ref_db_paths() -> list[Path]:
+    candidates = [
+        _creation_products_db_path(),
+        _shared_telegram_db_path(),
+    ]
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def _load_creation_product_refs_for_product_ids(
+    product_ids: list[str],
+    *,
+    limit: int,
+    missing_only: bool = False,
+) -> list[dict[str, object]]:
+    normalized_ids = list(
+        dict.fromkeys(
+            str(product_id or "").strip()
+            for product_id in product_ids
+            if str(product_id or "").strip()
+        )
+    )
+    if not normalized_ids:
+        return []
+    account_id = _current_account_id()
+    row_limit = max(int(limit), 1)
+    missing_condition = (
+        """
+              AND (
+                    telegram_message_date IS NULL
+                    OR TRIM(telegram_message_date) = ''
+              )
+        """
+        if missing_only
+        else ""
+    )
+    account_order = "CASE WHEN account_id = ? THEN 0 ELSE 1 END," if account_id else ""
+    account_order_params = (account_id,) if account_id else ()
+    selected: list[dict[str, object]] = []
+    selected_product_ids: set[str] = set()
+    for db_path in _creation_product_ref_db_paths():
+        if len(selected) >= row_limit or not db_path.exists():
+            continue
+        with _connect_sqlite(db_path) as conn:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='creation_products'"
+            ).fetchone()
+            if table is None:
+                continue
+            for id_chunk in _iter_chunks(normalized_ids, 800):
+                if len(selected) >= row_limit:
+                    break
+                placeholders = ",".join(["?"] * len(id_chunk))
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        account_id,
+                        channel_id,
+                        message_id,
+                        created_product_id,
+                        telegram_message_date
+                    FROM creation_products
+                    WHERE created_product_id IN ({placeholders})
+                      AND created_product_id IS NOT NULL
+                      AND TRIM(created_product_id) != ''
+                      {missing_condition}
+                    ORDER BY
+                        {account_order}
+                        CASE
+                            WHEN telegram_message_date IS NOT NULL
+                             AND TRIM(telegram_message_date) != '' THEN 0
+                            ELSE 1
+                        END,
+                        updated_at DESC,
+                        channel_id ASC,
+                        message_id ASC
+                    """,
+                    (*id_chunk, *account_order_params),
+                ).fetchall()
+                for row in rows:
+                    product_id = str(row["created_product_id"] or "").strip()
+                    if not product_id or product_id in selected_product_ids:
+                        continue
+                    selected_product_ids.add(product_id)
+                    selected.append(dict(row))
+                    if len(selected) >= row_limit:
+                        break
+    return selected
+
+
 def _load_telegram_row_for_product(product_id: str) -> Optional[sqlite3.Row]:
     telegram_db_path = _shared_telegram_db_path()
     if not telegram_db_path.exists():
@@ -870,7 +1078,49 @@ def _load_telegram_date_rows_for_product_ids(
                 if len(selected) >= row_limit:
                     break
     direct_match_count = len(selected)
+    shared_account_match_count = 0
+    creation_product_match_count = 0
     fallback_match_count = 0
+    remaining_limit = row_limit - len(selected)
+    if remaining_limit > 0:
+        shared_account_rows = _load_shared_telegram_account_refs_for_product_ids(
+            [
+                product_id
+                for product_id in normalized_ids
+                if product_id not in selected_product_ids
+            ],
+            limit=remaining_limit,
+            missing_only=missing_only,
+        )
+        for row in shared_account_rows:
+            product_id = str(row.get("created_product_id") or "").strip()
+            if not product_id or product_id in selected_product_ids:
+                continue
+            selected_product_ids.add(product_id)
+            selected.append(row)
+            shared_account_match_count += 1
+            if len(selected) >= row_limit:
+                break
+    remaining_limit = row_limit - len(selected)
+    if remaining_limit > 0:
+        creation_rows = _load_creation_product_refs_for_product_ids(
+            [
+                product_id
+                for product_id in normalized_ids
+                if product_id not in selected_product_ids
+            ],
+            limit=remaining_limit,
+            missing_only=missing_only,
+        )
+        for row in creation_rows:
+            product_id = str(row.get("created_product_id") or "").strip()
+            if not product_id or product_id in selected_product_ids:
+                continue
+            selected_product_ids.add(product_id)
+            selected.append(row)
+            creation_product_match_count += 1
+            if len(selected) >= row_limit:
+                break
     remaining_limit = row_limit - len(selected)
     if remaining_limit > 0:
         fallback_rows = _load_uploaded_telegram_refs_for_product_ids(
@@ -897,6 +1147,8 @@ def _load_telegram_date_rows_for_product_ids(
     print(
         "Telegram date refresh lookup: "
         f"direct_created_product_rows={direct_match_count} "
+        f"shared_account_rows={shared_account_match_count} "
+        f"creation_product_rows={creation_product_match_count} "
         f"uploaded_ref_rows={fallback_match_count} "
         f"rows_to_refresh={len(selected)} "
         f"missing_only={str(missing_only).lower()}."
@@ -1867,30 +2119,34 @@ def collect_current_account_candidates(
         product_types=product_types,
     )
     account_db_products = list_inactive_uploaded_products_from_account_db()
-    products_by_id: dict[str, dict] = {}
+    shafa_products_by_id: dict[str, dict] = {}
     products: list[dict] = []
     for product in shafa_products:
         product_id = str(product.get("id") or "").strip()
         if not product_id:
             continue
-        products_by_id[product_id] = product
-        products.append(product)
+        shafa_products_by_id[product_id] = product
     for product in account_db_products:
         product_id = str(product.get("id") or "").strip()
         if not product_id:
             continue
-        existing = products_by_id.get(product_id)
+        existing = shafa_products_by_id.get(product_id)
         if existing is None:
-            products_by_id[product_id] = product
             products.append(product)
             continue
+        merged = dict(existing)
         for key in (
             "_account_db_created_at",
+            "_telegram_channel_id",
+            "_telegram_message_id",
             "statusTitle",
             "price",
         ):
             if product.get(key) not in (None, ""):
-                existing.setdefault(key, product.get(key))
+                merged.setdefault(key, product.get(key))
+        if product.get("name") and not merged.get("name"):
+            merged["name"] = product.get("name")
+        products.append(merged)
 
     product_ids = [
         str(product.get("id") or "").strip()
@@ -1901,11 +2157,13 @@ def collect_current_account_candidates(
     print(
         "Telegram DB lookup: "
         f"path={_shared_telegram_db_path()} "
-        f"matched_created_product_rows={matched_telegram_rows}."
+        f"direct_created_product_rows={matched_telegram_rows}."
     )
     print(
-        "Account DB inactive uploaded_products: "
-        f"{len(account_db_products)}. Combined inactive products: {len(products)}."
+        "Activation source products: "
+        f"shafa_feed_inactive={len(shafa_products)} "
+        f"account_db_inactive_uploaded_products={len(account_db_products)} "
+        f"selected_from_account_db={len(products)}."
     )
     if clear_telegram_dates_limit > 0:
         cleared = clear_telegram_message_dates_for_product_ids(
