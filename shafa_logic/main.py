@@ -846,6 +846,33 @@ def _verify_saved_shafa_login(cookies: list[dict]) -> None:
         print("WARNING: saved Shafa session does not match selected local account")
 
 
+def _save_shafa_login_if_authenticated(
+    ctx,
+    storage_state_path: Path,
+    confirmation_file: Path | None,
+    save_cookies: Callable[[list[dict]], None],
+) -> bool:
+    cookies = ctx.cookies()
+    if not _shafa_csrftoken(cookies):
+        return False
+
+    try:
+        viewer = _fetch_shafa_viewer_identity(cookies)
+    except Exception as exc:
+        print(f"Сессия Shafa пока не подтверждена: {exc}")
+        return False
+
+    ctx.storage_state(path=str(storage_state_path))
+    save_cookies(cookies)
+    print(f"Фактический Shafa viewer: {_viewer_identity_text(viewer)}")
+    if not _saved_session_matches_local_account(viewer):
+        print("WARNING: saved Shafa session does not match selected local account")
+    if confirmation_file is not None:
+        confirmation_file.write_text("ok\n", encoding="utf-8")
+    print(f"Вход сохранен. Cookies: {len(cookies)}.")
+    return True
+
+
 def _login_account() -> None:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
@@ -860,6 +887,7 @@ def _login_account() -> None:
     init_db()
     with sync_playwright() as p:
         browser, browser_name = _launch_visible_browser(p, headless=False)
+        ctx = None
         try:
             if _login_fresh_context_enabled():
                 print("Открываю чистый браузерный контекст для выбранного аккаунта Shafa.")
@@ -887,11 +915,8 @@ def _login_account() -> None:
                     redirect_detected_at = time.time()
                     print(f"Обнаружен переход: {current_url}")
 
-                waiting_for_auth_page = any(
-                    token in current_url.lower() for token in ("login", "register")
-                )
                 csrftoken = get_csrftoken_from_context(ctx)
-                if csrftoken and not waiting_for_auth_page:
+                if csrftoken:
                     if login_detected_at is None:
                         login_detected_at = time.time()
                         print("Вход обнаружен. Жду 3 секунды, чтобы завершился редирект и обновились cookies...")
@@ -903,17 +928,21 @@ def _login_account() -> None:
                         page.wait_for_load_state("networkidle", timeout=3000)
                     except PlaywrightTimeoutError:
                         pass
-                    ctx.storage_state(path=str(STORAGE_STATE_PATH))
-                    cookies = ctx.cookies()
-                    save_cookies(cookies)
-                    _verify_saved_shafa_login(cookies)
-                    if confirmation_file is not None:
-                        confirmation_file.write_text("ok\n", encoding="utf-8")
-                    print(f"Вход сохранен. Cookies: {len(cookies)}.")
-                    return
+                    if _save_shafa_login_if_authenticated(
+                        ctx,
+                        STORAGE_STATE_PATH,
+                        confirmation_file,
+                        save_cookies,
+                    ):
+                        return
                 time.sleep(2)
             print("Не удалось получить csrftoken. Проверь, что вход выполнен.")
         finally:
+            if ctx is not None:
+                try:
+                    ctx.close()
+                except Exception as exc:
+                    print(f"WARNING: не удалось закрыть Shafa browser context: {exc}")
             browser.close()
 
 

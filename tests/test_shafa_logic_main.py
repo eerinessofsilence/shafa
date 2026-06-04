@@ -396,3 +396,102 @@ def test_launch_visible_browser_falls_back_to_plain_chromium(monkeypatch) -> Non
     assert browser == "browser:chromium"
     assert browser_name == "chromium"
     assert calls == [("msedge", False), ("chrome", False), (None, False)]
+
+
+def test_save_shafa_login_requires_confirmed_viewer(monkeypatch, tmp_path: Path) -> None:
+    module = _reload_shafa_main()
+    storage_path = tmp_path / "auth.json"
+    confirmation_file = tmp_path / "shafa_login.confirm"
+    saved_cookies: list[list[dict]] = []
+    storage_writes: list[str] = []
+
+    class _Context:
+        def cookies(self):
+            return [{"name": "csrftoken", "value": "token", "domain": ".shafa.ua"}]
+
+        def storage_state(self, *, path: str) -> None:
+            storage_writes.append(path)
+
+    monkeypatch.setattr(
+        module,
+        "_fetch_shafa_viewer_identity",
+        lambda cookies: {"id": "42", "firstName": "A"},
+    )
+    monkeypatch.setattr(module, "_saved_session_matches_local_account", lambda viewer: True)
+
+    assert module._save_shafa_login_if_authenticated(
+        _Context(),
+        storage_path,
+        confirmation_file,
+        saved_cookies.append,
+    )
+
+    assert storage_writes == [str(storage_path)]
+    assert saved_cookies == [[{"name": "csrftoken", "value": "token", "domain": ".shafa.ua"}]]
+    assert confirmation_file.read_text(encoding="utf-8") == "ok\n"
+
+
+def test_login_account_closes_context_and_browser(monkeypatch) -> None:
+    module = _reload_shafa_main()
+    closed: list[str] = []
+
+    class _Page:
+        url = "https://shafa.ua/uk/register"
+
+        def set_default_timeout(self, timeout: int) -> None:
+            pass
+
+        def goto(self, *args, **kwargs) -> None:
+            pass
+
+        def wait_for_load_state(self, *args, **kwargs) -> None:
+            pass
+
+    class _Context:
+        def new_page(self):
+            return _Page()
+
+        def close(self) -> None:
+            closed.append("context")
+
+    class _Browser:
+        def new_context(self):
+            return _Context()
+
+        def close(self) -> None:
+            closed.append("browser")
+
+    class _PlaywrightManager:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            pass
+
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.TimeoutError = TimeoutError
+    sync_api.sync_playwright = lambda: _PlaywrightManager()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+
+    core_context = types.ModuleType("core.context")
+    core_context.new_context_with_storage = lambda browser: browser.new_context()
+    core_core = types.ModuleType("core.core")
+    core_core.get_csrftoken_from_context = lambda ctx: "token"
+    data_db = types.ModuleType("data.db")
+    data_db.init_db = lambda: None
+    data_db.save_cookies = lambda cookies: None
+    monkeypatch.setitem(sys.modules, "core.context", core_context)
+    monkeypatch.setitem(sys.modules, "core.core", core_core)
+    monkeypatch.setitem(sys.modules, "data.db", data_db)
+
+    times = iter([100.0, 104.0, 104.0, 108.0])
+    monkeypatch.setattr(module.time, "time", lambda: next(times, 108.0))
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(module, "_launch_visible_browser", lambda p, headless: (_Browser(), "chromium"))
+    monkeypatch.setattr(module, "_login_fresh_context_enabled", lambda: True)
+    monkeypatch.setattr(module, "_save_shafa_login_if_authenticated", lambda *args: True)
+
+    module._login_account()
+
+    assert closed == ["context", "browser"]
