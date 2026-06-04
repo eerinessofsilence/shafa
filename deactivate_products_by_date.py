@@ -607,16 +607,37 @@ def find_all_accounts_dirs(
     return deduped
 
 
+def _session_auth_path_candidates(payload: dict, state_dir: Path) -> list[Path]:
+    raw_paths = [
+        payload.get("shafa_session_path"),
+        payload.get("browser_session_path"),
+        state_dir / "auth.json",
+    ]
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for raw_path in raw_paths:
+        if raw_path in (None, ""):
+            continue
+        path = Path(str(raw_path))
+        if not path.is_absolute():
+            path = state_dir / path
+        resolved = _resolved_path(path)
+        if resolved not in seen:
+            seen.add(resolved)
+            candidates.append(resolved)
+        fallback = _resolved_path(state_dir / path.name)
+        if fallback not in seen:
+            seen.add(fallback)
+            candidates.append(fallback)
+    return candidates
+
+
 def _session_auth_path(payload: dict, state_dir: Path) -> Path:
-    raw_path = (
-        payload.get("shafa_session_path")
-        or payload.get("browser_session_path")
-        or state_dir / "auth.json"
-    )
-    auth_path = Path(str(raw_path))
-    if not auth_path.is_absolute():
-        auth_path = state_dir / auth_path
-    return _resolved_path(auth_path)
+    candidates = _session_auth_path_candidates(payload, state_dir)
+    for auth_path in candidates:
+        if auth_path.exists() and _has_shafa_csrftoken(auth_path):
+            return auth_path
+    return candidates[0] if candidates else _resolved_path(state_dir / "auth.json")
 
 
 def list_account_sessions(

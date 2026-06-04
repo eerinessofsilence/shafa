@@ -472,6 +472,24 @@ class DeactivateProductsByDateTests(unittest.TestCase):
             {first_accounts.resolve(), second_accounts.resolve()},
         )
 
+    def test_list_account_sessions_falls_back_to_local_auth_json(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_base:
+            base = Path(raw_base)
+            accounts_dir = base / "accounts"
+            state_dir = self._create_account(accounts_dir, "acc-one", "acc-1", "Account 1")
+            account_file = state_dir / "account.json"
+            payload = json.loads(account_file.read_text(encoding="utf-8"))
+            payload["shafa_session_path"] = "/old/linux/path/accounts/acc-one/auth.json"
+            payload["browser_session_path"] = "/old/linux/path/accounts/acc-one/auth.json"
+            account_file.write_text(json.dumps(payload), encoding="utf-8")
+
+            with redirect_stdout(StringIO()):
+                sessions = list_account_sessions(accounts_dirs=[accounts_dir])
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].account_id, "acc-1")
+        self.assertEqual(sessions[0].auth_path, (state_dir / "auth.json").resolve())
+
     def test_duplicate_accounts_folders_are_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as raw_base:
             base = Path(raw_base)
