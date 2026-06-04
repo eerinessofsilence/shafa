@@ -30,6 +30,7 @@ from activation_product_by_date import (
     build_arg_parser,
     clear_telegram_message_dates_for_product_ids,
     collect_current_account_candidates,
+    fetch_products_by_type,
     list_inactive_uploaded_products_from_account_db,
     mark_uploaded_product_active,
     parse_telegram_datetime,
@@ -790,6 +791,25 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertTrue(args.parallel_accounts)
         self.assertEqual(args.max_workers, DEFAULT_MAX_ACCOUNT_WORKERS)
         self.assertEqual(args.max_workers, 5)
+
+    def test_fetch_products_maps_deactivated_alias_to_inactive(self) -> None:
+        calls = []
+
+        def fake_feed(**kwargs):
+            calls.append(kwargs)
+            return {
+                "edges": [{"node": {"id": "101", "name": "Inactive product"}}],
+                "pageInfo": {"hasNextPage": False},
+            }
+
+        products = fetch_products_by_type(
+            products_type="DEACTIVATED",
+            page_size=1,
+            feed_func=fake_feed,
+        )
+
+        self.assertEqual(calls[0]["products_type"], "INACTIVE")
+        self.assertEqual(products[0]["_products_type"], "INACTIVE")
 
     def test_default_shared_db_path_uses_accounts_base_dir(self) -> None:
         session = AccountSession(

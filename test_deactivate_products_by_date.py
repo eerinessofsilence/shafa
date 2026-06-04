@@ -490,6 +490,37 @@ class DeactivateProductsByDateTests(unittest.TestCase):
         self.assertEqual(sessions[0].account_id, "acc-1")
         self.assertEqual(sessions[0].auth_path, (state_dir / "auth.json").resolve())
 
+    def test_list_account_sessions_accepts_new_shafa_csrftoken_cookie(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_base:
+            base = Path(raw_base)
+            accounts_dir = base / "accounts"
+            state_dir = accounts_dir / "acc-one"
+            state_dir.mkdir(parents=True)
+            (state_dir / "account.json").write_text(
+                json.dumps({"id": "acc-1", "name": "Account 1"}),
+                encoding="utf-8",
+            )
+            (state_dir / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "cookies": [
+                            {
+                                "name": "shafa_csrftoken",
+                                "value": "token",
+                                "domain": "shafa.ua",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(StringIO()):
+                sessions = list_account_sessions(accounts_dirs=[accounts_dir])
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].account_id, "acc-1")
+
     def test_duplicate_accounts_folders_are_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as raw_base:
             base = Path(raw_base)

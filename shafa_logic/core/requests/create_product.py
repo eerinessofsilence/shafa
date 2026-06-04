@@ -44,7 +44,7 @@ def build_create_product_payload(
     }
 
     return {
-        "operationName": "WEB_CreateProduct",
+        "operationName": "CreateProduct",
         "variables": variables,
         "query": CREATE_PRODUCT_MUTATION,
     }

@@ -12,7 +12,7 @@ _ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(dotenv_path=_ROOT_DIR / ".env", override=False)
 
 CREATE_PRODUCT_MUTATION = """
-mutation WEB_CreateProduct(
+mutation CreateProduct(
   $photosStr: [String],
   $nameUk: String,
   $nameRu: String,

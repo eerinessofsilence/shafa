@@ -33,6 +33,9 @@ from deactivate_products_by_date import (
 
 HALF_YEAR_DAYS = 183
 DEFAULT_PRODUCT_TYPES = ("INACTIVE",)
+PRODUCT_TYPE_ALIASES = {
+    "DEACTIVATED": "INACTIVE",
+}
 DEFAULT_TELEGRAM_DATE_BACKFILL_LIMIT = 100000
 DEFAULT_TELEGRAM_DATE_BACKFILL_BATCH_SIZE = 50
 DEFAULT_ACTIVATION_SLEEP_MIN_SECONDS = 8.0
@@ -152,6 +155,11 @@ def _row_value(row: Optional[sqlite3.Row], key: str, default: object = None) -> 
         return default
 
 
+def normalize_products_type(products_type: object) -> str:
+    normalized = str(products_type or "").strip().upper()
+    return PRODUCT_TYPE_ALIASES.get(normalized, normalized)
+
+
 def fetch_products_by_type(
     *,
     products_type: str,
@@ -167,7 +175,7 @@ def fetch_products_by_type(
         feed_func = get_my_clothes_products_feed
 
     normalized_page_size = max(int(page_size), 1)
-    normalized_type = str(products_type or "").strip()
+    normalized_type = normalize_products_type(products_type)
     if not normalized_type:
         raise ValueError("products_type is required")
 
@@ -2431,7 +2439,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Тип товаров в Shafa feed. По умолчанию: INACTIVE. "
-            "Можно указать несколько раз."
+            "Можно указать несколько раз. DEACTIVATED принимается как alias INACTIVE."
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -2540,10 +2548,11 @@ def main() -> None:
 
         progress_every = max(int(args.progress_every), 1)
         product_types = [
-            str(item).strip()
+            normalize_products_type(item)
             for item in (args.products_type or list(DEFAULT_PRODUCT_TYPES))
-            if str(item).strip()
+            if normalize_products_type(item)
         ]
+        product_types = list(dict.fromkeys(product_types))
         if not product_types:
             raise RuntimeError("Укажите хотя бы один --products-type")
 

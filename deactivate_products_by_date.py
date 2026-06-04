@@ -482,7 +482,7 @@ def _has_shafa_csrftoken(auth_path: Path) -> bool:
         domain = str(cookie.get("domain") or "").strip().lstrip(".").lower()
         value = cookie.get("value")
         if (
-            name == "csrftoken"
+            name in {"csrftoken", "shafa_csrftoken"}
             and isinstance(value, str)
             and value.strip()
             and (domain == "shafa.ua" or domain.endswith(".shafa.ua"))
