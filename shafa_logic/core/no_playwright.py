@@ -293,6 +293,7 @@ def _request_json(
     headers: dict,
     cookies: list[dict],
     preview: int = 2000,
+    operation_name: Optional[str] = None,
 ) -> dict:
     cookie_header = _build_cookie_header(cookies)
     merged_headers = dict(headers)
@@ -303,7 +304,7 @@ def _request_json(
     delay = _http_retry_delay()
     last_error: Optional[Exception] = None
     proxy_config = load_runtime_proxy_config()
-    operation_name = _payload_operation_name(payload)
+    operation_name = operation_name or _payload_operation_name(payload)
 
     for attempt in range(retries + 1):
         req = request.Request(url, data=payload, headers=merged_headers, method="POST")
@@ -722,26 +723,56 @@ def _has_invalid_size_error(errors: list[dict]) -> bool:
 
 
 def upload_photo(csrftoken: str, cookies: list[dict], file_path: Path) -> str:
-    fields = {
+    file_tuple = (
+        file_path.name,
+        detect_media_mime_type(file_path),
+        file_path.read_bytes(),
+    )
+    legacy_fields = {
         "operationName": "UploadPhoto",
         "query": UPLOAD_PHOTO_MUTATION,
         "variables": json.dumps({"file": "file"}),
     }
-    files = {
-        "file": (
-            file_path.name,
-            detect_media_mime_type(file_path),
-            file_path.read_bytes(),
+    legacy_files = {
+        "file": file_tuple,
+    }
+    spec_fields = {
+        "operations": json.dumps(
+            {
+                "operationName": "UploadPhoto",
+                "query": UPLOAD_PHOTO_MUTATION,
+                "variables": {"file": None},
+            }
         ),
+        "map": json.dumps({"0": ["variables.file"]}),
     }
-    body, boundary = _encode_multipart(fields, files)
-    headers = {
-        **_base_headers(csrftoken),
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-    }
+    spec_files = {"0": file_tuple}
 
-    data = _request_json(API_URL, body, headers, cookies)
+    def request_upload(fields: dict[str, str], files: dict[str, tuple[str, str, bytes]]) -> dict:
+        body, boundary = _encode_multipart(fields, files)
+        headers = {
+            **_base_headers(csrftoken),
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+        return _request_json(
+            API_URL,
+            body,
+            headers,
+            cookies,
+            operation_name="UploadPhoto",
+        )
+
+    try:
+        data = request_upload(legacy_fields, legacy_files)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "Response is not valid JSON" not in message and "HTTP error" not in message:
+            raise
+        _log_product_detail(
+            "Legacy UploadPhoto multipart was rejected; retrying GraphQL multipart spec."
+        )
+        data = request_upload(spec_fields, spec_files)
     if data.get("errors"):
         raise RuntimeError(f"GraphQL errors: {data['errors']}")
 
