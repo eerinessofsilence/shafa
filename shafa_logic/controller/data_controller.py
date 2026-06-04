@@ -115,7 +115,11 @@ from data.size_mapping import (
 )
 from telegram_channels import extract_telegram_invite_hash
 from utils.logging import log
-from utils.progress import ProgressBar, verbose_photo_logs_enabled
+from utils.progress import (
+    ProgressBar,
+    verbose_photo_logs_enabled,
+    verbose_product_logs_enabled,
+)
 from telegram_subscription import get_telegram_channels, set_telegram_channels
 from telegram_subscription.sync import get_telegram_channel_records
 from telegram_subscription.client import create_telegram_client
@@ -5019,6 +5023,11 @@ def _size_mapping_debug_enabled() -> bool:
     }
 
 
+def _log_product_detail(message: str) -> None:
+    if verbose_product_logs_enabled():
+        log("DEBUG", message)
+
+
 def _preferred_match_priority(preferred_system: Optional[str]) -> dict[str, int]:
     if preferred_system == SIZE_SYSTEM_INTERNATIONAL:
         return {
@@ -5350,9 +5359,8 @@ def _build_product_raw_data(parsed: dict, slug: str | None = None) -> dict:
     )
     if additional_sizes:
         product_raw_data["additional_sizes"] = additional_sizes
-    if size_value or additional_size_values:
-        log(
-            "INFO",
+    if (size_value or additional_size_values) and verbose_product_logs_enabled():
+        _log_product_detail(
             _format_size_resolution_summary(
                 catalog_slug=catalog_slug,
                 raw_size=size_value,
@@ -5407,8 +5415,7 @@ def _pick_next_product_for_upload() -> Optional[dict]:
             )
             if row is None:
                 return None
-            log(
-                "INFO",
+            _log_product_detail(
                 "Product selected for creation and marked processing. "
                 f"account_id={row['account_id']}. channel_id={row['channel_id']}. "
                 f"message_id={row['message_id']}. attempt={row['attempt_count']}.",
@@ -5417,8 +5424,7 @@ def _pick_next_product_for_upload() -> Optional[dict]:
             raw_message = row["raw_message"] or ""
             parsed = parse_message(raw_message) if raw_message else parsed_from_db
             if not is_mode_allowed_parsed(parsed):
-                log(
-                    "INFO",
+                _log_product_detail(
                     f"Пропускаю сообщение channel_id={row['channel_id']} "
                     + f"message_id={row['message_id']}: не подходит для режима {get_runtime_mode()}.",
                 )
@@ -5463,8 +5469,7 @@ def _pick_next_product_for_upload() -> Optional[dict]:
 
         parsed = parse_message(raw_message) if raw_message else parsed_from_db
         if not is_mode_allowed_parsed(parsed):
-            log(
-                "INFO",
+            _log_product_detail(
                 f"Пропускаю сообщение channel_id={row['channel_id']} "
                 + f"message_id={row['message_id']}: не подходит для режима {get_runtime_mode()}.",
             )
@@ -5509,13 +5514,23 @@ async def get_next_product_for_upload_async(
         fetch_completed = False
         try:
             if first_fetch_check:
-                log("INFO", "Запускаю первичную загрузку товаров из Telegram...")
+                _log_product_detail("Запускаю первичную загрузку товаров из Telegram...")
                 inserted = await first_fetch()
-                log("INFO", f"Первичная загрузка Telegram завершена. Новых товаров: {inserted}.")
+                if inserted:
+                    log("INFO", f"Первичная загрузка Telegram завершена. Новых товаров: {inserted}.")
+                else:
+                    _log_product_detail(
+                        "Первичная загрузка Telegram завершена. Новых товаров: 0."
+                    )
             else:
-                log("INFO", f"Проверяю новые сообщения в Telegram (limit={message_amount})...")
+                _log_product_detail(
+                    f"Проверяю новые сообщения в Telegram (limit={message_amount})..."
+                )
                 inserted = await _fetch_messages(message_amount=message_amount)
-                log("INFO", f"Проверка Telegram завершена. Новых товаров: {inserted}.")
+                if inserted:
+                    log("INFO", f"Проверка Telegram завершена. Новых товаров: {inserted}.")
+                else:
+                    _log_product_detail("Проверка Telegram завершена. Новых товаров: 0.")
             fetch_completed = True
         finally:
             _finish_shared_telegram_fetch(lease_token, success=fetch_completed)

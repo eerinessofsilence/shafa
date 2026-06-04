@@ -17,6 +17,10 @@ def verbose_photo_logs_enabled() -> bool:
     return env_flag("SHAFA_VERBOSE_PHOTO_LOGS", default=False)
 
 
+def verbose_product_logs_enabled() -> bool:
+    return env_flag("SHAFA_VERBOSE_PRODUCT_LOGS", default=False)
+
+
 class ProgressBar:
     def __init__(
         self,

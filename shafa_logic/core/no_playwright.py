@@ -80,7 +80,11 @@ from utils.media import (
     total_media_size_bytes,
 )
 from utils.pipeline_activity import enter_product_pipeline, exit_product_pipeline
-from utils.progress import ProgressBar, verbose_photo_logs_enabled
+from utils.progress import (
+    ProgressBar,
+    verbose_photo_logs_enabled,
+    verbose_product_logs_enabled,
+)
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -98,6 +102,11 @@ _AUTH_DEBUG_PRINTED_KEYS: set[tuple[str, str, str]] = set()
 def _debug_http_enabled() -> bool:
     value = os.getenv("SHAFA_DEBUG_HTTP", "").strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def _log_product_detail(message: str) -> None:
+    if verbose_product_logs_enabled():
+        log("DEBUG", message)
 
 
 def _http_retry_count() -> int:
@@ -261,6 +270,23 @@ def _read_response_text(resp) -> str:
     return body.decode("utf-8", errors="replace")
 
 
+def _response_preview(text: str, limit: int = 300) -> str:
+    compact = " ".join(str(text or "").split())
+    return compact[:limit] if compact else ""
+
+
+def _payload_operation_name(payload: bytes) -> str:
+    try:
+        parsed = json.loads(payload.decode("utf-8", errors="replace"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "unknown"
+    if isinstance(parsed, list):
+        parsed = parsed[0] if parsed else {}
+    if isinstance(parsed, dict):
+        return str(parsed.get("operationName") or "unknown").strip() or "unknown"
+    return "unknown"
+
+
 def _request_json(
     url: str,
     payload: bytes,
@@ -277,11 +303,14 @@ def _request_json(
     delay = _http_retry_delay()
     last_error: Optional[Exception] = None
     proxy_config = load_runtime_proxy_config()
+    operation_name = _payload_operation_name(payload)
 
     for attempt in range(retries + 1):
         req = request.Request(url, data=payload, headers=merged_headers, method="POST")
         try:
             with open_url(req, config=proxy_config, timeout=60) as resp:
+                status_code = getattr(resp, "status", None) or getattr(resp, "code", None)
+                content_type = resp.headers.get("Content-Type", "")
                 text = _read_response_text(resp)
             record_proxy_request_result(
                 proxy_config.proxy_id if proxy_config else None,
@@ -308,9 +337,14 @@ def _request_json(
             try:
                 return json.loads(text)
             except json.JSONDecodeError as json_exc:
-                detail = f"HTTP error {exc.code}"
+                detail = (
+                    f"HTTP error {exc.code}; operation={operation_name}; "
+                    f"url={url}; content_type={exc.headers.get('Content-Type', '') or 'unknown'}"
+                )
                 if not text.strip():
                     detail += " (empty response)"
+                else:
+                    detail += f"; response_preview={_response_preview(text)}"
                 raise RuntimeError(detail) from json_exc
         except error.URLError as exc:
             record_proxy_request_result(
@@ -346,7 +380,17 @@ def _request_json(
                 time.sleep(delay * (attempt + 1))
                 last_error = exc
                 continue
-            raise RuntimeError("Response is not valid JSON") from exc
+            detail = (
+                "Response is not valid JSON"
+                f"; operation={operation_name}; url={url}; "
+                f"http_status={status_code or 'unknown'}; "
+                f"content_type={content_type or 'unknown'}"
+            )
+            if not text.strip():
+                detail += "; empty response"
+            else:
+                detail += f"; response_preview={_response_preview(text)}"
+            raise RuntimeError(detail) from exc
 
     if last_error:
         raise RuntimeError(
@@ -475,7 +519,7 @@ def _refresh_sizes(
         seen.add(slug)
         sizes = _fetch_sizes(csrftoken, cookies, catalog_slug=slug)
         total += len(sizes)
-        log("INFO", f"Загружены размеры для {slug}: {len(sizes)}.")
+        _log_product_detail(f"Загружены размеры для {slug}: {len(sizes)}.")
     return total
 
 
@@ -548,7 +592,7 @@ def _refresh_brands(
 ) -> int:
     brands = _fetch_brands(csrftoken, cookies, catalog_slug=catalog_slug)
     resolved_catalog_slug = resolve_brand_catalog_slug(catalog_slug)
-    log("INFO", f"Загружены бренды для {resolved_catalog_slug}: {len(brands)}.")
+    _log_product_detail(f"Загружены бренды для {resolved_catalog_slug}: {len(brands)}.")
     return len(brands)
 
 
@@ -778,7 +822,7 @@ def _main_impl() -> None:
         scan_before_pick=False,
     )
     if not product_data:
-        log("INFO", "Нет новых товаров для создания.")
+        _log_product_detail("Нет новых товаров для создания.")
         return
     channel_id = product_data.get("channel_id")
     product_raw_data = product_data["product_raw_data"]
@@ -786,7 +830,7 @@ def _main_impl() -> None:
     message_id = product_data["message_id"]
     photo_message_ids = get_product_photo_message_ids(product_data)
     product_name = product_raw_data.get("name") or parsed_data.get("name") or "—"
-    log("INFO", f"Товар для создания: {product_name}.")
+    log("INFO", f"Готовлю товар: «{product_name}».")
 
     cookies = _load_shafa_cookies()
     if not cookies:
@@ -798,7 +842,7 @@ def _main_impl() -> None:
 
     catalog_slug = str(product_raw_data.get("category") or "").strip()
     if catalog_slug:
-        log("INFO", f"Каталог из данных товара: {catalog_slug}.")
+        _log_product_detail(f"Каталог из данных товара: {catalog_slug}.")
     if not catalog_slug:
         catalog_slug = DEFAULT_CATALOG_SLUG
     if product_raw_data.get("size") is None:
@@ -842,7 +886,7 @@ def _main_impl() -> None:
     else:
         _markup = get_price_markup(DEFAULT_MARKUP)
     markup = _markup + price_value
-    log("INFO", f"Цена товара (с наценкой {_markup}): {markup}.")
+    _log_product_detail(f"Цена товара (с наценкой {_markup}): {markup}.")
 
     try:
         media_dir = Path(MEDIA_DIR_PATH)
@@ -856,7 +900,7 @@ def _main_impl() -> None:
         if downloaded == 0:
             log("WARN", f"Не нашёл фото для message_id={message_id} в Telegram.")
         else:
-            log("INFO", f"Скачано фото: {downloaded}.")
+            _log_product_detail(f"Скачано фото: {downloaded}.")
 
         photo_ids: list[str] = []
         photo_paths = list_media_files(media_dir)
@@ -865,21 +909,17 @@ def _main_impl() -> None:
         max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
         downloaded_total_mb = total_media_size_bytes(photo_paths) / (1024 * 1024)
         if photo_paths:
-            log(
-                "INFO",
+            _log_product_detail(
                 f"Общий размер фото после скачивания из Telegram: "
-                + f"{downloaded_total_mb:.2f} MB.",
+                f"{downloaded_total_mb:.2f} MB.",
             )
-        log(
-            "INFO",
-            "Начинаю подготовку фото для загрузки.",
-        )
+        _log_product_detail("Начинаю подготовку фото для загрузки.")
         prepared_batch = prepare_media_batch_for_upload(photo_paths, MAX_UPLOAD_BYTES)
-        log("INFO", "Подготовка фото для загрузки завершена.")
+        _log_product_detail("Подготовка фото для загрузки завершена.")
         upload_items = prepared_batch.items
         total_mb = prepared_batch.total_size_bytes / (1024 * 1024)
         for note in prepared_batch.notes:
-            log("INFO", note)
+            _log_product_detail(note)
     except Exception as exc:
         handle_retryable_product_failure(
             message_id=message_id,
@@ -894,8 +934,7 @@ def _main_impl() -> None:
     if photo_paths and not upload_items:
         log("WARN", "Нет фото для загрузки после фильтрации размера.")
     elif upload_items:
-        log(
-            "INFO",
+        _log_product_detail(
             f"Общий размер подготовленных фото: {total_mb:.2f} MB / {max_mb:.2f} MB.",
         )
     if upload_items and not prepared_batch.within_budget:
@@ -946,7 +985,7 @@ def _main_impl() -> None:
                 if not verbose_photo_logs:
                     progress.advance()
 
-        log("INFO", "Создаю товар...")
+        _log_product_detail("Создаю товар...")
         result = create_product(
             csrftoken, cookies, photo_ids, product_raw_data, markup=_markup
         )
@@ -1015,7 +1054,7 @@ def _main_impl() -> None:
             f"Имя товара: {product_name}. ID: {product_id}. Фото: {len(photo_ids)}.",
         )
         reset_media_dir(media_dir)
-        log("INFO", "Фото удалены после создания товара.")
+        _log_product_detail("Фото удалены после создания товара.")
     except Exception as exc:
         handle_retryable_product_failure(
             message_id=message_id,
