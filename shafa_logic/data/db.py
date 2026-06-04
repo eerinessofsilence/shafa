@@ -221,6 +221,10 @@ def _create_telegram_products_table(conn: sqlite3.Connection) -> None:
             deactivation_check_status TEXT,
             deactivation_last_checked_at TEXT,
             deactivation_next_check_at TEXT,
+            activation_check_status TEXT,
+            activation_last_checked_at TEXT,
+            activation_checked_age_source TEXT,
+            activation_checked_telegram_message_date TEXT,
             shafa_deleted_at TEXT,
             shafa_delete_attempts INTEGER NOT NULL DEFAULT 0,
             last_shafa_delete_error TEXT,
@@ -992,6 +996,39 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
     deactivation_completed_at_expr = (
         "deactivation_completed_at" if "deactivation_completed_at" in columns else "NULL"
     )
+    deactivation_check_status_expr = (
+        "deactivation_check_status"
+        if "deactivation_check_status" in columns
+        else "NULL"
+    )
+    deactivation_last_checked_at_expr = (
+        "deactivation_last_checked_at"
+        if "deactivation_last_checked_at" in columns
+        else "NULL"
+    )
+    deactivation_next_check_at_expr = (
+        "deactivation_next_check_at"
+        if "deactivation_next_check_at" in columns
+        else "NULL"
+    )
+    activation_check_status_expr = (
+        "activation_check_status" if "activation_check_status" in columns else "NULL"
+    )
+    activation_last_checked_at_expr = (
+        "activation_last_checked_at"
+        if "activation_last_checked_at" in columns
+        else "NULL"
+    )
+    activation_checked_age_source_expr = (
+        "activation_checked_age_source"
+        if "activation_checked_age_source" in columns
+        else "NULL"
+    )
+    activation_checked_telegram_message_date_expr = (
+        "activation_checked_telegram_message_date"
+        if "activation_checked_telegram_message_date" in columns
+        else "NULL"
+    )
     conn.execute("ALTER TABLE telegram_products RENAME TO telegram_products_legacy")
     _create_telegram_products_table(conn)
     conn.execute(
@@ -1024,6 +1061,13 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
             deactivation_failed_at,
             deactivation_error,
             deactivation_completed_at,
+            deactivation_check_status,
+            deactivation_last_checked_at,
+            deactivation_next_check_at,
+            activation_check_status,
+            activation_last_checked_at,
+            activation_checked_age_source,
+            activation_checked_telegram_message_date,
             shafa_deleted_at,
             shafa_delete_attempts,
             last_shafa_delete_error
@@ -1071,6 +1115,13 @@ def _rebuild_telegram_products_table(conn: sqlite3.Connection) -> None:
             {deactivation_failed_at_expr},
             {deactivation_error_expr},
             {deactivation_completed_at_expr},
+            {deactivation_check_status_expr},
+            {deactivation_last_checked_at_expr},
+            {deactivation_next_check_at_expr},
+            {activation_check_status_expr},
+            {activation_last_checked_at_expr},
+            {activation_checked_age_source_expr},
+            {activation_checked_telegram_message_date_expr},
             {shafa_deleted_at_expr},
             {shafa_delete_attempts_expr},
             {last_shafa_delete_error_expr}
@@ -1221,6 +1272,23 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE telegram_products ADD COLUMN deactivation_next_check_at TEXT"
         )
+    if "activation_check_status" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN activation_check_status TEXT"
+        )
+    if "activation_last_checked_at" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN activation_last_checked_at TEXT"
+        )
+    if "activation_checked_age_source" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN activation_checked_age_source TEXT"
+        )
+    if "activation_checked_telegram_message_date" not in columns:
+        conn.execute(
+            "ALTER TABLE telegram_products ADD COLUMN "
+            "activation_checked_telegram_message_date TEXT"
+        )
     conn.execute(
         f"""
         UPDATE telegram_products
@@ -1275,6 +1343,10 @@ def _ensure_telegram_products_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_message_date "
         "ON telegram_products(account_id, telegram_message_date, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_activation_check "
+        "ON telegram_products(account_id, activation_check_status, activation_last_checked_at)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_telegram_products_account_deactivated_at "

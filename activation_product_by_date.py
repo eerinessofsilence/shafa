@@ -39,6 +39,19 @@ DEFAULT_ACTIVATION_SLEEP_MIN_SECONDS = 8.0
 DEFAULT_ACTIVATION_SLEEP_MAX_SECONDS = 15.0
 DEFAULT_MAX_ACCOUNT_WORKERS = 5
 SCRIPT_ROOT = Path(__file__).resolve().parent
+ACTIVATION_CHECK_STATUS_ELIGIBLE = "eligible_for_activation"
+ACTIVATION_CHECK_STATUS_TOO_OLD = "too_old_for_activation"
+ACTIVATION_CHECK_STATUS_MISSING_DATE = "missing_telegram_message_date"
+ACTIVATION_CHECK_STATUS_FUTURE_DATE = "future_telegram_message_date"
+ACTIVATION_CHECK_STATUS_UNTRUSTED_AGE = "untrusted_age_source"
+ACTIVATION_CHECK_STATUS_ACTIVATED = "activated_on_shafa"
+ACTIVATION_CHECK_STATUS_FAILED = "activation_failed"
+ACTIVATION_CHECK_COLUMNS = {
+    "activation_check_status": "TEXT",
+    "activation_last_checked_at": "TEXT",
+    "activation_checked_age_source": "TEXT",
+    "activation_checked_telegram_message_date": "TEXT",
+}
 
 
 @dataclass(frozen=True)
@@ -230,6 +243,88 @@ def _connect_sqlite(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _ensure_activation_check_columns(conn: sqlite3.Connection) -> bool:
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telegram_products'"
+    ).fetchone()
+    if table is None:
+        return False
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(telegram_products)").fetchall()
+    }
+    for column, column_type in ACTIVATION_CHECK_COLUMNS.items():
+        if column not in columns:
+            conn.execute(
+                f"ALTER TABLE telegram_products ADD COLUMN {column} {column_type}"
+            )
+    return True
+
+
+def _mark_telegram_product_activation_check(
+    *,
+    account_id: object,
+    channel_id: object,
+    message_id: object,
+    check_status: str,
+    telegram_message_date: object = None,
+    age_source: str = "telegram_message_date",
+) -> bool:
+    if channel_id is None or message_id is None:
+        return False
+    telegram_db_path = _shared_telegram_db_path()
+    if not telegram_db_path.exists():
+        return False
+    normalized_account_id = str(account_id or _current_account_id() or "").strip()
+    with _connect_sqlite(telegram_db_path) as conn:
+        if not _ensure_activation_check_columns(conn):
+            return False
+        if normalized_account_id:
+            cursor = conn.execute(
+                """
+                UPDATE telegram_products
+                SET activation_check_status = ?,
+                    activation_last_checked_at = datetime('now'),
+                    activation_checked_age_source = ?,
+                    activation_checked_telegram_message_date = ?,
+                    updated_at = datetime('now')
+                WHERE account_id = ?
+                  AND channel_id = ?
+                  AND message_id = ?
+                """,
+                (
+                    str(check_status or "").strip(),
+                    str(age_source or "").strip(),
+                    str(telegram_message_date or "").strip() or None,
+                    normalized_account_id,
+                    int(channel_id),
+                    int(message_id),
+                ),
+            )
+            if cursor.rowcount:
+                return True
+        cursor = conn.execute(
+            """
+            UPDATE telegram_products
+            SET activation_check_status = ?,
+                activation_last_checked_at = datetime('now'),
+                activation_checked_age_source = ?,
+                activation_checked_telegram_message_date = ?,
+                updated_at = datetime('now')
+            WHERE channel_id = ?
+              AND message_id = ?
+            """,
+            (
+                str(check_status or "").strip(),
+                str(age_source or "").strip(),
+                str(telegram_message_date or "").strip() or None,
+                int(channel_id),
+                int(message_id),
+            ),
+        )
+    return cursor.rowcount > 0
 
 
 def _account_db_path() -> Path:
@@ -899,6 +994,13 @@ def _candidate_from_telegram_row(
         return None
     telegram_datetime = parse_telegram_datetime(telegram_row["telegram_message_date"])
     if telegram_datetime is None:
+        _mark_telegram_product_activation_check(
+            account_id=telegram_row["account_id"],
+            channel_id=telegram_row["channel_id"],
+            message_id=telegram_row["message_id"],
+            check_status=ACTIVATION_CHECK_STATUS_MISSING_DATE,
+            telegram_message_date=telegram_row["telegram_message_date"],
+        )
         print(
             "skip: telegram_message_date is missing or invalid "
             f"telegram_id={telegram_row['channel_id']} message_id={telegram_row['message_id']} "
@@ -908,6 +1010,13 @@ def _candidate_from_telegram_row(
     telegram_date = telegram_datetime.date()
     age_days = (today - telegram_date).days
     if age_days < 0:
+        _mark_telegram_product_activation_check(
+            account_id=telegram_row["account_id"],
+            channel_id=telegram_row["channel_id"],
+            message_id=telegram_row["message_id"],
+            check_status=ACTIVATION_CHECK_STATUS_FUTURE_DATE,
+            telegram_message_date=telegram_row["telegram_message_date"],
+        )
         print(
             "skip: telegram_message_date is in the future "
             f"telegram_id={telegram_row['channel_id']} message_id={telegram_row['message_id']} "
@@ -915,6 +1024,13 @@ def _candidate_from_telegram_row(
         )
         return None
     if age_days > max_age_days:
+        _mark_telegram_product_activation_check(
+            account_id=telegram_row["account_id"],
+            channel_id=telegram_row["channel_id"],
+            message_id=telegram_row["message_id"],
+            check_status=ACTIVATION_CHECK_STATUS_TOO_OLD,
+            telegram_message_date=telegram_row["telegram_message_date"],
+        )
         print(
             "skip: telegram product is older than activation limit "
             f"telegram_id={telegram_row['channel_id']} message_id={telegram_row['message_id']} "
@@ -927,6 +1043,13 @@ def _candidate_from_telegram_row(
     name = str(_row_value(uploaded_row, "name") or "").strip()
     if not name:
         name = _product_name_from_parsed_data(telegram_row["parsed_data"])
+    _mark_telegram_product_activation_check(
+        account_id=telegram_row["account_id"],
+        channel_id=telegram_row["channel_id"],
+        message_id=telegram_row["message_id"],
+        check_status=ACTIVATION_CHECK_STATUS_ELIGIBLE,
+        telegram_message_date=telegram_row["telegram_message_date"],
+    )
     return ActivationCandidate(
         product_id=product_id,
         name=name or "без названия",
@@ -999,16 +1122,46 @@ def _candidate_from_product(
         return None
     telegram_datetime = parse_telegram_datetime(telegram_row["telegram_message_date"])
     if telegram_datetime is None:
+        _mark_telegram_product_activation_check(
+            account_id=telegram_row["account_id"],
+            channel_id=telegram_row["channel_id"],
+            message_id=telegram_row["message_id"],
+            check_status=ACTIVATION_CHECK_STATUS_MISSING_DATE,
+            telegram_message_date=telegram_row["telegram_message_date"],
+        )
         return None
     telegram_date = telegram_datetime.date()
     channel_id = int(telegram_row["channel_id"])
     message_id = int(telegram_row["message_id"])
 
     age_days = (today - telegram_date).days
-    if age_days < 0 or age_days > max_age_days:
+    if age_days < 0:
+        _mark_telegram_product_activation_check(
+            account_id=telegram_row["account_id"],
+            channel_id=channel_id,
+            message_id=message_id,
+            check_status=ACTIVATION_CHECK_STATUS_FUTURE_DATE,
+            telegram_message_date=telegram_row["telegram_message_date"],
+        )
+        return None
+    if age_days > max_age_days:
+        _mark_telegram_product_activation_check(
+            account_id=telegram_row["account_id"],
+            channel_id=channel_id,
+            message_id=message_id,
+            check_status=ACTIVATION_CHECK_STATUS_TOO_OLD,
+            telegram_message_date=telegram_row["telegram_message_date"],
+        )
         return None
 
     name = str(product.get("name") or _row_value(uploaded_row, "name") or "").strip()
+    _mark_telegram_product_activation_check(
+        account_id=telegram_row["account_id"],
+        channel_id=channel_id,
+        message_id=message_id,
+        check_status=ACTIVATION_CHECK_STATUS_ELIGIBLE,
+        telegram_message_date=telegram_row["telegram_message_date"],
+    )
     return ActivationCandidate(
         product_id=product_id,
         name=name or "без названия",
@@ -1067,6 +1220,14 @@ def _filter_trusted_telegram_candidates(
             f"product_id={candidate.product_id} "
             f"age_source={candidate.age_source or 'unknown'} "
             f"telegram={candidate.channel_id}:{candidate.message_id}"
+        )
+        _mark_telegram_product_activation_check(
+            account_id=_current_account_id(),
+            channel_id=candidate.channel_id,
+            message_id=candidate.message_id,
+            check_status=ACTIVATION_CHECK_STATUS_UNTRUSTED_AGE,
+            telegram_message_date=candidate.telegram_date.isoformat(),
+            age_source=candidate.age_source,
         )
     return trusted
 
@@ -1290,9 +1451,25 @@ def activate_candidates(
                 activate_func(candidate.product_id)
         except Exception as exc:
             failed += 1
+            _mark_telegram_product_activation_check(
+                account_id=_current_account_id(),
+                channel_id=candidate.channel_id,
+                message_id=candidate.message_id,
+                check_status=ACTIVATION_CHECK_STATUS_FAILED,
+                telegram_message_date=candidate.telegram_date.isoformat(),
+                age_source=candidate.age_source,
+            )
             _log(f"{progress_prefix}ERROR {candidate.product_id}: {exc}")
         else:
             activated += 1
+            _mark_telegram_product_activation_check(
+                account_id=_current_account_id(),
+                channel_id=candidate.channel_id,
+                message_id=candidate.message_id,
+                check_status=ACTIVATION_CHECK_STATUS_ACTIVATED,
+                telegram_message_date=candidate.telegram_date.isoformat(),
+                age_source=candidate.age_source,
+            )
             if not verify_activation_flow:
                 try:
                     if mark_active_func is None:

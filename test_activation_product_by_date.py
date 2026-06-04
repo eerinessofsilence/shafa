@@ -265,6 +265,55 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual([product["id"] for product in products], ["202", "201"])
         self.assertEqual(candidates, [])
 
+    def test_select_products_marks_activation_check_status_by_telegram_date(self) -> None:
+        today = date(2026, 6, 2)
+        products = [
+            {"id": 101, "name": "Fresh", "_products_type": "DEACTIVATED"},
+            {"id": 105, "name": "Too old", "_products_type": "DEACTIVATED"},
+        ]
+        with tempfile.TemporaryDirectory() as raw_dir:
+            base = Path(raw_dir)
+            account_db = base / "shafa.sqlite3"
+            telegram_db = base / "telegram_feed.sqlite3"
+            self._create_account_db(account_db)
+            self._create_telegram_db(telegram_db, today)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "SHAFA_ACCOUNT_ID": "acc-1",
+                    "SHAFA_DB_PATH": str(account_db),
+                    "SHAFA_SHARED_TELEGRAM_DB_PATH": str(telegram_db),
+                },
+                clear=True,
+            ):
+                candidates = select_products_for_activation(
+                    products,
+                    today=today,
+                    max_age_days=183,
+                )
+
+            with sqlite3.connect(telegram_db) as conn:
+                rows = dict(
+                    conn.execute(
+                        """
+                        SELECT created_product_id, activation_check_status
+                        FROM telegram_products
+                        WHERE created_product_id IN ('101', '105')
+                        """
+                    ).fetchall()
+                )
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(telegram_products)").fetchall()
+                }
+
+        self.assertEqual([candidate.product_id for candidate in candidates], ["101"])
+        self.assertEqual(rows["101"], "eligible_for_activation")
+        self.assertEqual(rows["105"], "too_old_for_activation")
+        self.assertIn("activation_last_checked_at", columns)
+        self.assertIn("activation_checked_age_source", columns)
+
     def test_collection_backfills_missing_telegram_date_by_created_product_id(self) -> None:
         today = date(2026, 6, 2)
         with tempfile.TemporaryDirectory() as raw_dir:
