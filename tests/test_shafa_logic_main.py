@@ -431,6 +431,40 @@ def test_save_shafa_login_requires_confirmed_viewer(monkeypatch, tmp_path: Path)
     assert confirmation_file.read_text(encoding="utf-8") == "ok\n"
 
 
+def test_save_shafa_login_ignores_directory_confirmation_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    module = _reload_shafa_main()
+    storage_path = tmp_path / "auth.json"
+    saved_cookies: list[list[dict]] = []
+    storage_writes: list[str] = []
+
+    class _Context:
+        def cookies(self):
+            return [{"name": "csrftoken", "value": "token", "domain": ".shafa.ua"}]
+
+        def storage_state(self, *, path: str) -> None:
+            storage_writes.append(path)
+
+    monkeypatch.setattr(
+        module,
+        "_fetch_shafa_viewer_identity",
+        lambda cookies: {"id": "42", "firstName": "A"},
+    )
+    monkeypatch.setattr(module, "_saved_session_matches_local_account", lambda viewer: True)
+
+    assert module._save_shafa_login_if_authenticated(
+        _Context(),
+        storage_path,
+        tmp_path,
+        saved_cookies.append,
+    )
+
+    assert storage_writes == [str(storage_path)]
+    assert saved_cookies == [[{"name": "csrftoken", "value": "token", "domain": ".shafa.ua"}]]
+
+
 def test_login_account_closes_context_and_browser(monkeypatch) -> None:
     module = _reload_shafa_main()
     closed: list[str] = []

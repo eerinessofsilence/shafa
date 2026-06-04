@@ -147,16 +147,35 @@ def _fetch_viewer(
     with open_url(http_request, config=proxy_config, timeout=20) as response:
         response_body = response.read().decode("utf-8", errors="replace")
     parsed = json.loads(response_body)
+    error_messages: list[str] = []
     if isinstance(parsed, list):
         for item in parsed:
             if isinstance(item, dict):
-                viewer = item.get("data", {}).get("viewer")
+                errors = item.get("errors")
+                if isinstance(errors, list):
+                    error_messages.extend(
+                        str(error.get("message") or "").strip()
+                        for error in errors
+                        if isinstance(error, dict) and error.get("message")
+                    )
+                data = item.get("data")
+                viewer = data.get("viewer") if isinstance(data, dict) else None
                 if isinstance(viewer, dict):
                     return viewer
     if isinstance(parsed, dict):
-        viewer = parsed.get("data", {}).get("viewer")
+        errors = parsed.get("errors")
+        if isinstance(errors, list):
+            error_messages.extend(
+                str(error.get("message") or "").strip()
+                for error in errors
+                if isinstance(error, dict) and error.get("message")
+            )
+        data = parsed.get("data")
+        viewer = data.get("viewer") if isinstance(data, dict) else None
         if isinstance(viewer, dict):
             return viewer
+    if error_messages:
+        raise RuntimeError("; ".join(error_messages))
     raise RuntimeError("viewer missing")
 
 

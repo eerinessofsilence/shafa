@@ -19,6 +19,7 @@ from utils.pipeline_activity import is_product_pipeline_active
 
 _ADD_CHANNEL = object()
 SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
+SHAFA_SETTINGS_URL = "https://shafa.ua/uk/my/settings"
 APP_MODE_ENV = "SHAFA_APP_MODE"
 SHAFA_LOGIN_FRESH_CONTEXT_ENV = "SHAFA_LOGIN_FRESH_CONTEXT"
 DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV = "SHAFA_DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR"
@@ -773,16 +774,35 @@ def _fetch_shafa_viewer_identity(cookies: list[dict]) -> dict[str, object]:
     ) as response:
         response_body = response.read().decode("utf-8", errors="replace")
     parsed = json.loads(response_body)
+    error_messages: list[str] = []
     if isinstance(parsed, list):
         for item in parsed:
             if isinstance(item, dict):
-                viewer = item.get("data", {}).get("viewer")
+                errors = item.get("errors")
+                if isinstance(errors, list):
+                    error_messages.extend(
+                        str(error.get("message") or "").strip()
+                        for error in errors
+                        if isinstance(error, dict) and error.get("message")
+                    )
+                data = item.get("data")
+                viewer = data.get("viewer") if isinstance(data, dict) else None
                 if isinstance(viewer, dict):
                     return viewer
     if isinstance(parsed, dict):
-        viewer = parsed.get("data", {}).get("viewer")
+        errors = parsed.get("errors")
+        if isinstance(errors, list):
+            error_messages.extend(
+                str(error.get("message") or "").strip()
+                for error in errors
+                if isinstance(error, dict) and error.get("message")
+            )
+        data = parsed.get("data")
+        viewer = data.get("viewer") if isinstance(data, dict) else None
         if isinstance(viewer, dict):
             return viewer
+    if error_messages:
+        raise RuntimeError("; ".join(error_messages))
     raise RuntimeError("Shafa profile response does not contain viewer")
 
 
@@ -867,9 +887,26 @@ def _save_shafa_login_if_authenticated(
     print(f"Фактический Shafa viewer: {_viewer_identity_text(viewer)}")
     if not _saved_session_matches_local_account(viewer):
         print("WARNING: saved Shafa session does not match selected local account")
-    if confirmation_file is not None:
-        confirmation_file.write_text("ok\n", encoding="utf-8")
+    _write_shafa_login_confirmation(confirmation_file)
     print(f"Вход сохранен. Cookies: {len(cookies)}.")
+    return True
+
+
+def _write_shafa_login_confirmation(confirmation_file: Path | None) -> bool:
+    if confirmation_file is None:
+        return False
+    if confirmation_file.exists() and confirmation_file.is_dir():
+        print(
+            "WARNING: Shafa login confirmation path is a directory, "
+            f"skipping confirmation write: {confirmation_file}"
+        )
+        return False
+    try:
+        confirmation_file.parent.mkdir(parents=True, exist_ok=True)
+        confirmation_file.write_text("ok\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"WARNING: не удалось записать подтверждение входа Shafa: {exc}")
+        return False
     return True
 
 
@@ -889,8 +926,6 @@ def _save_shafa_login_best_effort(
         return False
     ctx.storage_state(path=str(storage_state_path))
     save_cookies(cookies)
-    if _shafa_csrftoken(cookies) and confirmation_file is not None:
-        confirmation_file.write_text("ok\n", encoding="utf-8")
     print(f"Сохранил текущую Shafa-сессию перед закрытием браузера. Cookies: {len(cookies)}.")
     return True
 
@@ -919,6 +954,10 @@ def _login_account() -> None:
             page = ctx.new_page()
             page.set_default_timeout(60000)
             print(f"Открываю браузер Shafa через {browser_name}.")
+            print(
+                "Shafa session paths: "
+                f"auth={STORAGE_STATE_PATH} | confirmation={confirmation_file or '-'}"
+            )
             page.goto(SHAFA_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
             try:
                 page.wait_for_load_state("networkidle", timeout=10000)
@@ -965,6 +1004,10 @@ def _login_account() -> None:
                     ):
                         return
                 if auth_page_left_at is not None and time.time() - auth_page_left_at >= 8:
+                    try:
+                        page.goto(SHAFA_SETTINGS_URL, wait_until="domcontentloaded", timeout=60000)
+                    except PlaywrightTimeoutError:
+                        pass
                     try:
                         page.wait_for_load_state("networkidle", timeout=3000)
                     except PlaywrightTimeoutError:
