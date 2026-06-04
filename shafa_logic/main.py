@@ -873,6 +873,28 @@ def _save_shafa_login_if_authenticated(
     return True
 
 
+def _is_shafa_auth_page_url(url: str) -> bool:
+    normalized = str(url or "").lower()
+    return any(token in normalized for token in ("/login", "/register"))
+
+
+def _save_shafa_login_best_effort(
+    ctx,
+    storage_state_path: Path,
+    confirmation_file: Path | None,
+    save_cookies: Callable[[list[dict]], None],
+) -> bool:
+    cookies = ctx.cookies()
+    if not cookies:
+        return False
+    ctx.storage_state(path=str(storage_state_path))
+    save_cookies(cookies)
+    if _shafa_csrftoken(cookies) and confirmation_file is not None:
+        confirmation_file.write_text("ok\n", encoding="utf-8")
+    print(f"Сохранил текущую Shafa-сессию перед закрытием браузера. Cookies: {len(cookies)}.")
+    return True
+
+
 def _login_account() -> None:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
@@ -908,12 +930,19 @@ def _login_account() -> None:
             last_seen_url = page.url
             redirect_detected_at: float | None = None
             login_detected_at: float | None = None
+            auth_page_left_at: float | None = None
             while time.time() < deadline:
                 current_url = page.url
                 if current_url != last_seen_url:
                     last_seen_url = current_url
                     redirect_detected_at = time.time()
                     print(f"Обнаружен переход: {current_url}")
+
+                if _is_shafa_auth_page_url(current_url):
+                    auth_page_left_at = None
+                elif auth_page_left_at is None:
+                    auth_page_left_at = time.time()
+                    print("Страница входа Shafa закрыта/сменена. Закрою браузер через 8 секунд.")
 
                 csrftoken = get_csrftoken_from_context(ctx)
                 if csrftoken:
@@ -935,6 +964,25 @@ def _login_account() -> None:
                         save_cookies,
                     ):
                         return
+                if auth_page_left_at is not None and time.time() - auth_page_left_at >= 8:
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=3000)
+                    except PlaywrightTimeoutError:
+                        pass
+                    if not _save_shafa_login_if_authenticated(
+                        ctx,
+                        STORAGE_STATE_PATH,
+                        confirmation_file,
+                        save_cookies,
+                    ):
+                        _save_shafa_login_best_effort(
+                            ctx,
+                            STORAGE_STATE_PATH,
+                            confirmation_file,
+                            save_cookies,
+                        )
+                    print("Закрываю браузер Shafa после выхода со страницы входа.")
+                    return
                 time.sleep(2)
             print("Не удалось получить csrftoken. Проверь, что вход выполнен.")
         finally:
