@@ -1782,10 +1782,18 @@ def save_uploaded_product(
     product_id: Optional[str],
     product_raw_data: dict,
     photo_ids: list[str],
+    *,
+    channel_id: Optional[int] = None,
+    message_id: Optional[int] = None,
 ) -> None:
     size = product_raw_data.get("size")
     if size is None or str(size).strip() == "":
         return
+    raw_payload = dict(product_raw_data)
+    if channel_id is not None:
+        raw_payload.setdefault("channel_id", int(channel_id))
+    if message_id is not None:
+        raw_payload.setdefault("message_id", int(message_id))
     _ensure_db_initialized()
     with _connect() as conn:
         conn.execute(
@@ -1801,7 +1809,7 @@ def save_uploaded_product(
                 product_raw_data.get("size"),
                 product_raw_data.get("price"),
                 json.dumps(photo_ids, ensure_ascii=True),
-                json.dumps(product_raw_data, ensure_ascii=True),
+                json.dumps(raw_payload, ensure_ascii=True),
             ),
         )
 

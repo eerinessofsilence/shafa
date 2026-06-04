@@ -42,6 +42,12 @@ DEFAULT_ACTIVATION_SLEEP_MIN_SECONDS = 8.0
 DEFAULT_ACTIVATION_SLEEP_MAX_SECONDS = 15.0
 DEFAULT_MAX_ACCOUNT_WORKERS = 5
 SCRIPT_ROOT = Path(__file__).resolve().parent
+_INITIAL_SHARED_TELEGRAM_DB_PATH = str(
+    os.getenv("SHAFA_SHARED_TELEGRAM_DB_PATH") or ""
+).strip()
+_INITIAL_TELEGRAM_SESSION_PATH = str(
+    os.getenv("SHAFA_TELEGRAM_SESSION_PATH") or ""
+).strip()
 ACTIVATION_CHECK_STATUS_ELIGIBLE = "eligible_for_activation"
 ACTIVATION_CHECK_STATUS_TOO_OLD = "too_old_for_activation"
 ACTIVATION_CHECK_STATUS_MISSING_DATE = "missing_telegram_message_date"
@@ -90,18 +96,16 @@ def _default_shared_telegram_db_path(
 
 
 def _apply_account_environment(selected: AccountSession) -> None:
-    explicit_shared_db_path = str(
-        os.getenv("SHAFA_SHARED_TELEGRAM_DB_PATH") or ""
-    ).strip()
-    explicit_telegram_session_path = str(
-        os.getenv("SHAFA_TELEGRAM_SESSION_PATH") or ""
-    ).strip()
     _apply_deactivation_account_environment(selected)
-    if not explicit_shared_db_path:
+    if _INITIAL_SHARED_TELEGRAM_DB_PATH:
+        os.environ["SHAFA_SHARED_TELEGRAM_DB_PATH"] = _INITIAL_SHARED_TELEGRAM_DB_PATH
+    else:
         os.environ["SHAFA_SHARED_TELEGRAM_DB_PATH"] = str(
             _default_shared_telegram_db_path(selected)
         )
-    if not explicit_telegram_session_path:
+    if _INITIAL_TELEGRAM_SESSION_PATH:
+        os.environ["SHAFA_TELEGRAM_SESSION_PATH"] = _INITIAL_TELEGRAM_SESSION_PATH
+    else:
         os.environ["SHAFA_TELEGRAM_SESSION_PATH"] = str(
             selected.state_dir / "telegram.session"
         )
@@ -406,6 +410,52 @@ def _raw_payload_dict(value: object) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _extract_int_from_mapping(value: object, keys: tuple[str, ...]) -> Optional[int]:
+    if isinstance(value, dict):
+        for key in keys:
+            raw = value.get(key)
+            if raw is None or str(raw).strip() == "":
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+        for nested in value.values():
+            found = _extract_int_from_mapping(nested, keys)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _extract_int_from_mapping(item, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _telegram_refs_from_payload(payload: dict) -> tuple[Optional[int], Optional[int]]:
+    channel_id = _extract_int_from_mapping(
+        payload,
+        (
+            "channel_id",
+            "channelId",
+            "telegram_id",
+            "telegramId",
+            "telegram_channel_id",
+            "telegramChannelId",
+        ),
+    )
+    message_id = _extract_int_from_mapping(
+        payload,
+        (
+            "message_id",
+            "messageId",
+            "telegram_message_id",
+            "telegramMessageId",
+        ),
+    )
+    return channel_id, message_id
+
+
 def _is_inactive_uploaded_product_row(row: sqlite3.Row) -> bool:
     raw_is_active = _row_value(row, "is_active")
     if raw_is_active is not None and str(raw_is_active).strip().lower() in {
@@ -450,6 +500,8 @@ def list_inactive_uploaded_products_from_account_db() -> list[dict]:
             "product_id",
             "name",
             "price",
+            "channel_id",
+            "message_id",
             "raw_payload",
             "status_title",
             "is_active",
@@ -482,6 +534,17 @@ def list_inactive_uploaded_products_from_account_db() -> list[dict]:
         price = _row_value(row, "price")
         if price is None:
             price = raw_payload.get("price")
+        payload_channel_id, payload_message_id = _telegram_refs_from_payload(raw_payload)
+        channel_id = _row_value(row, "channel_id")
+        message_id = _row_value(row, "message_id")
+        try:
+            channel_id = int(channel_id) if channel_id is not None else payload_channel_id
+        except (TypeError, ValueError):
+            channel_id = payload_channel_id
+        try:
+            message_id = int(message_id) if message_id is not None else payload_message_id
+        except (TypeError, ValueError):
+            message_id = payload_message_id
         created_at = (
             str(_row_value(row, "shafa_created_at") or "").strip()
             or str(_row_value(row, "created_at") or "").strip()
@@ -494,9 +557,156 @@ def list_inactive_uploaded_products_from_account_db() -> list[dict]:
                 "statusTitle": str(_row_value(row, "status_title") or "").strip(),
                 "_products_type": "account_db_inactive",
                 "_account_db_created_at": created_at,
+                "_telegram_channel_id": channel_id,
+                "_telegram_message_id": message_id,
             }
         )
     return products
+
+
+def _load_uploaded_telegram_refs_for_product_ids(
+    product_ids: list[str],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    db_path = _account_db_path()
+    if not db_path.exists():
+        return []
+    normalized_ids = list(
+        dict.fromkeys(
+            str(product_id or "").strip()
+            for product_id in product_ids
+            if str(product_id or "").strip()
+        )
+    )
+    if not normalized_ids:
+        return []
+    selected: list[dict[str, object]] = []
+    selected_product_ids: set[str] = set()
+    row_limit = max(int(limit), 1)
+    with _connect_sqlite(db_path) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='uploaded_products'"
+        ).fetchone()
+        if table is None:
+            return []
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(uploaded_products)").fetchall()
+        }
+        if "product_id" not in columns:
+            return []
+        optional_columns = ["id", "product_id", "raw_payload", "channel_id", "message_id"]
+        selected_columns = [column for column in optional_columns if column in columns]
+        order_by = "id DESC" if "id" in columns else "product_id DESC"
+        for id_chunk in _iter_chunks(normalized_ids, 800):
+            if len(selected) >= row_limit:
+                break
+            placeholders = ",".join(["?"] * len(id_chunk))
+            rows = conn.execute(
+                f"""
+                SELECT {", ".join(selected_columns)}
+                FROM uploaded_products
+                WHERE product_id IN ({placeholders})
+                ORDER BY {order_by}
+                """,
+                tuple(id_chunk),
+            ).fetchall()
+            for row in rows:
+                product_id = str(_row_value(row, "product_id") or "").strip()
+                if not product_id or product_id in selected_product_ids:
+                    continue
+                raw_payload = _raw_payload_dict(_row_value(row, "raw_payload"))
+                payload_channel_id, payload_message_id = _telegram_refs_from_payload(raw_payload)
+                channel_id = _row_value(row, "channel_id")
+                message_id = _row_value(row, "message_id")
+                try:
+                    channel_id = int(channel_id) if channel_id is not None else payload_channel_id
+                except (TypeError, ValueError):
+                    channel_id = payload_channel_id
+                try:
+                    message_id = int(message_id) if message_id is not None else payload_message_id
+                except (TypeError, ValueError):
+                    message_id = payload_message_id
+                existing_telegram_row = None
+                if message_id is not None:
+                    existing_telegram_row = _load_telegram_row_for_message_id(message_id)
+                if channel_id is None and existing_telegram_row is not None:
+                    channel_id = int(existing_telegram_row["channel_id"])
+                if channel_id is None or message_id is None:
+                    continue
+                selected_product_ids.add(product_id)
+                selected.append(
+                    {
+                        "account_id": (
+                            str(existing_telegram_row["account_id"])
+                            if existing_telegram_row is not None
+                            else _current_account_id()
+                        ),
+                        "channel_id": int(channel_id),
+                        "message_id": int(message_id),
+                        "created_product_id": product_id,
+                        "telegram_message_date": (
+                            existing_telegram_row["telegram_message_date"]
+                            if existing_telegram_row is not None
+                            else None
+                        ),
+                    }
+                )
+                if len(selected) >= row_limit:
+                    break
+    return selected
+
+
+def _load_telegram_row_for_message_id(message_id: int) -> Optional[sqlite3.Row]:
+    telegram_db_path = _shared_telegram_db_path()
+    if not telegram_db_path.exists():
+        return None
+    account_id = _current_account_id()
+    with _connect_sqlite(telegram_db_path) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telegram_products'"
+        ).fetchone()
+        if table is None:
+            return None
+        if account_id:
+            row = conn.execute(
+                """
+                SELECT
+                    account_id,
+                    channel_id,
+                    message_id,
+                    created_product_id,
+                    telegram_message_date
+                FROM telegram_products
+                WHERE account_id = ?
+                  AND message_id = ?
+                  AND status = 'created'
+                  AND created = 1
+                ORDER BY updated_at DESC, channel_id DESC
+                LIMIT 1
+                """,
+                (account_id, int(message_id)),
+            ).fetchone()
+            if row is not None:
+                return row
+        return conn.execute(
+            """
+            SELECT
+                account_id,
+                channel_id,
+                message_id,
+                created_product_id,
+                telegram_message_date
+            FROM telegram_products
+            WHERE message_id = ?
+              AND status = 'created'
+              AND created = 1
+            ORDER BY updated_at DESC, channel_id DESC
+            LIMIT 1
+            """,
+            (int(message_id),),
+        ).fetchone()
 
 
 def _load_telegram_row_for_product(product_id: str) -> Optional[sqlite3.Row]:
@@ -659,6 +869,38 @@ def _load_telegram_date_rows_for_product_ids(
                 selected.append(dict(row))
                 if len(selected) >= row_limit:
                     break
+    direct_match_count = len(selected)
+    fallback_match_count = 0
+    remaining_limit = row_limit - len(selected)
+    if remaining_limit > 0:
+        fallback_rows = _load_uploaded_telegram_refs_for_product_ids(
+            [
+                product_id
+                for product_id in normalized_ids
+                if product_id not in selected_product_ids
+            ],
+            limit=remaining_limit,
+        )
+        if missing_only:
+            fallback_rows = [
+                row
+                for row in fallback_rows
+                if not str(row.get("telegram_message_date") or "").strip()
+            ]
+        for row in fallback_rows:
+            product_id = str(row.get("created_product_id") or "").strip()
+            if not product_id or product_id in selected_product_ids:
+                continue
+            selected_product_ids.add(product_id)
+            selected.append(row)
+            fallback_match_count += 1
+    print(
+        "Telegram date refresh lookup: "
+        f"direct_created_product_rows={direct_match_count} "
+        f"uploaded_ref_rows={fallback_match_count} "
+        f"rows_to_refresh={len(selected)} "
+        f"missing_only={str(missing_only).lower()}."
+    )
     return selected
 
 
@@ -770,6 +1012,7 @@ def _update_telegram_message_date(
     channel_id: int,
     message_id: int,
     telegram_message_date: datetime,
+    created_product_id: object = None,
 ) -> bool:
     telegram_db_path = _shared_telegram_db_path()
     if not telegram_db_path.exists():
@@ -782,17 +1025,54 @@ def _update_telegram_message_date(
             """
             UPDATE telegram_products
             SET telegram_message_date = ?,
+                created_product_id = COALESCE(NULLIF(?, ''), created_product_id),
                 updated_at = datetime('now')
             WHERE account_id = ? AND channel_id = ? AND message_id = ?
             """,
             (
                 normalized_date,
+                str(created_product_id or "").strip(),
                 str(account_id),
                 int(channel_id),
                 int(message_id),
             ),
         )
-    return bool(cursor.rowcount)
+        if cursor.rowcount:
+            return True
+        conn.execute(
+            """
+            INSERT INTO telegram_products (
+                account_id,
+                channel_id,
+                message_id,
+                raw_message,
+                parsed_data,
+                status,
+                created,
+                created_product_id,
+                telegram_message_date,
+                updated_at
+            )
+            VALUES (?, ?, ?, '', '{}', 'created', 1, ?, ?, datetime('now'))
+            ON CONFLICT(account_id, channel_id, message_id) DO UPDATE SET
+                status = 'created',
+                created = 1,
+                created_product_id = COALESCE(
+                    NULLIF(excluded.created_product_id, ''),
+                    telegram_products.created_product_id
+                ),
+                telegram_message_date = excluded.telegram_message_date,
+                updated_at = datetime('now')
+            """,
+            (
+                str(account_id),
+                int(channel_id),
+                int(message_id),
+                str(created_product_id or "").strip(),
+                normalized_date,
+            ),
+        )
+    return True
 
 
 async def _backfill_telegram_message_dates_from_telegram_async(
@@ -869,6 +1149,7 @@ async def _backfill_telegram_message_dates_from_telegram_async(
                     channel_id=channel_id,
                     message_id=message_id,
                     telegram_message_date=message_date,
+                    created_product_id=row.get("created_product_id"),
                 ):
                     updated += 1
                 else:
@@ -901,6 +1182,12 @@ def backfill_missing_telegram_message_dates_for_product_ids(
         missing_only=not refresh_existing,
     )
     if not rows_to_refresh:
+        print(
+            "Telegram date refresh: no rows to refresh. "
+            f"product_ids={len(set(str(product_id or '').strip() for product_id in product_ids if str(product_id or '').strip()))} "
+            f"account_db={_account_db_path()} "
+            f"telegram_db={_shared_telegram_db_path()}."
+        )
         return {"checked": 0, "updated": 0, "failed": 0}
 
     batch_index = 0

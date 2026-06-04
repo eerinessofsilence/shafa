@@ -319,6 +319,8 @@ def _main_impl() -> None:
                     product_id=created_product.get("id"),
                     product_raw_data=product_raw_data,
                     photo_ids=photo_ids,
+                    channel_id=channel_id,
+                    message_id=message_id,
                 )
                 mark_product_created(
                     message_id,
