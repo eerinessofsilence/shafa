@@ -1046,6 +1046,31 @@ def select_products_for_activation(
     return candidates
 
 
+def _is_trusted_telegram_candidate(candidate: ActivationCandidate) -> bool:
+    return (
+        candidate.age_source == "telegram_message_date"
+        and candidate.channel_id is not None
+        and candidate.message_id is not None
+    )
+
+
+def _filter_trusted_telegram_candidates(
+    candidates: list[ActivationCandidate],
+) -> list[ActivationCandidate]:
+    trusted: list[ActivationCandidate] = []
+    for candidate in candidates:
+        if _is_trusted_telegram_candidate(candidate):
+            trusted.append(candidate)
+            continue
+        print(
+            "skip: activation candidate does not have trusted Telegram age "
+            f"product_id={candidate.product_id} "
+            f"age_source={candidate.age_source or 'unknown'} "
+            f"telegram={candidate.channel_id}:{candidate.message_id}"
+        )
+    return trusted
+
+
 def print_candidates(candidates: list[ActivationCandidate]) -> None:
     for index, candidate in enumerate(candidates, start=1):
         price = "" if candidate.price is None else f" | price={candidate.price}"
@@ -1492,6 +1517,7 @@ def process_current_account(
             f"Кандидатов младше {max_age_days} дней по Telegram: "
             f"{len(candidates)}."
         )
+    candidates = _filter_trusted_telegram_candidates(candidates)
 
     if not candidates:
         return {

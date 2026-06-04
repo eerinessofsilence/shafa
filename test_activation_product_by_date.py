@@ -33,6 +33,7 @@ from activation_product_by_date import (
     list_inactive_uploaded_products_from_account_db,
     mark_uploaded_product_active,
     parse_telegram_datetime,
+    process_current_account,
     select_product_for_activation_by_telegram_identity,
     select_products_for_activation,
 )
@@ -528,6 +529,39 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertTrue(any("First activation attempt" in line for line in logs))
         self.assertTrue(any("Activating 101" in line for line in logs))
         self.assertTrue(any("OK 101" in line for line in logs))
+
+    def test_process_current_account_skips_stale_account_db_age_candidates(self) -> None:
+        stale_candidate = ActivationCandidate(
+            product_id="208948224",
+            name="Кроссовки puma ralph sampsone",
+            telegram_date=date(2026, 5, 19),
+            telegram_age_days=16,
+            product_type="INACTIVE",
+            status_title="AVAILABLE",
+            price=1315.0,
+            url="/uk/men/obuv/krossovki/208948224-krossovki-puma-ralph-sampsone",
+            age_source="account_db_created_at",
+        )
+
+        with patch("activation_product_by_date.activate_candidates") as activate:
+            with redirect_stdout(StringIO()) as stdout:
+                result = process_current_account(
+                    page_size=50,
+                    sleep_min_seconds=0,
+                    sleep_max_seconds=0,
+                    dry_run=False,
+                    yes=True,
+                    product_types=["INACTIVE"],
+                    max_age_days=183,
+                    candidates=[stale_candidate],
+                    print_candidate_list=True,
+                )
+
+        self.assertEqual(result["activated"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["mark_failed"], 0)
+        activate.assert_not_called()
+        self.assertIn("age_source=account_db_created_at", stdout.getvalue())
 
     def test_mark_uploaded_product_active_updates_account_db(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
