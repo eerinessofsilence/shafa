@@ -43,17 +43,38 @@ def _load_json(path: Path) -> object:
         return None
 
 
-def _account_auth_path(account_file: Path, payload: dict[str, Any]) -> Path:
+def _account_auth_path_candidates(account_file: Path, payload: dict[str, Any]) -> list[Path]:
     state_dir = account_file.parent
-    raw_path = (
-        payload.get("shafa_session_path")
-        or payload.get("browser_session_path")
-        or state_dir / "auth.json"
-    )
-    path = Path(str(raw_path))
-    if not path.is_absolute():
-        path = state_dir / path
-    return path.expanduser().resolve(strict=False)
+    raw_paths = [
+        payload.get("shafa_session_path"),
+        payload.get("browser_session_path"),
+        state_dir / "auth.json",
+    ]
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for raw_path in raw_paths:
+        if raw_path in (None, ""):
+            continue
+        path = Path(str(raw_path))
+        if not path.is_absolute():
+            path = state_dir / path
+        resolved = path.expanduser().resolve(strict=False)
+        if resolved not in seen:
+            seen.add(resolved)
+            candidates.append(resolved)
+        fallback = (state_dir / path.name).expanduser().resolve(strict=False)
+        if fallback not in seen:
+            seen.add(fallback)
+            candidates.append(fallback)
+    return candidates
+
+
+def _account_auth_path(account_file: Path, payload: dict[str, Any]) -> Path:
+    candidates = _account_auth_path_candidates(account_file, payload)
+    for auth_path in candidates:
+        if auth_path.exists() and _csrftoken(_load_storage_cookies(auth_path)):
+            return auth_path
+    return candidates[0] if candidates else (account_file.parent / "auth.json")
 
 
 def _load_storage_cookies(auth_path: Path) -> list[dict[str, Any]]:
