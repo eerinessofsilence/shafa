@@ -22,6 +22,7 @@ SHAFA_LOGIN_URL = "https://shafa.ua/uk/login"
 APP_MODE_ENV = "SHAFA_APP_MODE"
 SHAFA_LOGIN_FRESH_CONTEXT_ENV = "SHAFA_LOGIN_FRESH_CONTEXT"
 DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV = "SHAFA_DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR"
+ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV = "SHAFA_ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR"
 DEACTIVATE_ONLY_ENV = "SHAFA_DEACTIVATE_ONLY"
 SHARED_DEACTIVATION_ENABLED_ENV = "SHAFA_SHARED_DEACTIVATION_ENABLED"
 SHARED_DEACTIVATION_PLANNER_ENABLED_ENV = "SHAFA_SHARED_DEACTIVATION_PLANNER_ENABLED"
@@ -332,6 +333,10 @@ def _shared_deactivation_worker_enabled() -> bool:
         _shared_deactivation_auto_run_enabled()
         or _env_flag_enabled(SHARED_DEACTIVATION_WORKER_ENABLED_ENV)
     )
+
+
+def _account_startup_old_product_deactivator_enabled() -> bool:
+    return _env_flag_enabled(ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)
 
 
 def _shared_deactivation_dry_run_enabled() -> bool:
@@ -1522,7 +1527,8 @@ def main(
         f"db_path={os.getenv('SHAFA_DB_PATH', '')}. "
         f"telegram_db_path={os.getenv('SHAFA_SHARED_TELEGRAM_DB_PATH', '')}. "
         f"state_dir={os.getenv('SHAFA_ACCOUNT_STATE_DIR', '')}. "
-        f"deactivator_disabled={_env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)}.",
+        f"deactivator_disabled={_env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)}. "
+        f"startup_deactivator_enabled={_account_startup_old_product_deactivator_enabled()}.",
     )
     log(
         "INFO",
@@ -1608,11 +1614,15 @@ def main(
         stop_event, scanner_thread = _start_background_telegram_scanner()
         deactivate_stop_event = None
         deactivate_thread = None
-        if _shared_deactivation_worker_enabled():
+        startup_deactivator_enabled = _account_startup_old_product_deactivator_enabled()
+        if startup_deactivator_enabled and _shared_deactivation_worker_enabled():
             deactivate_stop_event, deactivate_thread = (
                 _start_background_shared_deactivation_worker()
             )
-        if not _env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV):
+        if (
+            startup_deactivator_enabled
+            and not _env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)
+        ):
             if _shared_deactivation_worker_enabled():
                 log(
                     "INFO",
@@ -1620,6 +1630,12 @@ def main(
                 )
             elif deactivate_thread is None:
                 deactivate_stop_event, deactivate_thread = _start_background_old_product_deactivator()
+        elif not startup_deactivator_enabled:
+            log(
+                "INFO",
+                "Account startup old product checks are disabled. "
+                f"enable_with={ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV}.",
+            )
         try:
             _auto_create_product(shafa=shafa)
         finally:

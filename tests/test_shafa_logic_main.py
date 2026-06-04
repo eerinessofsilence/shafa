@@ -50,8 +50,6 @@ def test_noninteractive_shafa_mode_does_not_require_inquirer(monkeypatch) -> Non
         {"shafa": True},
         "stop",
         ("join", 5),
-        "stop",
-        ("join", 5),
     ]
 
 
@@ -69,6 +67,7 @@ def test_shared_worker_skips_old_direct_deactivator(monkeypatch) -> None:
 
     monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_ENABLED", "1")
     monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_WORKER_ENABLED", "1")
+    monkeypatch.setenv("SHAFA_ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR", "1")
     monkeypatch.setitem(sys.modules, "inquirer", None)
     monkeypatch.setattr(module, "sync_channels_from_runtime_config", lambda: calls.append("sync"))
     monkeypatch.setattr(module, "_auto_create_product", lambda **kwargs: calls.append(kwargs))
@@ -92,6 +91,38 @@ def test_shared_worker_skips_old_direct_deactivator(monkeypatch) -> None:
 
     assert "shared" in calls
     assert "old" not in calls
+
+
+def test_account_startup_old_direct_deactivator_is_opt_in(monkeypatch) -> None:
+    module = _reload_shafa_main()
+    calls: list[object] = []
+
+    class _StopEvent:
+        def set(self) -> None:
+            calls.append("stop")
+
+    class _Thread:
+        def join(self, timeout=None) -> None:
+            calls.append(("join", timeout))
+
+    monkeypatch.setenv("SHAFA_ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR", "1")
+    monkeypatch.setitem(sys.modules, "inquirer", None)
+    monkeypatch.setattr(module, "sync_channels_from_runtime_config", lambda: calls.append("sync"))
+    monkeypatch.setattr(module, "_auto_create_product", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        module,
+        "_start_background_telegram_scanner",
+        lambda: (_StopEvent(), _Thread()),
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_background_old_product_deactivator",
+        lambda: (calls.append("old") or _StopEvent(), _Thread()),
+    )
+
+    module.main(shafa=True)
+
+    assert "old" in calls
 
 
 def test_shared_auto_run_enables_planner_worker_and_real_mode(monkeypatch) -> None:
@@ -148,6 +179,7 @@ def test_shared_auto_run_starts_shared_worker_and_skips_old_direct(
             calls.append(("join", timeout))
 
     monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "1")
+    monkeypatch.setenv("SHAFA_ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR", "1")
     monkeypatch.setitem(sys.modules, "inquirer", None)
     monkeypatch.setattr(module, "sync_channels_from_runtime_config", lambda: calls.append("sync"))
     monkeypatch.setattr(module, "_auto_create_product", lambda **kwargs: calls.append(kwargs))
