@@ -5,7 +5,7 @@ from contextlib import suppress
 import json
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shafa_control import AccountSessionStore
@@ -83,6 +83,20 @@ class AccountLogsApiTest(unittest.TestCase):
         self.addCleanup(lambda: set_account_log_store(AccountLogStore()))
         self.client = SyncASGITestClient(app)
         self.local_tz = datetime.now().astimezone().tzinfo or UTC
+        self.now = datetime.now(self.local_tz).replace(microsecond=0)
+
+    def _render_log_line(
+        self,
+        timestamp: datetime,
+        level: str,
+        message: str,
+        *,
+        account_name: str = "Alpha",
+    ) -> str:
+        return (
+            f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"[{level}] [{account_name}] {message}"
+        )
 
     def test_get_account_logs_returns_only_requested_account(self) -> None:
         log("acc-1", "INFO", "Login started")
@@ -116,8 +130,16 @@ class AccountLogsApiTest(unittest.TestCase):
         account_log.write_text(
             "\n".join(
                 [
-                    "[2026-04-18 13:54:09] [INFO] [Alpha] [RUN] started pid=3544",
-                    "[2026-04-18 13:54:13] [SUCCESS] [Alpha] Товар создан успешно. ID: 42.",
+                    self._render_log_line(
+                        self.now - timedelta(seconds=4),
+                        "INFO",
+                        "[RUN] started pid=3544",
+                    ),
+                    self._render_log_line(
+                        self.now,
+                        "SUCCESS",
+                        "Товар создан успешно. ID: 42.",
+                    ),
                 ]
             )
             + "\n",
@@ -130,17 +152,66 @@ class AccountLogsApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(
             [item["message"] for item in payload],
-            ["Процесс запущен (PID 3544).", "Товар создан успешно. ID: 42."],
+            ["Товар создан успешно. ID: 42."],
         )
-        self.assertEqual([item["level"] for item in payload], ["INFO", "SUCCESS"])
+        self.assertEqual([item["level"] for item in payload], ["SUCCESS"])
+
+    def test_get_account_logs_keeps_only_last_24_hours(self) -> None:
+        account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
+        account_log.parent.mkdir(parents=True, exist_ok=True)
+        account_log.write_text(
+            "\n".join(
+                [
+                    self._render_log_line(
+                        self.now - timedelta(hours=25),
+                        "INFO",
+                        "old file",
+                    ),
+                    self._render_log_line(
+                        self.now - timedelta(minutes=5),
+                        "INFO",
+                        "recent file",
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.log_store.append(
+            "acc-1",
+            "INFO",
+            "old runtime",
+            timestamp=self.now - timedelta(hours=25),
+        )
+        self.log_store.append(
+            "acc-1",
+            "INFO",
+            "recent runtime",
+            timestamp=self.now,
+        )
+
+        response = self.client.get("/accounts/acc-1/logs")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            [item["message"] for item in payload],
+            ["recent file", "recent runtime"],
+        )
 
     def test_get_account_logs_default_returns_recent_tail_only(self) -> None:
         self.log_store.max_entries_per_account = 1000
         account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
         account_log.parent.mkdir(parents=True, exist_ok=True)
+        first_timestamp = self.now - timedelta(minutes=259)
         account_log.write_text(
             "".join(
-                f"[2026-04-18 13:{index // 60:02d}:{index % 60:02d}] [INFO] [Alpha] line-{index}\n"
+                self._render_log_line(
+                    first_timestamp + timedelta(minutes=index),
+                    "INFO",
+                    f"line-{index}",
+                )
+                + "\n"
                 for index in range(260)
             ),
             encoding="utf-8",
@@ -158,14 +229,19 @@ class AccountLogsApiTest(unittest.TestCase):
         account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
         account_log.parent.mkdir(parents=True, exist_ok=True)
         account_log.write_text(
-            "[2026-04-18 13:54:09] [INFO] [Alpha] [RUN] started pid=3544\n",
+            self._render_log_line(
+                self.now - timedelta(seconds=4),
+                "INFO",
+                "[RUN] started pid=3544",
+            )
+            + "\n",
             encoding="utf-8",
         )
         self.log_store.append(
             "acc-1",
             "ERROR",
             "Не удалось обработать товар.",
-            timestamp=datetime(2026, 4, 18, 13, 54, 13, tzinfo=self.local_tz),
+            timestamp=self.now,
         )
 
         response = self.client.get("/accounts/acc-1/logs")
@@ -174,31 +250,29 @@ class AccountLogsApiTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(
             [item["message"] for item in payload],
-            ["Процесс запущен (PID 3544).", "Не удалось обработать товар."],
+            ["Не удалось обработать товар."],
         )
 
-    def test_get_account_logs_dedupes_identical_file_and_runtime_entries(self) -> None:
+    def test_get_account_logs_ignores_startup_file_and_runtime_entries(self) -> None:
         account_log = self.accounts_dir / "acc-1" / "logs" / "app.log"
         account_log.parent.mkdir(parents=True, exist_ok=True)
         account_log.write_text(
-            "[2026-04-18 13:54:09] [INFO] [Alpha] [RUN] started pid=3544\n",
+            self._render_log_line(self.now, "INFO", "[RUN] started pid=3544")
+            + "\n",
             encoding="utf-8",
         )
         self.log_store.append(
             "acc-1",
             "INFO",
             "[RUN] started pid=3544",
-            timestamp=datetime(2026, 4, 18, 13, 54, 9, tzinfo=self.local_tz),
+            timestamp=self.now,
         )
 
         response = self.client.get("/accounts/acc-1/logs")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(
-            [item["message"] for item in payload],
-            ["Процесс запущен (PID 3544)."],
-        )
+        self.assertEqual(payload, [])
 
     def test_account_log_store_normalizes_inline_levels(self) -> None:
         entry = self.log_store.append(
@@ -216,7 +290,6 @@ class AccountLogsApiTest(unittest.TestCase):
     def test_account_log_store_translates_system_messages(self) -> None:
         store = AccountLogStore(max_entries_per_account=10)
 
-        store.append("acc-1", "INFO", "[RUN] started pid=3544")
         store.append("acc-1", "INFO", "Account settings updated.")
         store.append(
             "acc-1",
@@ -230,11 +303,40 @@ class AccountLogsApiTest(unittest.TestCase):
         self.assertEqual(
             [entry.message for entry in entries],
             [
-                "Процесс запущен (PID 3544).",
                 "Настройки аккаунта обновлены.",
                 "Код Telegram запрошен.",
                 "Сессия Shafa сохранена.",
             ],
+        )
+
+    def test_account_log_store_ignores_startup_noise(self) -> None:
+        store = AccountLogStore(max_entries_per_account=20)
+
+        startup_messages = [
+            "[RUN] started pid=3544",
+            "Account status changed to started (pid=3544).",
+            "[RUN] launch context selected_account_id=acc-1 runtime_account_id=acc-1",
+            "Runtime context initialized. account=Alpha. account_id=acc-1.",
+            "Shared deactivation startup flags. auto_run=False.",
+            "Account startup old product checks are disabled. enable_with=SHAFA_ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR.",
+            "Creation products DB enabled: path=/tmp/creation_products.sqlite3.",
+            "Creation DB enabled; bypassing old telegram_products scanning for creation.",
+            "Запуск периодического режима: Без Playwright. Интервал: 5 мин.",
+            "cleanup worker account selected entry_point=cleanup_service selected_account_id=acc-1. account=Alpha. account_id=acc-1. path=/tmp/project. process_id=432282.",
+            "cleanup cycle start account=Alpha. account_id=acc-1. entry_point=cleanup_service cleanup_mode=disabled will_call_shafa=false process_id=432282. threshold_days=183. limit=all. dry_run=False.",
+            "cleanup cycle end account=Alpha. account_id=acc-1. total_checked_products=0. total_deactivated_products=0. execution_time=0.005s.",
+            'Alpha Product="unknown" message_id=unknown telegram_found=false telegram_channel="unknown" message_date=unknown age=unknown operation=deactivate action=SKIPPED reason="missing Shafa session"',
+            "cleanup skipped detached run because account process is active; in-process deactivator is responsible for this account. entry_point=cleanup_service cleanup_mode=disabled will_call_shafa=false account=Alpha. account_id=acc-1. process_id=432282.",
+        ]
+        for message in startup_messages:
+            store.append("acc-1", "INFO", message)
+        store.append("acc-1", "SUCCESS", "Товар создан успешно. ID: 42.")
+
+        entries = store.list_entries("acc-1", limit=20)
+
+        self.assertEqual(
+            [entry.message for entry in entries],
+            ["Товар создан успешно. ID: 42."],
         )
 
     def test_account_log_store_translates_business_messages(self) -> None:
@@ -273,10 +375,26 @@ class AccountLogsApiTest(unittest.TestCase):
         account_log.write_text(
             "\n".join(
                 [
-                    "[2026-04-18 13:54:09] [WARN] [Alpha] [WARN] API отклонил размер. Обновляю размеры и повторяю создание товара...",
-                    "[2026-04-18 13:54:10] [INFO] [Alpha] __________________________________",
-                    "[2026-04-18 13:54:11] [INFO] [Alpha] Размеры товара: {\"catalog\": \"zhenskaya-obuv/krossovki\", \"raw_size\": \"36\", \"raw_additional_sizes\": [\"37\", \"38\"], \"expanded_sizes\": [\"36\", \"37\", \"38\"], \"preferred_size_system\": \"eu\", \"resolved_size\": 1196, \"resolved_additional_sizes\": [1198, 1200]}",
-                    "[2026-04-18 13:54:12] [ERROR] [Alpha] [{'field': 'size', 'messages': [{'code': 'invalid', 'message': 'Потрібно вибрати розмір речі', '__typename': 'GraphErrorMessage'}], '__typename': 'GraphResponseError'}]",
+                    self._render_log_line(
+                        self.now - timedelta(seconds=3),
+                        "WARN",
+                        "[WARN] API отклонил размер. Обновляю размеры и повторяю создание товара...",
+                    ),
+                    self._render_log_line(
+                        self.now - timedelta(seconds=2),
+                        "INFO",
+                        "__________________________________",
+                    ),
+                    self._render_log_line(
+                        self.now - timedelta(seconds=1),
+                        "INFO",
+                        "Размеры товара: {\"catalog\": \"zhenskaya-obuv/krossovki\", \"raw_size\": \"36\", \"raw_additional_sizes\": [\"37\", \"38\"], \"expanded_sizes\": [\"36\", \"37\", \"38\"], \"preferred_size_system\": \"eu\", \"resolved_size\": 1196, \"resolved_additional_sizes\": [1198, 1200]}",
+                    ),
+                    self._render_log_line(
+                        self.now,
+                        "ERROR",
+                        "[{'field': 'size', 'messages': [{'code': 'invalid', 'message': 'Потрібно вибрати розмір речі', '__typename': 'GraphErrorMessage'}], '__typename': 'GraphResponseError'}]",
+                    ),
                 ]
             )
             + "\n",

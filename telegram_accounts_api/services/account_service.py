@@ -217,18 +217,6 @@ class AccountService:
 
         try:
             launch_context = self._build_launch_context(account)
-            self._append_log(
-                account,
-                "[RUN] launch context "
-                f"selected_account_id={account.id} runtime_account_id={account.id} "
-                f"account_id={account.id} account_name={account.name} "
-                f"cwd={launch_context.get('cwd')} "
-                f"db_path={launch_context.get('SHAFA_DB_PATH')} "
-                f"storage_state_path={launch_context.get('SHAFA_STORAGE_STATE_PATH')} "
-                f"telegram_db_path={launch_context.get('SHAFA_SHARED_TELEGRAM_DB_PATH')} "
-                f"creation_db_path={launch_context.get('SHAFA_CREATION_PRODUCTS_DB_PATH')} "
-                f"state_dir={launch_context.get('SHAFA_ACCOUNT_STATE_DIR')}",
-            )
             process = self._spawn_process(account, launch_context)
         except BadRequestError as exc:
             self._append_log(account, f"[ERROR] {exc.message}")
@@ -263,14 +251,12 @@ class AccountService:
             account_id,
             lambda item: self._mark_process_started(item),
         )
-        self._append_log(account, f"[RUN] started pid={process.pid}")
         if account.channel_links:
             self._append_log(
                 account,
                 f"[CHANNELS] exported {len(account.channel_links)} link(s)",
             )
         LOGGER.info("Started account %s with pid %s", account_id, process.pid)
-        log(account_id, "INFO", f"Account status changed to started (pid={process.pid}).")
         return await self._to_model(updated_record)
 
     async def stop_account(self, account_id: str) -> AccountRead:

@@ -1,9 +1,9 @@
 import type { MetricAccent, MetricKind } from '../types';
 import {
   CircleAlert,
-  CheckCircle2,
   Package2,
   Radio,
+  RefreshCcw,
   Users,
   type LucideIcon,
 } from 'lucide-react';
@@ -21,7 +21,7 @@ const iconByKind: Record<MetricKind, LucideIcon> = {
   active: Radio,
   items: Package2,
   errors: CircleAlert,
-  deactivated: CheckCircle2,
+  retries: RefreshCcw,
 };
 
 const accentClasses: Record<

@@ -186,6 +186,23 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(rows[0]["message_id"], 101)
         self.assertEqual(rows[0]["created_product_id"], "product-old")
 
+    def test_deactivate_old_telegram_products_is_disabled_noop(self) -> None:
+        called = False
+
+        def _deactivate_product(_product_id: str) -> None:
+            nonlocal called
+            called = True
+
+        result = dc.deactivate_old_telegram_products(
+            deactivate_product_func=_deactivate_product,
+        )
+
+        self.assertTrue(result["deactivation_disabled"])
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(result["deactivated"], 0)
+        self.assertFalse(called)
+
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_old_telegram_products_marks_records_deactivated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -266,6 +283,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertIsNotNone(row[4])
         self.assertEqual(uploaded_row, (0, "Деактивовано"))
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_old_product_age_env_is_clamped_to_183_days(self) -> None:
         with patch.dict(
             "os.environ",
@@ -277,6 +295,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         ):
             self.assertEqual(dc._telegram_product_max_age_days(), 183)
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_explicit_old_product_age_is_clamped_to_183_days(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -331,6 +350,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(result["deactivated"], 0)
         self.assertEqual(deactivated_ids, [])
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_fresh_direct_check_is_persisted_until_next_check(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -397,6 +417,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertIsNotNone(row[2])
         self.assertEqual(second_result["checked"], 0)
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_fresh_direct_check_logs_summary_without_per_product_spam(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -453,6 +474,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
             any("active_products=3" in message and "total_checked_products=3" in message for message in logs)
         )
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_old_telegram_products_checks_one_product_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -511,6 +533,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(second_result["deactivated"], 1)
         self.assertEqual(deactivated_ids, ["product-231", "product-232"])
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_old_telegram_products_prioritizes_deactivation_queue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -560,6 +583,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(result["deactivated"], 1)
         self.assertEqual(deactivated_ids, ["product-queued-old"])
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_old_telegram_products_checks_all_when_limit_zero(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -611,6 +635,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(result["deactivated"], 2)
         self.assertEqual(deactivated_ids, ["product-241", "product-242"])
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_old_telegram_products_prefers_uploaded_message_id_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -675,6 +700,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(deactivated_ids, ["product-uploaded"])
         self.assertIsNotNone(row[0])
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_old_telegram_products_sleeps_between_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
@@ -733,6 +759,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(deactivated_ids, ["product-212", "product-211"])
         sleep_mock.assert_called_once_with(1.5)
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_old_telegram_products_logs_each_created_product_check(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"
@@ -823,6 +850,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
             )
         )
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_deactivate_failure_is_tracked_for_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
@@ -884,6 +912,7 @@ class OldTelegramProductDeactivationTests(unittest.TestCase):
         self.assertEqual(row[4], 1)
         self.assertEqual(row[5], "deactivate failed")
 
+    @unittest.skip("old product deactivation is disabled; product creation only")
     def test_old_direct_product_not_found_is_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account_db_path = Path(temp_dir) / "account.sqlite3"

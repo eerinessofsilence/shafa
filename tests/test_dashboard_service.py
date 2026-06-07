@@ -80,6 +80,7 @@ class DashboardServiceDeactivationTest(unittest.TestCase):
                     shafa_deactivated_at TEXT,
                     shafa_deleted_at TEXT,
                     deactivation_status TEXT,
+                    deactivation_retry_count INTEGER NOT NULL DEFAULT 0,
                     deactivation_completed_at TEXT,
                     deactivation_error TEXT,
                     updated_at TEXT,
@@ -100,11 +101,12 @@ class DashboardServiceDeactivationTest(unittest.TestCase):
                         shafa_deactivated_at,
                         shafa_deleted_at,
                         deactivation_status,
+                        deactivation_retry_count,
                         deactivation_completed_at,
                         deactivation_error,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["account_id"],
@@ -115,6 +117,7 @@ class DashboardServiceDeactivationTest(unittest.TestCase):
                         row.get("shafa_deactivated_at"),
                         row.get("shafa_deleted_at"),
                         row.get("deactivation_status"),
+                        row.get("deactivation_retry_count", 0),
                         completed_at,
                         row.get("deactivation_error"),
                         completed_at,
@@ -255,6 +258,15 @@ class DashboardServiceDeactivationTest(unittest.TestCase):
                         "deactivation_status": "pending",
                         "completed_at": completed_at,
                     },
+                    {
+                        "account_id": "acc-2",
+                        "channel_id": 24,
+                        "message_id": 1004,
+                        "shafa_product_id": "failed-a",
+                        "deactivation_status": "failed",
+                        "deactivation_retry_count": 2,
+                        "completed_at": completed_at,
+                    },
                 ],
             )
 
@@ -267,7 +279,13 @@ class DashboardServiceDeactivationTest(unittest.TestCase):
         self.assertEqual(summary.total_done_count, 3)
         by_account = {row.account_id: row for row in summary.per_account}
         self.assertEqual(by_account["acc-1"].total_done_count, 2)
+        self.assertEqual(by_account["acc-1"].pending_count, 1)
         self.assertEqual(by_account["acc-2"].total_done_count, 1)
+        self.assertEqual(by_account["acc-2"].failed_count, 1)
+        self.assertEqual(by_account["acc-2"].retry_scheduled_count, 1)
+        self.assertEqual(summary.pending_count, 1)
+        self.assertEqual(summary.failed_count, 1)
+        self.assertEqual(summary.retry_scheduled_count, 1)
 
     def test_shared_source_rows_are_not_double_counted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

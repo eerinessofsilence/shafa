@@ -3045,6 +3045,8 @@ def seed_account_telegram_products_from_existing_db(
         source_statuses.append(TELEGRAM_PRODUCT_STATUS_FAILED)
     if include_processing:
         source_statuses.append(TELEGRAM_PRODUCT_STATUS_PROCESSING)
+    if creation_products_enabled():
+        return 0
     telegram_db_path = Path(db_path) if db_path is not None else _telegram_products_db_path()
     _ensure_db_initialized(telegram_db_path)
     status_placeholders = ",".join(["?"] * len(source_statuses))

@@ -645,6 +645,26 @@ class SharedDeactivationTests(unittest.TestCase):
             ],
         )
 
+    def test_shared_worker_is_disabled_noop(self) -> None:
+        called = False
+
+        def _deactivate_product(_product_id: str) -> None:
+            nonlocal called
+            called = True
+
+        result = dc.process_shared_deactivation_queue_once(
+            account_id="acc-1",
+            dry_run=False,
+            deactivate_product_func=_deactivate_product,
+            sleep_func=lambda _: None,
+        )
+
+        self.assertTrue(result["deactivation_disabled"])
+        self.assertEqual(result["claimed"], 0)
+        self.assertEqual(result["deactivated"], 0)
+        self.assertFalse(called)
+
+    @unittest.skip("shared deactivation worker is disabled; product creation only")
     def test_shared_worker_treats_product_not_found_as_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"

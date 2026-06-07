@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,7 +61,7 @@ class CleanupServiceTest(unittest.TestCase):
             channel_links=[],
         )
 
-    def test_global_direct_cleanup_disabled_by_default(self) -> None:
+    def test_cleanup_run_once_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account = self._account(Path(temp_dir))
             fake_service = _FakeAccountService(account)
@@ -82,17 +81,19 @@ class CleanupServiceTest(unittest.TestCase):
                 result = cleanup.run_once()
 
         run.assert_not_called()
-        self.assertEqual(result["deactivated"], 0)
-        self.assertTrue(
-            any(
-                "cleanup_mode=disabled" in line
-                and "deactivation_mode=old_direct" in line
-                and "will_call_shafa=false" in line
-                for line in fake_service.logs
-            )
+        self.assertEqual(
+            result,
+            {
+                "accounts": 0,
+                "checked": 0,
+                "deactivated": 0,
+                "failed": 0,
+                "execution_time_seconds": 0.0,
+            },
         )
+        self.assertEqual(fake_service.logs, [])
 
-    def test_shared_mode_runs_planner_only(self) -> None:
+    def test_shared_mode_does_not_run_planner(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account = self._account(Path(temp_dir))
             fake_service = _FakeAccountService(
@@ -104,45 +105,27 @@ class CleanupServiceTest(unittest.TestCase):
             )
             cleanup = OutdatedProductCleanupService(fake_service)
 
-            completed = subprocess.CompletedProcess(
-                ["python", "main.py"],
-                0,
-                stdout='{"checked": 2, "deactivated": 0, "failed": 0}\n',
-            )
             with (
                 patch.dict(
                     "os.environ",
                     {"SHAFA_GLOBAL_OLD_PRODUCT_CLEANUP_ENABLED": ""},
                     clear=False,
                 ),
-                patch("subprocess.run", return_value=completed) as run,
+                patch("subprocess.run") as run,
             ):
                 result = cleanup.run_once()
 
-        command = run.call_args.args[0]
-        self.assertIn("--shared-deactivation-plan-once", command)
-        self.assertNotIn("--deactivate-old-products-once", command)
-        self.assertEqual(result["checked"], 2)
-        self.assertTrue(
-            any(
-                "cleanup_mode=planner_only" in line
-                and "deactivation_mode=shared_planner" in line
-                and "will_call_shafa=false" in line
-                for line in fake_service.logs
-            )
-        )
+        run.assert_not_called()
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(result["deactivated"], 0)
+        self.assertEqual(fake_service.logs, [])
 
-    def test_detached_direct_cleanup_age_is_clamped(self) -> None:
+    def test_detached_direct_cleanup_never_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             account = self._account(Path(temp_dir))
             fake_service = _FakeAccountService(account)
             cleanup = OutdatedProductCleanupService(fake_service)
 
-            completed = subprocess.CompletedProcess(
-                ["python", "main.py"],
-                0,
-                stdout='{"checked": 0, "deactivated": 0, "failed": 0}\n',
-            )
             with (
                 patch.dict(
                     "os.environ",
@@ -152,13 +135,11 @@ class CleanupServiceTest(unittest.TestCase):
                     },
                     clear=False,
                 ),
-                patch("subprocess.run", return_value=completed) as run,
+                patch("subprocess.run") as run,
             ):
                 cleanup.run_once()
 
-        command = run.call_args.args[0]
-        age_index = command.index("--old-products-age-days") + 1
-        self.assertEqual(command[age_index], "183")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

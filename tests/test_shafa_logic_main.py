@@ -89,7 +89,7 @@ def test_shared_worker_skips_old_direct_deactivator(monkeypatch) -> None:
 
     module.main(shafa=True)
 
-    assert "shared" in calls
+    assert "shared" not in calls
     assert "old" not in calls
 
 
@@ -122,10 +122,10 @@ def test_account_startup_old_direct_deactivator_is_opt_in(monkeypatch) -> None:
 
     module.main(shafa=True)
 
-    assert "old" in calls
+    assert "old" not in calls
 
 
-def test_shared_auto_run_enables_planner_worker_and_real_mode(monkeypatch) -> None:
+def test_shared_auto_run_flags_are_ignored(monkeypatch) -> None:
     module = _reload_shafa_main()
 
     monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "1")
@@ -134,10 +134,10 @@ def test_shared_auto_run_enables_planner_worker_and_real_mode(monkeypatch) -> No
     monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_WORKER_ENABLED", raising=False)
     monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", raising=False)
 
-    assert module._shared_deactivation_enabled()
-    assert module._shared_deactivation_planner_enabled()
-    assert module._shared_deactivation_worker_enabled()
-    assert not module._shared_deactivation_dry_run_enabled()
+    assert not module._shared_deactivation_enabled()
+    assert not module._shared_deactivation_planner_enabled()
+    assert not module._shared_deactivation_worker_enabled()
+    assert module._shared_deactivation_dry_run_enabled()
 
 
 def test_shared_auto_run_respects_explicit_dry_run(monkeypatch) -> None:
@@ -149,7 +149,7 @@ def test_shared_auto_run_respects_explicit_dry_run(monkeypatch) -> None:
     assert module._shared_deactivation_dry_run_enabled()
 
 
-def test_shared_auto_run_makes_controller_worker_real_by_default(monkeypatch) -> None:
+def test_shared_auto_run_keeps_controller_worker_dry_run(monkeypatch) -> None:
     _reload_shafa_main()
     sys.modules.pop("controller.data_controller", None)
     data_controller = importlib.import_module("controller.data_controller")
@@ -157,7 +157,7 @@ def test_shared_auto_run_makes_controller_worker_real_by_default(monkeypatch) ->
     monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "1")
     monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", raising=False)
 
-    assert not data_controller._shared_deactivation_dry_run()
+    assert data_controller._shared_deactivation_dry_run()
 
     monkeypatch.setenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", "1")
 
@@ -201,11 +201,11 @@ def test_shared_auto_run_starts_shared_worker_and_skips_old_direct(
 
     module.main(shafa=True)
 
-    assert "shared" in calls
+    assert "shared" not in calls
     assert "old" not in calls
 
 
-def test_shared_plan_once_refuses_non_dry_run_when_shared_disabled(monkeypatch) -> None:
+def test_shared_plan_once_is_disabled_noop(monkeypatch) -> None:
     module = _reload_shafa_main()
 
     monkeypatch.delenv("SHAFA_SHARED_DEACTIVATION_ENABLED", raising=False)
@@ -216,12 +216,7 @@ def test_shared_plan_once_refuses_non_dry_run_when_shared_disabled(monkeypatch) 
         module._shared_deactivation_plan_once,
     )
 
-    try:
-        module.main(shared_deactivation_plan_once=True)
-    except RuntimeError as exc:
-        assert "SHAFA_SHARED_DEACTIVATION_ENABLED" in str(exc)
-    else:
-        raise AssertionError("expected RuntimeError")
+    module.main(shared_deactivation_plan_once=True)
 
 
 def test_old_product_deactivate_interval_defaults_to_one_to_three_minutes(

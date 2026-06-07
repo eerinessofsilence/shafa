@@ -20,7 +20,7 @@ export type MetricKind =
   | 'active'
   | 'items'
   | 'errors'
-  | 'deactivated';
+  | 'retries';
 
 export interface DesktopShellInfo {
   apiBaseUrl: string;
@@ -48,6 +48,8 @@ export interface ChartPoint {
   label: string;
   items: number;
   errors: number;
+  creation_errors: number;
+  retry_events: number;
 }
 
 export interface TelegramChannel {
@@ -161,6 +163,8 @@ export interface ApiDashboardSeriesPoint {
   date: string;
   items: number;
   errors: number;
+  creation_errors: number;
+  retry_events: number;
 }
 
 export interface ApiDashboardSharedDeactivationAccount {
@@ -193,6 +197,9 @@ export interface ApiDashboardSharedDeactivationSummary {
   deactivated_success_count: number;
   not_found_treated_as_done_count: number;
   total_done_count: number;
+  failed_count: number;
+  pending_count: number;
+  retry_scheduled_count: number;
   per_account: ApiDashboardSharedDeactivationAccount[];
   recent: ApiDashboardRecentSharedDeactivation[];
 }
@@ -207,6 +214,8 @@ export interface ApiDashboardSummary {
   attention_accounts: number;
   item_successes_in_range: number;
   error_events_in_range: number;
+  creation_errors_in_range: number;
+  retry_events_in_range: number;
   latest_run_account_name: string | null;
   latest_run_at: string | null;
   top_error_account_name: string | null;

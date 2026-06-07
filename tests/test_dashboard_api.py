@@ -360,6 +360,8 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(payload["attention_accounts"], 2)
         self.assertEqual(payload["item_successes_in_range"], 3)
         self.assertEqual(payload["error_events_in_range"], 2)
+        self.assertEqual(payload["creation_errors_in_range"], 1)
+        self.assertEqual(payload["retry_events_in_range"], 0)
         self.assertEqual(payload["latest_run_account_name"], "Alpha")
         self.assertEqual(payload["top_error_account_name"], "Alpha")
         self.assertEqual(payload["top_error_account_errors"], 2)
@@ -373,6 +375,7 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(points[eight_days_ago]["items"], 1)
         self.assertEqual(points[yesterday]["items"], 1)
         self.assertEqual(points[yesterday]["errors"], 1)
+        self.assertEqual(points[yesterday]["creation_errors"], 1)
         self.assertEqual(points[two_days_ago]["items"], 1)
         self.assertEqual(points[today]["errors"], 1)
 
@@ -449,6 +452,9 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(shared["not_found_treated_as_done_count"], 1)
         self.assertEqual(shared["total_done_count"], 3)
         self.assertEqual(shared["total_deactivated_products"], 3)
+        self.assertEqual(shared["failed_count"], 1)
+        self.assertEqual(shared["pending_count"], 1)
+        self.assertEqual(shared["retry_scheduled_count"], 1)
 
         by_account = {
             row["account_id"]: row for row in shared["per_account"]
@@ -534,11 +540,34 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(shared["deactivated_success_count"], 2)
         self.assertEqual(shared["not_found_treated_as_done_count"], 1)
         self.assertEqual(shared["total_done_count"], 3)
+        self.assertEqual(shared["failed_count"], 1)
+        self.assertEqual(shared["pending_count"], 1)
+        self.assertEqual(shared["retry_scheduled_count"], 0)
         by_account = {row["account_id"]: row for row in shared["per_account"]}
         self.assertEqual(by_account["acc-1"]["deactivated_success_count"], 1)
         self.assertEqual(by_account["acc-1"]["not_found_treated_as_done_count"], 1)
+        self.assertEqual(by_account["acc-1"]["pending_count"], 1)
         self.assertEqual(by_account["acc-2"]["deactivated_success_count"], 1)
+        self.assertEqual(by_account["acc-2"]["failed_count"], 1)
         self.assertEqual({row["status"] for row in shared["recent"]}, {"completed", "skipped_not_found"})
+
+    def test_dashboard_summary_counts_creation_retry_events(self) -> None:
+        self.log_store.append(
+            "acc-1",
+            "WARN",
+            "Повторю этот товар позже. message_id=501. Осталось ретраев: 2. Причина: CREATE_FAILED.",
+            timestamp=self.now - timedelta(minutes=1),
+        )
+
+        response = self.client.get("/dashboard/summary?period=week")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["retry_events_in_range"], 1)
+        today_point = {
+            point["date"]: point for point in payload["series"]
+        }[self.now.date().isoformat()]
+        self.assertEqual(today_point["retry_events"], 1)
 
     def test_dashboard_does_not_double_count_shared_source_rows(self) -> None:
         completed_at = (self.now - timedelta(minutes=5)).isoformat()
@@ -588,6 +617,8 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(payload["range_end"], self.now.date().isoformat())
         self.assertEqual(payload["item_successes_in_range"], 2)
         self.assertEqual(payload["error_events_in_range"], 2)
+        self.assertEqual(payload["creation_errors_in_range"], 1)
+        self.assertEqual(payload["retry_events_in_range"], 0)
         self.assertEqual(len(payload["series"]), 7)
 
     def test_dashboard_summary_supports_custom_range(self) -> None:
@@ -604,6 +635,8 @@ class DashboardApiTest(unittest.TestCase):
         self.assertEqual(payload["range_end"], range_end)
         self.assertEqual(payload["item_successes_in_range"], 2)
         self.assertEqual(payload["error_events_in_range"], 2)
+        self.assertEqual(payload["creation_errors_in_range"], 1)
+        self.assertEqual(payload["retry_events_in_range"], 0)
         self.assertEqual(len(payload["series"]), 3)
 
     def test_dashboard_summary_rejects_invalid_custom_range(self) -> None:

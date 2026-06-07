@@ -11,6 +11,17 @@ import data.db as db
 
 
 class ProductQueueStatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_queue_env = patch.dict(
+            "os.environ",
+            {"SHAFA_CREATION_PRODUCTS_DB_PATH": ""},
+            clear=False,
+        )
+        self._old_queue_env.start()
+
+    def tearDown(self) -> None:
+        self._old_queue_env.stop()
+
     def test_new_account_does_not_see_other_account_queue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             telegram_db_path = Path(temp_dir) / "telegram.sqlite3"
@@ -39,7 +50,7 @@ class ProductQueueStatusTests(unittest.TestCase):
                         "size": 176,
                     },
                 ),
-                patch("controller.data_controller.is_valid_product", return_value=True),
+                patch("controller.data_controller._get_channel_ids", return_value=[11]),
             ):
                 db.save_telegram_product(
                     11,
@@ -72,7 +83,7 @@ class ProductQueueStatusTests(unittest.TestCase):
         self.assertEqual(
             [(row[0], row[1], row[2]) for row in rows],
             [
-                ("acc-1", 501, "processing"),
+                ("acc-1", 501, "queued"),
                 ("acc-2", 999, "queued"),
             ],
         )

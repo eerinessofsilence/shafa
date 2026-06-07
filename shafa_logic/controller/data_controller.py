@@ -56,7 +56,6 @@ from data.db import (
     claim_shared_deactivation_task_for_account,
     claim_telegram_fetch,
     complete_shared_deactivation_task_for_account,
-    creation_products_db_path,
     creation_products_enabled,
     enqueue_expired_telegram_products_for_deactivation,
     enqueue_telegram_product_deactivation,
@@ -3026,11 +3025,7 @@ def _old_product_deactivate_sleep_seconds() -> float:
 
 
 def _shared_deactivation_dry_run() -> bool:
-    raw = os.getenv("SHAFA_SHARED_DEACTIVATION_DRY_RUN", "").strip()
-    if not raw:
-        auto_run = os.getenv("SHAFA_SHARED_DEACTIVATION_AUTO_RUN", "").strip()
-        return auto_run not in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
-    return raw in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+    return True
 
 
 def _shared_deactivation_scan_seconds() -> float:
@@ -3876,7 +3871,6 @@ def _log_creation_db_path_once() -> None:
     global _CREATION_DB_PATH_LOGGED
     if _CREATION_DB_PATH_LOGGED or not creation_products_enabled():
         return
-    log("INFO", f"Creation products DB enabled: path={creation_products_db_path()}.")
     _CREATION_DB_PATH_LOGGED = True
 
 
@@ -3884,10 +3878,6 @@ def _log_creation_db_bypass_once() -> None:
     global _CREATION_DB_BYPASS_LOGGED
     if _CREATION_DB_BYPASS_LOGGED:
         return
-    log(
-        "INFO",
-        "Creation DB enabled; bypassing old telegram_products scanning for creation.",
-    )
     _CREATION_DB_BYPASS_LOGGED = True
 
 
@@ -3946,20 +3936,15 @@ def _process_scanned_messages(
                 account_id=account_id,
                 telegram_message_date=message_date,
             )
-            if inserted:
-                log(
-                    "INFO",
+            _log_product_detail(
+                (
                     "Product inserted into creation DB. "
-                    f"account_id={account_id}. channel_id={channel_id}. "
-                    f"message_id={message_id}.",
+                    if inserted
+                    else "Duplicate product in creation DB updated. "
                 )
-            else:
-                log(
-                    "INFO",
-                    "Duplicate product in creation DB updated. "
-                    f"account_id={account_id}. channel_id={channel_id}. "
-                    f"message_id={message_id}.",
-                )
+                + f"account_id={account_id}. channel_id={channel_id}. "
+                + f"message_id={message_id}."
+            )
         else:
             inserted = save_telegram_product(
                 channel_id,
@@ -4458,12 +4443,11 @@ async def _collect_discussion_photos(
         if last_exc:
             preview = ", ".join(str(value) for value in candidate_ids[:5])
             suffix = "..." if len(candidate_ids) > 5 else ""
-            log(
-                "WARN",
+            _log_product_detail(
                 "Не удалось получить обсуждение для сообщения: "
-                f"channel_id={channel_id} \n"
-                + f"message_ids=[{preview}{suffix}]\n"
-                + f"error={last_exc}.",
+                f"channel_id={channel_id}. "
+                f"message_ids=[{preview}{suffix}]. "
+                f"error={last_exc}."
             )
         return []
     if discussion_peer is None:
@@ -5619,18 +5603,25 @@ def mark_product_created(
     if creation_products_enabled():
         normalized_created_product_id = str(created_product_id or "").strip()
         if normalized_created_product_id.startswith("SKIPPED_"):
-            mark_creation_product_skipped(
+            marked = mark_creation_product_skipped(
                 resolved_channel_id,
                 message_id,
                 normalized_created_product_id,
                 created_product_id=normalized_created_product_id,
             )
-            log(
-                "INFO",
-                "Product marked skipped in creation DB. "
-                f"channel_id={resolved_channel_id}. message_id={message_id}. "
-                f"reason={normalized_created_product_id}.",
-            )
+            if marked:
+                _log_product_detail(
+                    "Product marked skipped in creation DB. "
+                    f"channel_id={resolved_channel_id}. message_id={message_id}. "
+                    f"reason={normalized_created_product_id}."
+                )
+            else:
+                log(
+                    "WARN",
+                    "Could not mark product skipped in creation DB. "
+                    f"channel_id={resolved_channel_id}. message_id={message_id}. "
+                    f"reason={normalized_created_product_id}."
+                )
             return
 
         marked = mark_creation_product_created(
@@ -5638,12 +5629,19 @@ def mark_product_created(
             message_id,
             created_product_id,
         )
-        log(
-            "INFO",
-            "Product marked created in creation DB. "
-            f"channel_id={resolved_channel_id}. message_id={message_id}. "
-            f"created_product_id={created_product_id}. marked={marked}.",
-        )
+        if marked:
+            _log_product_detail(
+                "Product marked created in creation DB. "
+                f"channel_id={resolved_channel_id}. message_id={message_id}. "
+                f"created_product_id={created_product_id}."
+            )
+        else:
+            log(
+                "WARN",
+                "Could not mark product created in creation DB. "
+                f"channel_id={resolved_channel_id}. message_id={message_id}. "
+                f"created_product_id={created_product_id}."
+            )
         creation_row = get_creation_product(resolved_channel_id, message_id)
         if creation_row is not None and normalized_created_product_id:
             parsed_data = (
@@ -5663,12 +5661,11 @@ def mark_product_created(
             reconcile_shared_telegram_products(
                 account_id=str(creation_row.get("account_id") or "")
             )
-            log(
-                "INFO",
+            _log_product_detail(
                 "Created product mapping written to shared Telegram DB. "
                 f"account_id={creation_row.get('account_id')}. "
                 f"channel_id={resolved_channel_id}. message_id={message_id}. "
-                f"created_product_id={created_product_id}.",
+                f"created_product_id={created_product_id}."
             )
         return
     mark_telegram_product_created(resolved_channel_id, message_id, created_product_id)
@@ -5688,8 +5685,7 @@ def register_product_failure(
             message_id,
             failure_reason,
         )
-        log(
-            "ERROR",
+        _log_product_detail(
             "Product marked failed in creation DB. "
             f"channel_id={resolved_channel_id}. message_id={message_id}. "
             f"attempts={attempts}. error={failure_reason}.",
@@ -5835,6 +5831,23 @@ def plan_shared_old_product_deactivation(
     account_id: Optional[str] = None,
     dry_run: Optional[bool] = None,
 ) -> dict[str, object]:
+    return {
+        "deactivation_disabled": True,
+        "checked": 0,
+        "old": 0,
+        "fresh": 0,
+        "date_missing": 0,
+        "tasks": 0,
+        "account_tasks": 0,
+        "batch_size": 0,
+        "processed_count": 0,
+        "queued_count": 0,
+        "fresh_count": 0,
+        "date_missing_count": 0,
+        "skipped_count": 0,
+        "has_more": False,
+        "dry_run": True,
+    }
     started_at = time.perf_counter()
     age_days = max(
         DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
@@ -5893,17 +5906,19 @@ def process_shared_deactivation_queue_once(
     sleep_func=time.sleep,
 ) -> dict[str, object]:
     resolved_account_id = str(account_id or _current_account_id()).strip() or "default"
-    effective_dry_run = _shared_deactivation_dry_run() if dry_run is None else dry_run
     result: dict[str, object] = {
         "account_id": resolved_account_id,
+        "deactivation_disabled": True,
         "claimed": 0,
         "deactivated": 0,
         "failed": 0,
         "skipped": 0,
         "not_found": 0,
-        "dry_run": effective_dry_run,
+        "dry_run": True,
         "slept_seconds": 0.0,
     }
+    return result
+    effective_dry_run = _shared_deactivation_dry_run() if dry_run is None else dry_run
     if effective_dry_run:
         _safe_old_product_log(
             "INFO",
@@ -6839,6 +6854,34 @@ def deactivate_old_telegram_products(
     account_id: Optional[str] = None,
     deactivate_product_func=None,
 ) -> dict[str, object]:
+    try:
+        disabled_limit = int(limit) if limit is not None else 0
+    except (TypeError, ValueError):
+        disabled_limit = 0
+    try:
+        disabled_age_days = (
+            DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
+            if older_than_days is None
+            else max(int(older_than_days), DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS)
+        )
+    except (TypeError, ValueError):
+        disabled_age_days = DEFAULT_TELEGRAM_PRODUCT_MAX_AGE_DAYS
+    return {
+        "deactivation_disabled": True,
+        "older_than_days": disabled_age_days,
+        "limit": "all" if disabled_limit <= 0 else max(disabled_limit, 1),
+        "dry_run": True,
+        "sleep_seconds": 0.0,
+        "checked": 0,
+        "found": 0,
+        "active": 0,
+        "skipped": 0,
+        "not_found": 0,
+        "deactivated": 0,
+        "failed": 0,
+        "candidates": [],
+        "execution_time_seconds": 0.0,
+    }
     log("INFO", "Деактивация ждёт очередь выполнения.")
     enter_product_pipeline()
     try:

@@ -1084,6 +1084,8 @@ function createEmptyDashboardSeries(
       label: formatDashboardSeriesLabel(pointDateLabel, preset),
       items: 0,
       errors: 0,
+      creation_errors: 0,
+      retry_events: 0,
     };
   });
 }
@@ -1118,19 +1120,19 @@ function createDashboardMetrics(
     },
     {
       kind: 'errors',
-      label: `Ошибок ${rangeLabel}`,
-      value: summary ? String(summary.error_events_in_range) : '—',
-      unit: 'лог.',
+      label: `Ошибок создания ${rangeLabel}`,
+      value: summary
+        ? String(summary.creation_errors_in_range ?? summary.error_events_in_range)
+        : '—',
+      unit: 'ед.',
       accent: 'rose',
     },
     {
-      kind: 'deactivated',
-      label: 'Деактиваций',
-      value: summary
-        ? String(summary.shared_deactivation.total_done_count)
-        : '—',
-      unit: 'копий',
-      accent: 'teal',
+      kind: 'retries',
+      label: `Ретраев создания ${rangeLabel}`,
+      value: summary ? String(summary.retry_events_in_range ?? 0) : '—',
+      unit: 'соб.',
+      accent: 'amber',
     },
   ];
 }
@@ -1149,6 +1151,8 @@ function createDashboardSeries(
     label: formatDashboardSeriesLabel(point.date, preset),
     items: point.items,
     errors: point.errors,
+    creation_errors: point.creation_errors ?? 0,
+    retry_events: point.retry_events ?? 0,
   }));
 }
 

@@ -9,6 +9,8 @@ class DashboardSeriesPointRead(BaseModel):
     date: date
     items: int = 0
     errors: int = 0
+    creation_errors: int = 0
+    retry_events: int = 0
 
 
 class DashboardSharedDeactivationAccountRead(BaseModel):
@@ -41,6 +43,9 @@ class DashboardSharedDeactivationSummaryRead(BaseModel):
     deactivated_success_count: int = 0
     not_found_treated_as_done_count: int = 0
     total_done_count: int = 0
+    failed_count: int = 0
+    pending_count: int = 0
+    retry_scheduled_count: int = 0
     per_account: list[DashboardSharedDeactivationAccountRead] = Field(
         default_factory=list
     )
@@ -57,6 +62,8 @@ class DashboardSummaryRead(BaseModel):
     attention_accounts: int = 0
     item_successes_in_range: int = 0
     error_events_in_range: int = 0
+    creation_errors_in_range: int = 0
+    retry_events_in_range: int = 0
     latest_run_account_name: str | None = None
     latest_run_at: datetime | None = None
     top_error_account_name: str | None = None

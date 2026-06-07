@@ -2062,6 +2062,10 @@ def confirm_activation(count: int) -> bool:
 
 def _empty_backfill_stats() -> dict[str, int]:
     return {
+        "source_shafa_inactive_products": 0,
+        "source_account_db_inactive_uploaded_products": 0,
+        "source_selected_from_account_db": 0,
+        "source_telegram_mapped_products": 0,
         "date_backfill_checked": 0,
         "date_loaded_from_telegram": 0,
         "date_load_failed": 0,
@@ -2154,6 +2158,10 @@ def collect_current_account_candidates(
         if str(product.get("id") or "").strip()
     ]
     matched_telegram_rows = _count_telegram_rows_for_product_ids(product_ids)
+    stats["source_shafa_inactive_products"] += len(shafa_products)
+    stats["source_account_db_inactive_uploaded_products"] += len(account_db_products)
+    stats["source_selected_from_account_db"] += len(products)
+    stats["source_telegram_mapped_products"] += matched_telegram_rows
     print(
         "Telegram DB lookup: "
         f"path={_shared_telegram_db_path()} "
@@ -2617,6 +2625,10 @@ def _print_all_account_summary(
     total_failed: int,
     total_mark_failed: int,
     remaining: int,
+    source_shafa_inactive_products: int = 0,
+    source_account_db_inactive_uploaded_products: int = 0,
+    source_selected_from_account_db: int = 0,
+    source_telegram_mapped_products: int = 0,
     date_backfill_checked: int = 0,
     date_loaded_from_telegram: int = 0,
     date_load_failed: int = 0,
@@ -2631,11 +2643,32 @@ def _print_all_account_summary(
         f"Total activated: {total_activated}. "
         f"Total failed: {total_failed}. "
         f"Total local mark_failed: {total_mark_failed}. "
+        f"Shafa inactive loaded: {source_shafa_inactive_products}. "
+        f"Account DB inactive uploaded: {source_account_db_inactive_uploaded_products}. "
+        f"Selected from account DB: {source_selected_from_account_db}. "
+        f"Telegram mapped products: {source_telegram_mapped_products}. "
         f"Date backfill checked: {date_backfill_checked}. "
         f"Date loaded from Telegram: {date_loaded_from_telegram}. "
         f"Date load failed: {date_load_failed}. "
         f"Remaining: {remaining}."
     )
+
+
+def _summary_source_stats(stats: dict[str, int]) -> dict[str, int]:
+    return {
+        "source_shafa_inactive_products": int(
+            stats.get("source_shafa_inactive_products", 0)
+        ),
+        "source_account_db_inactive_uploaded_products": int(
+            stats.get("source_account_db_inactive_uploaded_products", 0)
+        ),
+        "source_selected_from_account_db": int(
+            stats.get("source_selected_from_account_db", 0)
+        ),
+        "source_telegram_mapped_products": int(
+            stats.get("source_telegram_mapped_products", 0)
+        ),
+    }
 
 
 def process_all_accounts(
@@ -2715,6 +2748,7 @@ def process_all_accounts(
             total_failed=0,
             total_mark_failed=0,
             remaining=remaining,
+            **_summary_source_stats(backfill_totals),
             date_backfill_checked=backfill_totals["date_backfill_checked"],
             date_loaded_from_telegram=backfill_totals["date_loaded_from_telegram"],
             date_load_failed=backfill_totals["date_load_failed"],
@@ -2732,6 +2766,7 @@ def process_all_accounts(
             total_failed=0,
             total_mark_failed=0,
             remaining=remaining,
+            **_summary_source_stats(backfill_totals),
             date_backfill_checked=backfill_totals["date_backfill_checked"],
             date_loaded_from_telegram=backfill_totals["date_loaded_from_telegram"],
             date_load_failed=backfill_totals["date_load_failed"],
@@ -2750,6 +2785,7 @@ def process_all_accounts(
             total_failed=0,
             total_mark_failed=0,
             remaining=remaining,
+            **_summary_source_stats(backfill_totals),
             date_backfill_checked=backfill_totals["date_backfill_checked"],
             date_loaded_from_telegram=backfill_totals["date_loaded_from_telegram"],
             date_load_failed=backfill_totals["date_load_failed"],
@@ -2913,6 +2949,7 @@ def process_all_accounts(
         total_failed=total_failed,
         total_mark_failed=total_mark_failed,
         remaining=remaining,
+        **_summary_source_stats(backfill_totals),
         date_backfill_checked=backfill_totals["date_backfill_checked"],
         date_loaded_from_telegram=backfill_totals["date_loaded_from_telegram"],
         date_load_failed=backfill_totals["date_load_failed"],

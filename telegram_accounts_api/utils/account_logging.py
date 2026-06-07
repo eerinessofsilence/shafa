@@ -8,11 +8,12 @@ import threading
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 _MAX_LOG_ENTRIES_PER_ACCOUNT = 1000
+_DEFAULT_ACCOUNT_LOG_RETENTION_SECONDS = 24 * 60 * 60
 _ACCOUNT_LOGGER_NAME = "telegram_accounts_api.account"
 _HANDLER_NAME = "telegram_accounts_api.account_log_handler"
 _SENSITIVE_VALUE_PATTERNS = (
@@ -25,8 +26,48 @@ _INLINE_LEVEL_PREFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SEPARATOR_ONLY_PATTERN = re.compile(r"^[\s_=+\-—–~.]{8,}$")
+_IGNORABLE_LOG_PATTERNS = (
+    re.compile(r"^\[RUN\]\s+started pid=\d+$", re.IGNORECASE),
+    re.compile(r"^Процесс запущен \(PID \d+\)\.$"),
+    re.compile(
+        r"^Account status changed to started \(pid=\d+\)\.$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^Статус аккаунта: запущен \(PID \d+\)\.$"),
+    re.compile(r"^\[RUN\]\s+launch context\b", re.IGNORECASE),
+    re.compile(r"^Runtime context initialized\."),
+    re.compile(r"^Shared deactivation startup flags\."),
+    re.compile(r"^Account startup old product checks are disabled\."),
+    re.compile(r"^Creation products DB enabled: path=.*\.$"),
+    re.compile(
+        r"^Creation DB enabled; bypassing old telegram_products scanning for creation\.$"
+    ),
+    re.compile(r"^Запуск периодического режима: .+\. Интервал: \d+ мин\.$"),
+    re.compile(r"^cleanup worker account selected\b"),
+    re.compile(r"^cleanup cycle start\b.*\bcleanup_mode=disabled\b"),
+    re.compile(
+        r"^cleanup cycle end\b"
+        r"(?=.*\btotal_checked_products=0\.)"
+        r"(?=.*\btotal_deactivated_products=0\.).*$"
+    ),
+    re.compile(
+        r"^.*\bProduct=\"unknown\" message_id=unknown "
+        r"telegram_found=false telegram_channel=\"unknown\" "
+        r"message_date=unknown age=unknown operation=deactivate "
+        r"action=SKIPPED reason=\"missing Shafa session\"$"
+    ),
+    re.compile(
+        r"^cleanup skipped detached run because account process is active;"
+    ),
+    re.compile(
+        r"^cleanup skipped detached direct deactivation because shared "
+        r"deactivation is enabled;"
+    ),
+    re.compile(
+        r"^cleanup skipped global old direct deactivation because it is disabled\."
+    ),
+)
 _SIZE_LOG_PATTERN = re.compile(r"^Размеры товара:\s*(?P<payload>\{.*\})$", re.DOTALL)
-_RUN_STARTED_PATTERN = re.compile(r"^\[RUN\]\s+started pid=(?P<pid>\d+)$", re.IGNORECASE)
 _CHANNELS_EXPORTED_PATTERN = re.compile(
     r"^\[CHANNELS\]\s+exported (?P<count>\d+) link\(s\)$",
     re.IGNORECASE,
@@ -41,10 +82,6 @@ _STOP_EXITED_PATTERN = re.compile(
 )
 _ERROR_EXITED_PATTERN = re.compile(
     r"^\[ERROR\]\s+process exited with code (?P<code>-?\d+)$",
-    re.IGNORECASE,
-)
-_ACCOUNT_STARTED_PATTERN = re.compile(
-    r"^Account status changed to started \(pid=(?P<pid>\d+)\)\.$",
     re.IGNORECASE,
 )
 _SESSION_COPIED_PATTERN = re.compile(
@@ -268,10 +305,6 @@ def _format_graph_response_error_message(message: str) -> str | None:
 
 
 def _translate_system_message(message: str) -> str | None:
-    run_started_match = _RUN_STARTED_PATTERN.match(message)
-    if run_started_match:
-        return f"Процесс запущен (PID {run_started_match.group('pid')})."
-
     channels_exported_match = _CHANNELS_EXPORTED_PATTERN.match(message)
     if channels_exported_match:
         return (
@@ -291,13 +324,6 @@ def _translate_system_message(message: str) -> str | None:
         return (
             f"Процесс завершился с ошибкой "
             f"(код {error_exited_match.group('code')})."
-        )
-
-    account_started_match = _ACCOUNT_STARTED_PATTERN.match(message)
-    if account_started_match:
-        return (
-            f"Статус аккаунта: запущен "
-            f"(PID {account_started_match.group('pid')})."
         )
 
     session_copied_match = _SESSION_COPIED_PATTERN.match(message)
@@ -518,12 +544,26 @@ def normalize_log_message(message: str) -> str:
 
 def is_ignorable_log_message(message: str) -> bool:
     normalized = str(message).strip()
-    return not normalized or bool(_SEPARATOR_ONLY_PATTERN.fullmatch(normalized))
+    return (
+        not normalized
+        or bool(_SEPARATOR_ONLY_PATTERN.fullmatch(normalized))
+        or any(pattern.match(normalized) for pattern in _IGNORABLE_LOG_PATTERNS)
+    )
 
 
 class AccountLogStore:
-    def __init__(self, max_entries_per_account: int = _MAX_LOG_ENTRIES_PER_ACCOUNT) -> None:
+    def __init__(
+        self,
+        max_entries_per_account: int = _MAX_LOG_ENTRIES_PER_ACCOUNT,
+        *,
+        retention_seconds: float | None = _DEFAULT_ACCOUNT_LOG_RETENTION_SECONDS,
+    ) -> None:
         self.max_entries_per_account = max(1, int(max_entries_per_account))
+        self.retention_seconds = (
+            None
+            if retention_seconds is None
+            else max(float(retention_seconds), 0.0)
+        )
         self._entries: dict[str, deque[AccountLogEntry]] = defaultdict(
             lambda: deque(maxlen=self.max_entries_per_account)
         )
@@ -559,6 +599,7 @@ class AccountLogStore:
         normalized_account_id = str(account_id)
         normalized_level = normalize_log_level(level)
         normalized_message = normalize_log_message(message)
+        is_ignorable = is_ignorable_log_message(normalized_message)
         entry = AccountLogEntry(
             index=self._next_index[normalized_account_id],
             account_id=normalized_account_id,
@@ -566,7 +607,18 @@ class AccountLogStore:
             level=normalized_level,
             message=normalized_message,
         )
+        retention_cutoff = self._retention_cutoff()
         with self._lock:
+            self._prune_locked(normalized_account_id, retention_cutoff)
+            if is_ignorable:
+                self._next_index[normalized_account_id] += 1
+                return entry
+            if (
+                retention_cutoff is not None
+                and normalize_log_timestamp(entry.timestamp) < retention_cutoff
+            ):
+                self._next_index[normalized_account_id] += 1
+                return entry
             self._entries[normalized_account_id].append(entry)
             self._next_index[normalized_account_id] += 1
             subscribers = list(self._subscribers.get(normalized_account_id, {}).values())
@@ -589,8 +641,19 @@ class AccountLogStore:
         normalized_account_id = str(account_id)
         target_level = str(level or "").upper()
         normalized_timestamp = since_timestamp.astimezone(UTC) if since_timestamp else None
+        retention_cutoff = self._retention_cutoff()
         with self._lock:
+            self._prune_locked(normalized_account_id, retention_cutoff)
             entries = list(self._entries.get(normalized_account_id, ()))
+        entries = [
+            entry for entry in entries if not is_ignorable_log_message(entry.message)
+        ]
+        if retention_cutoff is not None:
+            entries = [
+                entry
+                for entry in entries
+                if normalize_log_timestamp(entry.timestamp) >= retention_cutoff
+            ]
         if target_level:
             entries = [entry for entry in entries if entry.level == target_level]
         if since_index is not None:
@@ -599,6 +662,24 @@ class AccountLogStore:
             entries = [entry for entry in entries if entry.timestamp >= normalized_timestamp]
         bounded_limit = max(1, min(int(limit), self.max_entries_per_account))
         return entries[-bounded_limit:]
+
+    def _retention_cutoff(self) -> datetime | None:
+        if self.retention_seconds is None:
+            return None
+        return datetime.now(UTC) - timedelta(seconds=self.retention_seconds)
+
+    def _prune_locked(
+        self,
+        account_id: str,
+        retention_cutoff: datetime | None,
+    ) -> None:
+        if retention_cutoff is None:
+            return
+        entries = self._entries.get(account_id)
+        if not entries:
+            return
+        while entries and normalize_log_timestamp(entries[0].timestamp) < retention_cutoff:
+            entries.popleft()
 
     def subscribe(self, account_id: str | int) -> tuple[str, asyncio.Queue[AccountLogEntry]]:
         normalized_account_id = str(account_id)
@@ -683,6 +764,7 @@ def load_account_log_file_entries(
     log_file: Path,
     *,
     tail_limit: int | None = _MAX_LOG_ENTRIES_PER_ACCOUNT,
+    retention_seconds: float | None = _DEFAULT_ACCOUNT_LOG_RETENTION_SECONDS,
 ) -> list[AccountLogEntry]:
     if not log_file.exists() or not log_file.is_file():
         return []
@@ -698,6 +780,11 @@ def load_account_log_file_entries(
         return []
 
     normalized_account_id = str(account_id)
+    retention_cutoff = (
+        None
+        if retention_seconds is None
+        else datetime.now(UTC) - timedelta(seconds=max(float(retention_seconds), 0.0))
+    )
     for raw_line in raw_lines:
         match = _RENDERED_LOG_PATTERN.match(raw_line.strip())
         if not match:
@@ -709,11 +796,17 @@ def load_account_log_file_entries(
             )
         except ValueError:
             continue
+        normalized_timestamp = normalize_log_timestamp(timestamp)
+        if (
+            retention_cutoff is not None
+            and normalized_timestamp < retention_cutoff
+        ):
+            continue
         entries.append(
             AccountLogEntry(
                 index=0,
                 account_id=normalized_account_id,
-                timestamp=normalize_log_timestamp(timestamp),
+                timestamp=normalized_timestamp,
                 level=normalize_log_level(match.group("level")),
                 message=normalize_log_message(match.group("message") or ""),
             )
@@ -803,7 +896,9 @@ def filter_account_log_entries(
     )
     bounded_limit = max(1, min(int(limit), int(max_entries)))
 
-    filtered = entries
+    filtered = [
+        entry for entry in entries if not is_ignorable_log_message(entry.message)
+    ]
     if target_level:
         filtered = [entry for entry in filtered if entry.level == target_level]
     if since_index is not None:
@@ -823,9 +918,12 @@ def log(account_id: str | int, level: str, message: str) -> None:
     if logger.level in {logging.NOTSET, logging.WARNING, logging.ERROR, logging.CRITICAL}:
         logger.setLevel(logging.DEBUG)
     normalized_level = normalize_log_level(level)
+    normalized_message = normalize_log_message(message)
+    if is_ignorable_log_message(normalized_message):
+        return
     log_level = getattr(logging, normalized_level, logging.INFO)
     logger.log(
         log_level,
-        normalize_log_message(message),
+        normalized_message,
         extra={"account_id": str(account_id)},
     )

@@ -30,6 +30,22 @@ from telegram_accounts_api.utils.account_logging import (
 
 LOGGER = logging.getLogger(__name__)
 _PRODUCT_SUCCESS_PATTERN = re.compile(r"товар создан успешно", re.IGNORECASE)
+_PRODUCT_CREATION_ERROR_PATTERN = re.compile(
+    r"("
+    r"не удалось обработать товар|"
+    r"ошибки создания товара|"
+    r"не удалось определить размер|"
+    r"некорректная цена|"
+    r"не удалось подготовить ни одной фотографии|"
+    r"не удалось обновить размеры|"
+    r"shafa api:"
+    r")",
+    re.IGNORECASE,
+)
+_RETRY_EVENT_PATTERN = re.compile(
+    r"(повторю этот товар позже|осталось ретраев|повторяю создание|retry)",
+    re.IGNORECASE,
+)
 _RENDERED_LOG_PATTERN = re.compile(
     r"^\[(?P<timestamp>[^\]]+)\]\s+\[(?P<level>[^\]]+)\](?:\s+\[(?P<account_name>[^\]]+)\])?\s+(?P<message>.*)$"
 )
@@ -46,8 +62,10 @@ SHARED_ACCOUNT_TASK_FAILED = "failed"
 SHARED_ACCOUNT_TASK_PENDING = "pending"
 SHARED_ACCOUNT_TASK_RETRY_SCHEDULED = "retry_scheduled"
 SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND = "skipped_not_found"
+TELEGRAM_DEACTIVATION_STATUS_PROCESSING = "processing"
 DEFAULT_DASHBOARD_LOG_HISTORY_LINES = 500
 MAX_DASHBOARD_LOG_HISTORY_LINES = 50_000
+_DAILY_COUNTER_KEYS = ("items", "errors", "creation_errors", "retry_events")
 
 
 @dataclass(frozen=True)
@@ -201,7 +219,7 @@ class DashboardService:
             for offset in range((range_end - range_start).days + 1)
         ]
         series_totals = {
-            point_date: {"items": 0, "errors": 0}
+            point_date: self._empty_daily_totals()
             for point_date in series_dates
         }
 
@@ -232,14 +250,16 @@ class DashboardService:
             for entry_date, totals in account_daily_totals[account.id].items():
                 if entry_date not in series_totals:
                     continue
-                series_totals[entry_date]["items"] += totals["items"]
-                series_totals[entry_date]["errors"] += totals["errors"]
+                for key in _DAILY_COUNTER_KEYS:
+                    series_totals[entry_date][key] += totals.get(key, 0)
 
         series = [
             DashboardSeriesPointRead(
                 date=point_date,
                 items=series_totals[point_date]["items"],
                 errors=series_totals[point_date]["errors"],
+                creation_errors=series_totals[point_date]["creation_errors"],
+                retry_events=series_totals[point_date]["retry_events"],
             )
             for point_date in series_dates
         ]
@@ -260,6 +280,8 @@ class DashboardService:
             attention_accounts=attention_accounts,
             item_successes_in_range=sum(point.items for point in series),
             error_events_in_range=sum(point.errors for point in series),
+            creation_errors_in_range=sum(point.creation_errors for point in series),
+            retry_events_in_range=sum(point.retry_events for point in series),
             latest_run_account_name=latest_run_account_name,
             latest_run_at=latest_run_at,
             top_error_account_name=top_error_account_name,
@@ -405,9 +427,18 @@ class DashboardService:
                     )
 
                 direct_account_rows = []
+                direct_state_rows = []
                 direct_recent_rows = []
                 if telegram_products_available:
                     direct_counts_started_at = time.perf_counter()
+                    telegram_product_columns = self._table_columns(
+                        conn, "telegram_products"
+                    )
+                    direct_retry_count_expr = (
+                        "COALESCE(deactivation_retry_count, 0)"
+                        if "deactivation_retry_count" in telegram_product_columns
+                        else "0"
+                    )
                     shared_dedupe = (
                         """
                         AND NOT EXISTS (
@@ -522,6 +553,73 @@ class DashboardService:
                     direct_counts_ms = round(
                         (time.perf_counter() - direct_counts_started_at) * 1000
                     )
+                    direct_state_dedupe = (
+                        """
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM shared_deactivation_task_accounts AS account_task
+                            WHERE account_task.account_id = telegram_products.account_id
+                              AND account_task.telegram_product_key = (
+                                    'tg:' || telegram_products.channel_id || ':' || telegram_products.message_id
+                              )
+                              AND account_task.shafa_product_id = telegram_products.created_product_id
+                              AND account_task.status IN (?, ?, ?, ?, ?)
+                        )
+                        """
+                        if shared_available
+                        else ""
+                    )
+                    direct_state_dedupe_params = (
+                        (
+                            SHARED_ACCOUNT_TASK_COMPLETED,
+                            SHARED_ACCOUNT_TASK_SKIPPED_NOT_FOUND,
+                            SHARED_ACCOUNT_TASK_FAILED,
+                            SHARED_ACCOUNT_TASK_PENDING,
+                            SHARED_ACCOUNT_TASK_RETRY_SCHEDULED,
+                        )
+                        if shared_available
+                        else ()
+                    )
+                    direct_state_rows = conn.execute(
+                        f"""
+                        SELECT
+                            account_id,
+                            SUM(CASE WHEN deactivation_status = ? THEN 1 ELSE 0 END)
+                                AS failed_count,
+                            SUM(
+                                CASE
+                                    WHEN deactivation_status IN (?, ?)
+                                        THEN 1
+                                    ELSE 0
+                                END
+                            ) AS pending_count,
+                            SUM(
+                                CASE
+                                    WHEN {direct_retry_count_expr} > 0
+                                      AND deactivation_status IN (?, ?, ?)
+                                        THEN 1
+                                    ELSE 0
+                                END
+                            ) AS retry_scheduled_count
+                        FROM telegram_products
+                        WHERE deactivation_status IN (?, ?, ?)
+                          {direct_state_dedupe}
+                        GROUP BY account_id
+                        ORDER BY account_id
+                        """,
+                        (
+                            SHARED_ACCOUNT_TASK_FAILED,
+                            SHARED_ACCOUNT_TASK_PENDING,
+                            TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                            SHARED_ACCOUNT_TASK_FAILED,
+                            SHARED_ACCOUNT_TASK_PENDING,
+                            TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                            SHARED_ACCOUNT_TASK_FAILED,
+                            SHARED_ACCOUNT_TASK_PENDING,
+                            TELEGRAM_DEACTIVATION_STATUS_PROCESSING,
+                            *direct_state_dedupe_params,
+                        ),
+                    ).fetchall()
                     recent_rows_started_at = time.perf_counter()
                     direct_recent_rows = conn.execute(
                         terminal_products_cte
@@ -587,11 +685,32 @@ class DashboardService:
             )
             totals["success"] += int(row["deactivated_success_count"] or 0)
             totals["not_found"] += int(row["not_found_treated_as_done_count"] or 0)
+        for row in direct_state_rows:
+            account_id = str(row["account_id"] or "").strip()
+            totals = account_totals.setdefault(
+                account_id,
+                {
+                    "success": 0,
+                    "not_found": 0,
+                    "failed": 0,
+                    "pending": 0,
+                    "retry_scheduled": 0,
+                },
+            )
+            totals["failed"] += int(row["failed_count"] or 0)
+            totals["pending"] += int(row["pending_count"] or 0)
+            totals["retry_scheduled"] += int(row["retry_scheduled_count"] or 0)
 
         per_account: list[DashboardSharedDeactivationAccountRead] = []
+        total_failed = 0
+        total_pending = 0
+        total_retry_scheduled = 0
         for account_id, counts in account_totals.items():
             total_success += counts["success"]
             total_not_found += counts["not_found"]
+            total_failed += counts["failed"]
+            total_pending += counts["pending"]
+            total_retry_scheduled += counts["retry_scheduled"]
             per_account.append(
                 DashboardSharedDeactivationAccountRead(
                     account_id=account_id,
@@ -644,6 +763,9 @@ class DashboardService:
             deactivated_success_count=total_success,
             not_found_treated_as_done_count=total_not_found,
             total_done_count=total_done,
+            failed_count=total_failed,
+            pending_count=total_pending,
+            retry_scheduled_count=total_retry_scheduled,
             per_account=per_account,
             recent=recent,
         )
@@ -690,6 +812,14 @@ class DashboardService:
             tuple(sorted(table_names)),
         ).fetchall()
         return {str(row["name"]) for row in rows} == set(table_names)
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except sqlite3.Error:
+            return set()
+        return {str(row["name"]) for row in rows}
 
     @staticmethod
     def _ensure_dashboard_indexes(
@@ -776,11 +906,12 @@ class DashboardService:
             if entry_key in runtime_keys_matched_in_history:
                 continue
             entry_date = normalize_log_timestamp(entry.timestamp).astimezone(local_tz).date()
-            totals = daily_totals.setdefault(entry_date, {"items": 0, "errors": 0})
-            if self._is_product_success(entry.message):
-                totals["items"] += 1
-            if entry.level.upper() == "ERROR":
-                totals["errors"] += 1
+            totals = daily_totals.setdefault(entry_date, self._empty_daily_totals())
+            self._accumulate_entry_totals(
+                totals,
+                level=entry.level,
+                message=entry.message,
+            )
             if earliest_entry_date is None or entry_date < earliest_entry_date:
                 earliest_entry_date = entry_date
 
@@ -899,13 +1030,35 @@ class DashboardService:
             entry_date = timestamp.astimezone(local_tz).date()
             if earliest_entry_date is None or entry_date < earliest_entry_date:
                 earliest_entry_date = entry_date
-            totals = daily_totals.setdefault(entry_date, {"items": 0, "errors": 0})
-            if self._is_product_success(message):
-                totals["items"] += 1
-            if level == "ERROR":
-                totals["errors"] += 1
+            totals = daily_totals.setdefault(entry_date, self._empty_daily_totals())
+            self._accumulate_entry_totals(totals, level=level, message=message)
 
         return earliest_entry_date, daily_totals, set(recent_entry_keys_queue), scanned_lines
+
+    @staticmethod
+    def _empty_daily_totals() -> dict[str, int]:
+        return {key: 0 for key in _DAILY_COUNTER_KEYS}
+
+    @classmethod
+    def _accumulate_entry_totals(
+        cls,
+        totals: dict[str, int],
+        *,
+        level: str,
+        message: str,
+    ) -> None:
+        if cls._is_product_success(message):
+            totals["items"] += 1
+
+        is_creation_error = cls._is_product_creation_error(message)
+        if is_creation_error:
+            totals["creation_errors"] += 1
+
+        if cls._is_retry_event(message):
+            totals["retry_events"] += 1
+
+        if normalize_log_level(level) == "ERROR" or is_creation_error:
+            totals["errors"] += 1
 
     @staticmethod
     def _read_log_tail_lines(log_file: Path, *, limit: int) -> list[str]:
@@ -1014,6 +1167,14 @@ class DashboardService:
     @staticmethod
     def _is_product_success(message: str) -> bool:
         return bool(_PRODUCT_SUCCESS_PATTERN.search(str(message)))
+
+    @staticmethod
+    def _is_product_creation_error(message: str) -> bool:
+        return bool(_PRODUCT_CREATION_ERROR_PATTERN.search(str(message)))
+
+    @staticmethod
+    def _is_retry_event(message: str) -> bool:
+        return bool(_RETRY_EVENT_PATTERN.search(str(message)))
 
     @staticmethod
     def _is_ready_account(account: AccountRead) -> bool:

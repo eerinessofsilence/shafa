@@ -312,38 +312,27 @@ def _shared_deactivation_planner_interval_seconds() -> float:
 
 
 def _shared_deactivation_auto_run_enabled() -> bool:
-    return _env_flag_enabled(SHARED_DEACTIVATION_AUTO_RUN_ENV)
+    return False
 
 
 def _shared_deactivation_enabled() -> bool:
-    return _shared_deactivation_auto_run_enabled() or _env_flag_enabled(
-        SHARED_DEACTIVATION_ENABLED_ENV
-    )
+    return False
 
 
 def _shared_deactivation_planner_enabled() -> bool:
-    return _shared_deactivation_enabled() and (
-        _shared_deactivation_auto_run_enabled()
-        or _env_flag_enabled(SHARED_DEACTIVATION_PLANNER_ENABLED_ENV)
-    )
+    return False
 
 
 def _shared_deactivation_worker_enabled() -> bool:
-    return _shared_deactivation_enabled() and (
-        _shared_deactivation_auto_run_enabled()
-        or _env_flag_enabled(SHARED_DEACTIVATION_WORKER_ENABLED_ENV)
-    )
+    return False
 
 
 def _account_startup_old_product_deactivator_enabled() -> bool:
-    return _env_flag_enabled(ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)
+    return False
 
 
 def _shared_deactivation_dry_run_enabled() -> bool:
-    raw = os.getenv(SHARED_DEACTIVATION_DRY_RUN_ENV, "").strip()
-    if not raw:
-        return not _shared_deactivation_auto_run_enabled()
-    return raw in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+    return True
 
 
 def _bootstrap_new_account_telegram_queue_if_needed() -> int:
@@ -390,18 +379,9 @@ def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thr
                 continue
             started_at = time.time()
             try:
-                result = scan_next_due_telegram_channel(
+                scan_next_due_telegram_channel(
                     batch_size=DEFAULT_TELEGRAM_SCAN_BATCH_SIZE
                 )
-                if result.get("status") == "scanned":
-                    inserted = int(result.get("inserted") or 0)
-                    duplicates = int(result.get("duplicates") or 0)
-                    channel_id = result.get("channel_id")
-                    print(
-                        "[INFO] Фоновая проверка Telegram завершена. "
-                        f"Канал: {channel_id}. Новых товаров: {inserted}. "
-                        f"Дубликатов: {duplicates}."
-                    )
             except Exception as exc:
                 print(f"[ERROR] Фоновое сканирование Telegram не выполнено: {exc}")
             elapsed = time.time() - started_at
@@ -418,7 +398,16 @@ def _start_background_telegram_scanner() -> tuple[threading.Event, threading.Thr
     return stop_event, thread
 
 
+def _start_disabled_deactivation_thread(name: str) -> tuple[threading.Event, threading.Thread]:
+    stop_event = threading.Event()
+    stop_event.set()
+    thread = threading.Thread(target=lambda: None, name=f"{name}-disabled", daemon=True)
+    thread.start()
+    return stop_event, thread
+
+
 def _start_background_old_product_deactivator() -> tuple[threading.Event, threading.Thread]:
+    return _start_disabled_deactivation_thread("old-products-background-deactivator")
     from controller.data_controller import deactivate_old_telegram_products
 
     stop_event = threading.Event()
@@ -485,6 +474,7 @@ def _start_background_old_product_deactivator() -> tuple[threading.Event, thread
 
 
 def _start_background_shared_deactivation_worker() -> tuple[threading.Event, threading.Thread]:
+    return _start_disabled_deactivation_thread("shared-deactivation-worker")
     from controller.data_controller import (
         plan_shared_old_product_deactivation,
         process_shared_deactivation_queue_once,
@@ -561,26 +551,22 @@ def _deactivate_old_products_once(
     sleep_seconds: Optional[float] = None,
     dry_run: bool = False,
 ) -> None:
-    from controller.data_controller import deactivate_old_telegram_products
-
-    result = deactivate_old_telegram_products(
-        older_than_days=older_than_days,
-        limit=limit,
-        sleep_seconds=sleep_seconds,
-        dry_run=dry_run,
-    )
+    result = {
+        "deactivation_disabled": True,
+        "checked": 0,
+        "deactivated": 0,
+        "failed": 0,
+    }
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
 def _shared_deactivation_plan_once() -> None:
-    if not _shared_deactivation_enabled() and not _shared_deactivation_dry_run_enabled():
-        raise RuntimeError(
-            "Refusing non-dry-run shared deactivation planning because "
-            f"{SHARED_DEACTIVATION_ENABLED_ENV} is not enabled."
-        )
-    from controller.data_controller import plan_shared_old_product_deactivation
-
-    result = plan_shared_old_product_deactivation()
+    result = {
+        "deactivation_disabled": True,
+        "checked": 0,
+        "tasks": 0,
+        "account_tasks": 0,
+    }
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
@@ -592,7 +578,6 @@ def run_periodic(action: Callable[[], None], label: str, shafa: bool | None = No
     if minutes is None:
         return
     interval = minutes * 60
-    print(f"Запуск периодического режима: {label}. Интервал: {minutes} мин.")
     while True:
         try:
             action()
@@ -1616,28 +1601,6 @@ def main(
 ) -> None:
     if mode:
         os.environ[APP_MODE_ENV] = mode
-    account_id = str(os.getenv("SHAFA_ACCOUNT_ID") or "").strip() or "default"
-    account_name = str(os.getenv("SHAFA_ACCOUNT_NAME") or "").strip() or account_id
-    log(
-        "INFO",
-        "Runtime context initialized. "
-        f"account={account_name}. account_id={account_id}. "
-        f"db_path={os.getenv('SHAFA_DB_PATH', '')}. "
-        f"telegram_db_path={os.getenv('SHAFA_SHARED_TELEGRAM_DB_PATH', '')}. "
-        f"state_dir={os.getenv('SHAFA_ACCOUNT_STATE_DIR', '')}. "
-        f"deactivator_disabled={_env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)}. "
-        f"startup_deactivator_enabled={_account_startup_old_product_deactivator_enabled()}.",
-    )
-    log(
-        "INFO",
-        "Shared deactivation startup flags. "
-        f"auto_run={_shared_deactivation_auto_run_enabled()}. "
-        f"dry_run={_shared_deactivation_dry_run_enabled()}. "
-        f"planner_enabled={_shared_deactivation_planner_enabled()}. "
-        f"worker_enabled={_shared_deactivation_worker_enabled()}. "
-        f"account_id={account_id}. "
-        f"telegram_db_path={os.getenv('SHAFA_SHARED_TELEGRAM_DB_PATH', '')}.",
-    )
     if deactivate_old_products_once:
         _deactivate_old_products_once(
             older_than_days=old_products_age_days,
@@ -1675,73 +1638,13 @@ def main(
     if shafa:
         _bootstrap_new_account_telegram_queue_if_needed()
         sync_channels_from_runtime_config()
-        if _env_flag_enabled(DEACTIVATE_ONLY_ENV):
-            if _env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV):
-                raise RuntimeError(
-                    "SHAFA_DEACTIVATE_ONLY=1, но деактиватор отключён через "
-                    f"{DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV}."
-                )
-            if _shared_deactivation_worker_enabled():
-                log(
-                    "INFO",
-                    "Old direct deactivator skipped because shared worker is enabled.",
-                )
-                deactivate_stop_event, deactivate_thread = (
-                    _start_background_shared_deactivation_worker()
-                )
-            else:
-                deactivate_stop_event, deactivate_thread = (
-                    _start_background_old_product_deactivator()
-                )
-            log(
-                "INFO",
-                "Запущен режим только деактивации. "
-                "Создание товаров и фоновое сканирование Telegram отключены.",
-            )
-            try:
-                while True:
-                    time.sleep(3600)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                deactivate_stop_event.set()
-                deactivate_thread.join(timeout=5)
-            return
-
         os.environ["SHAFA_BACKGROUND_TELEGRAM_SCANNER"] = "1"
         stop_event, scanner_thread = _start_background_telegram_scanner()
-        deactivate_stop_event = None
-        deactivate_thread = None
-        startup_deactivator_enabled = _account_startup_old_product_deactivator_enabled()
-        if startup_deactivator_enabled and _shared_deactivation_worker_enabled():
-            deactivate_stop_event, deactivate_thread = (
-                _start_background_shared_deactivation_worker()
-            )
-        if (
-            startup_deactivator_enabled
-            and not _env_flag_enabled(DISABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV)
-        ):
-            if _shared_deactivation_worker_enabled():
-                log(
-                    "INFO",
-                    "Old direct deactivator skipped because shared worker is enabled.",
-                )
-            elif deactivate_thread is None:
-                deactivate_stop_event, deactivate_thread = _start_background_old_product_deactivator()
-        elif not startup_deactivator_enabled:
-            log(
-                "INFO",
-                "Account startup old product checks are disabled. "
-                f"enable_with={ENABLE_ACCOUNT_OLD_PRODUCT_DEACTIVATOR_ENV}.",
-            )
         try:
             _auto_create_product(shafa=shafa)
         finally:
             stop_event.set()
             scanner_thread.join(timeout=5)
-            if deactivate_stop_event is not None and deactivate_thread is not None:
-                deactivate_stop_event.set()
-                deactivate_thread.join(timeout=5)
         return
 
     _print_ascii_banner()
