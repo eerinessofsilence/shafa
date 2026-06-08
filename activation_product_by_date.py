@@ -1007,6 +1007,7 @@ def _load_telegram_date_rows_for_product_ids(
     *,
     limit: int,
     missing_only: bool = False,
+    emit_log: bool = True,
 ) -> list[dict[str, object]]:
     normalized_ids = [
         str(product_id or "").strip()
@@ -1144,15 +1145,16 @@ def _load_telegram_date_rows_for_product_ids(
             selected_product_ids.add(product_id)
             selected.append(row)
             fallback_match_count += 1
-    print(
-        "Telegram date refresh lookup: "
-        f"direct_created_product_rows={direct_match_count} "
-        f"shared_account_rows={shared_account_match_count} "
-        f"creation_product_rows={creation_product_match_count} "
-        f"uploaded_ref_rows={fallback_match_count} "
-        f"rows_to_refresh={len(selected)} "
-        f"missing_only={str(missing_only).lower()}."
-    )
+    if emit_log:
+        print(
+            "Telegram date refresh lookup: "
+            f"direct_created_product_rows={direct_match_count} "
+            f"shared_account_rows={shared_account_match_count} "
+            f"creation_product_rows={creation_product_match_count} "
+            f"uploaded_ref_rows={fallback_match_count} "
+            f"rows_to_refresh={len(selected)} "
+            f"missing_only={str(missing_only).lower()}."
+        )
     return selected
 
 
@@ -1657,13 +1659,18 @@ def _candidate_from_product(
     *,
     today: date,
     max_age_days: int,
+    telegram_rows_by_product_id: Optional[dict[str, dict[str, object]]] = None,
 ) -> Optional[ActivationCandidate]:
     product_id = str(product.get("id") or "").strip()
     if not product_id:
         return None
     uploaded_row = _load_uploaded_product_row(product_id)
 
-    telegram_row = _load_telegram_row_for_product(product_id)
+    telegram_row = (
+        (telegram_rows_by_product_id or {}).get(product_id)
+        if telegram_rows_by_product_id is not None
+        else _load_telegram_row_for_product(product_id)
+    )
     age_source = "telegram_message_date"
     if telegram_row is None:
         return None
@@ -1734,12 +1741,30 @@ def select_products_for_activation(
 ) -> list[ActivationCandidate]:
     resolved_today = today or date.today()
     normalized_max_age_days = max(int(max_age_days), 1)
+    product_ids = list(
+        dict.fromkeys(
+            str(product.get("id") or "").strip()
+            for product in products
+            if str(product.get("id") or "").strip()
+        )
+    )
+    telegram_rows_by_product_id = {
+        str(row.get("created_product_id") or "").strip(): row
+        for row in _load_telegram_date_rows_for_product_ids(
+            product_ids,
+            limit=len(product_ids) if product_ids else 1,
+            missing_only=False,
+            emit_log=False,
+        )
+        if str(row.get("created_product_id") or "").strip()
+    }
     candidates: list[ActivationCandidate] = []
     for product in products:
         candidate = _candidate_from_product(
             product,
             today=resolved_today,
             max_age_days=normalized_max_age_days,
+            telegram_rows_by_product_id=telegram_rows_by_product_id,
         )
         if candidate is not None:
             candidates.append(candidate)
