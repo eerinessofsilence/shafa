@@ -418,6 +418,86 @@ class ActivationProductByDateTests(unittest.TestCase):
         self.assertEqual(stats["date_load_failed"], 0)
         self.assertEqual(stored_date, (today - timedelta(days=25)).isoformat())
 
+    def test_collection_uses_shafa_feed_when_account_db_is_empty(self) -> None:
+        today = date.today()
+        with tempfile.TemporaryDirectory() as raw_dir:
+            base = Path(raw_dir)
+            missing_account_db = base / "missing-shafa.sqlite3"
+            telegram_db = base / "telegram_feed.sqlite3"
+            with sqlite3.connect(telegram_db) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE telegram_products (
+                        account_id TEXT,
+                        channel_id INTEGER,
+                        message_id INTEGER,
+                        created_product_id TEXT,
+                        status TEXT,
+                        created INTEGER,
+                        telegram_message_date TEXT,
+                        parsed_data TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO telegram_products (
+                        account_id,
+                        channel_id,
+                        message_id,
+                        created_product_id,
+                        status,
+                        created,
+                        telegram_message_date,
+                        parsed_data,
+                        updated_at
+                    )
+                    VALUES ('acc-1', 11, 901, '901', 'created', 1, ?, '{}', datetime('now'))
+                    """,
+                    ((today - timedelta(days=25)).isoformat(),),
+                )
+
+            stats: dict[str, int] = {}
+            with patch.dict(
+                os.environ,
+                {
+                    "SHAFA_ACCOUNT_ID": "acc-1",
+                    "SHAFA_DB_PATH": str(missing_account_db),
+                    "SHAFA_SHARED_TELEGRAM_DB_PATH": str(telegram_db),
+                },
+                clear=True,
+            ):
+                with patch(
+                    "activation_product_by_date.fetch_inactive_products",
+                    return_value=[
+                        {
+                            "id": "901",
+                            "name": "Feed only inactive",
+                            "_products_type": "INACTIVE",
+                        }
+                    ],
+                ):
+                    with redirect_stdout(StringIO()):
+                        candidates = collect_current_account_candidates(
+                            page_size=50,
+                            product_types=["INACTIVE"],
+                            max_age_days=183,
+                            telegram_date_backfill_limit=0,
+                            telegram_date_backfill_batch_size=50,
+                            telegram_date_backfill_sleep_min_seconds=0,
+                            telegram_date_backfill_sleep_max_seconds=0,
+                            backfill_stats=stats,
+                        )
+
+        self.assertEqual([candidate.product_id for candidate in candidates], ["901"])
+        self.assertEqual(candidates[0].name, "Feed only inactive")
+        self.assertEqual(stats["source_shafa_inactive_products"], 1)
+        self.assertEqual(stats["source_account_db_inactive_uploaded_products"], 0)
+        self.assertEqual(stats["source_selected_products"], 1)
+        self.assertEqual(stats["source_selected_from_shafa_feed"], 1)
+        self.assertEqual(stats["source_selected_from_account_db"], 0)
+
     def test_collection_backfills_by_uploaded_raw_payload_message_id_when_product_mapping_missing(self) -> None:
         today = date(2026, 6, 2)
         with tempfile.TemporaryDirectory() as raw_dir:

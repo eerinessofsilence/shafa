@@ -2065,6 +2065,8 @@ def _empty_backfill_stats() -> dict[str, int]:
         "source_shafa_inactive_products": 0,
         "source_account_db_inactive_uploaded_products": 0,
         "source_selected_from_account_db": 0,
+        "source_selected_from_shafa_feed": 0,
+        "source_selected_products": 0,
         "source_telegram_mapped_products": 0,
         "date_backfill_checked": 0,
         "date_loaded_from_telegram": 0,
@@ -2124,19 +2126,24 @@ def collect_current_account_candidates(
     )
     account_db_products = list_inactive_uploaded_products_from_account_db()
     shafa_products_by_id: dict[str, dict] = {}
-    products: list[dict] = []
     for product in shafa_products:
         product_id = str(product.get("id") or "").strip()
         if not product_id:
             continue
         shafa_products_by_id[product_id] = product
+    products_by_id: dict[str, dict] = {
+        product_id: dict(product)
+        for product_id, product in shafa_products_by_id.items()
+    }
+    account_db_product_ids: set[str] = set()
     for product in account_db_products:
         product_id = str(product.get("id") or "").strip()
         if not product_id:
             continue
+        account_db_product_ids.add(product_id)
         existing = shafa_products_by_id.get(product_id)
         if existing is None:
-            products.append(product)
+            products_by_id.setdefault(product_id, dict(product))
             continue
         merged = dict(existing)
         for key in (
@@ -2150,7 +2157,8 @@ def collect_current_account_candidates(
                 merged.setdefault(key, product.get(key))
         if product.get("name") and not merged.get("name"):
             merged["name"] = product.get("name")
-        products.append(merged)
+        products_by_id[product_id] = merged
+    products = list(products_by_id.values())
 
     product_ids = [
         str(product.get("id") or "").strip()
@@ -2160,7 +2168,17 @@ def collect_current_account_candidates(
     matched_telegram_rows = _count_telegram_rows_for_product_ids(product_ids)
     stats["source_shafa_inactive_products"] += len(shafa_products)
     stats["source_account_db_inactive_uploaded_products"] += len(account_db_products)
-    stats["source_selected_from_account_db"] += len(products)
+    stats["source_selected_from_account_db"] += sum(
+        1
+        for product_id in products_by_id
+        if product_id in account_db_product_ids
+    )
+    stats["source_selected_from_shafa_feed"] += sum(
+        1
+        for product_id in products_by_id
+        if product_id in shafa_products_by_id
+    )
+    stats["source_selected_products"] += len(products)
     stats["source_telegram_mapped_products"] += matched_telegram_rows
     print(
         "Telegram DB lookup: "
@@ -2171,7 +2189,9 @@ def collect_current_account_candidates(
         "Activation source products: "
         f"shafa_feed_inactive={len(shafa_products)} "
         f"account_db_inactive_uploaded_products={len(account_db_products)} "
-        f"selected_from_account_db={len(products)}."
+        f"selected_products={len(products)} "
+        f"selected_from_shafa_feed={stats['source_selected_from_shafa_feed']} "
+        f"selected_from_account_db={stats['source_selected_from_account_db']}."
     )
     if clear_telegram_dates_limit > 0:
         cleared = clear_telegram_message_dates_for_product_ids(
@@ -2628,6 +2648,8 @@ def _print_all_account_summary(
     source_shafa_inactive_products: int = 0,
     source_account_db_inactive_uploaded_products: int = 0,
     source_selected_from_account_db: int = 0,
+    source_selected_from_shafa_feed: int = 0,
+    source_selected_products: int = 0,
     source_telegram_mapped_products: int = 0,
     date_backfill_checked: int = 0,
     date_loaded_from_telegram: int = 0,
@@ -2645,6 +2667,8 @@ def _print_all_account_summary(
         f"Total local mark_failed: {total_mark_failed}. "
         f"Shafa inactive loaded: {source_shafa_inactive_products}. "
         f"Account DB inactive uploaded: {source_account_db_inactive_uploaded_products}. "
+        f"Selected products: {source_selected_products}. "
+        f"Selected from Shafa feed: {source_selected_from_shafa_feed}. "
         f"Selected from account DB: {source_selected_from_account_db}. "
         f"Telegram mapped products: {source_telegram_mapped_products}. "
         f"Date backfill checked: {date_backfill_checked}. "
@@ -2664,6 +2688,12 @@ def _summary_source_stats(stats: dict[str, int]) -> dict[str, int]:
         ),
         "source_selected_from_account_db": int(
             stats.get("source_selected_from_account_db", 0)
+        ),
+        "source_selected_from_shafa_feed": int(
+            stats.get("source_selected_from_shafa_feed", 0)
+        ),
+        "source_selected_products": int(
+            stats.get("source_selected_products", 0)
         ),
         "source_telegram_mapped_products": int(
             stats.get("source_telegram_mapped_products", 0)
