@@ -9,6 +9,14 @@ from utils.media import PreparedMediaBatch, PreparedMediaUpload
 
 
 class WithPlaywrightRetryTests(unittest.TestCase):
+    def setUp(self):
+        should_run_first_fetch = patch(
+            "core.with_playwright.should_run_first_fetch",
+            return_value=False,
+        )
+        self.addCleanup(should_run_first_fetch.stop)
+        should_run_first_fetch.start()
+
     @patch("core.with_playwright.handle_retryable_product_failure")
     @patch("core.with_playwright.prepare_media_batch_for_upload")
     @patch("core.with_playwright.list_media_files")
@@ -77,8 +85,8 @@ class WithPlaywrightRetryTests(unittest.TestCase):
         handle_retryable_failure.assert_called_once_with(
             message_id=11543,
             channel_id=9,
-            failure_reason="NO_UPLOADABLE_PHOTOS",
-            detail_message="Не удалось подготовить ни одной фотографии для загрузки.",
+            failure_reason="NO_TELEGRAM_PHOTOS",
+            detail_message="Не удалось скачать ни одной фотографии из Telegram.",
             detail_level="WARN",
         )
 

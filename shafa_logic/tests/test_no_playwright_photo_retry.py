@@ -8,6 +8,14 @@ from core import no_playwright
 
 
 class NoPlaywrightPhotoRetryTests(unittest.TestCase):
+    def setUp(self):
+        should_run_first_fetch = patch(
+            "core.no_playwright.should_run_first_fetch",
+            return_value=False,
+        )
+        self.addCleanup(should_run_first_fetch.stop)
+        should_run_first_fetch.start()
+
     @patch("core.no_playwright._refresh_brands")
     @patch("core.no_playwright.handle_retryable_product_failure")
     @patch("core.no_playwright.list_media_files")
@@ -52,8 +60,8 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         handle_retryable_failure.assert_called_once_with(
             message_id=11543,
             channel_id=9,
-            failure_reason="NO_UPLOADABLE_PHOTOS",
-            detail_message="Не удалось подготовить ни одной фотографии для загрузки.",
+            failure_reason="NO_TELEGRAM_PHOTOS",
+            detail_message="Не удалось скачать ни одной фотографии из Telegram.",
             detail_level="WARN",
         )
 
@@ -92,7 +100,7 @@ class NoPlaywrightPhotoRetryTests(unittest.TestCase):
         }
         load_cookies.return_value = [{"name": "csrftoken", "value": "token"}]
         get_csrftoken.return_value = "token"
-        download_product_photos.return_value = 0
+        download_product_photos.return_value = 1
         list_media_files.return_value = []
 
         no_playwright.main()

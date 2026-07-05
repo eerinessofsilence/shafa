@@ -127,6 +127,14 @@ def _main_impl() -> None:
         )
         if downloaded == 0:
             log("WARN", f"Не нашёл фото для message_id={message_id} в Telegram.")
+            handle_retryable_product_failure(
+                message_id=message_id,
+                channel_id=channel_id,
+                failure_reason="NO_TELEGRAM_PHOTOS",
+                detail_message="Не удалось скачать ни одной фотографии из Telegram.",
+                detail_level="WARN",
+            )
+            return
         else:
             log("INFO", f"Скачано фото: {downloaded}.")
     except Exception as exc:
@@ -255,6 +263,19 @@ def _main_impl() -> None:
                             log("OK", f"Фото загружено: id={photo_id}")
                         if not verbose_photo_logs:
                             progress.advance()
+
+                if not photo_ids:
+                    handle_retryable_product_failure(
+                        message_id=message_id,
+                        channel_id=channel_id,
+                        failure_reason="NO_UPLOADED_PHOTOS",
+                        detail_message=(
+                            "Фото не были загружены в Shafa; "
+                            "создание товара без фото отменено."
+                        ),
+                        detail_level="WARN",
+                    )
+                    return
 
                 log("INFO", "Создаю товар...")
                 result = create_product(
