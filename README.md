@@ -67,7 +67,7 @@ The desktop UI currently includes:
 
 `shafa_logic` contains the lower-level Shafa workflows: Telegram message parsing, photo collection, size/brand sync, and product creation with Playwright or without Playwright.
 
-There is also a dedicated README in [shafa_logic/README.md](/home/slava/shafa_app/shafa_logic/README.md) for details specific to those flows.
+There is also a dedicated README in [shafa_logic/README.md](shafa_logic/README.md) for details specific to those flows.
 
 ## Requirements
 
@@ -208,7 +208,7 @@ SHAFA_TELEGRAM_API_HASH=your_api_hash
 
 ### Shafa automation variables
 
-`shafa_logic` supports additional automation-related variables such as fetch debug flags, retry tuning, and channel configuration. See [shafa_logic/README.md](/home/slava/shafa_app/shafa_logic/README.md) and `shafa_logic/.env.example`.
+`shafa_logic` supports additional automation-related variables such as fetch debug flags, retry tuning, and channel configuration. See [shafa_logic/README.md](shafa_logic/README.md) and `shafa_logic/.env.example`.
 
 ## Main user flows
 
